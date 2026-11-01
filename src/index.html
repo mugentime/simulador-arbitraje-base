@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador del protocolo de arbitraje · Base en vivo</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #ffffff; --ink: #1d1d1b; --ink2: #5c5b56; --line: #e4e2db;
+    --accent: #2f5bd3; --good: #1d7a46; --good-bg: #e6f4ec; --bad: #b23a2e; --warn: #9a6a00;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --card: #1e1e1c; --ink: #ecebe6; --ink2: #a3a29b; --line: #34332f;
+      --accent: #7c9cf0; --good: #5fc68a; --good-bg: #173324; --bad: #f08a7e; --warn: #e2b54f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .lead { color: var(--ink2); margin: 0 0 14px; max-width: 72ch; }
+  .sub { color: var(--ink2); font-size: 13px; margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 14px; }
+  #status { font-size: 13px; padding: 6px 10px; border-radius: 8px; display: inline-block; background: var(--card); border: 1px solid var(--line); }
+  #status::before { content: "●"; margin-right: 6px; color: var(--ink2); }
+  #status[data-kind="ok"]::before { color: var(--good); }
+  #status[data-kind="bad"]::before { color: var(--bad); }
+  #status[data-kind="wait"]::before { color: var(--warn); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; }
+  input { flex: 1 1 260px; font: 13px var(--mono); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button { font: 600 13px system-ui; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+
+  .pipe { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+  @media (max-width: 860px) { .pipe { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 460px) { .pipe { grid-template-columns: repeat(2, 1fr); } }
+  .st { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-height: 66px; transition: background .2s, border-color .2s; }
+  .st .st-name { font-size: 12px; font-weight: 600; color: var(--ink2); }
+  .st .st-val { font-size: 12.5px; margin-top: 4px; }
+  .st[data-mode="run"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .st[data-mode="idle"] { opacity: .55; }
+  .st[data-mode="hit"] { background: var(--good-bg); border-color: var(--good); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .kpi .l { font-size: 12px; color: var(--ink2); }
+  .kpi .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .kpi .s { font-size: 12px; color: var(--ink2); margin-top: 2px; }
+  .kpi .v[data-sign="pos"] { color: var(--good); }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; vertical-align: top; }
+  th { font-size: 12px; color: var(--ink2); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.strong { font-weight: 650; }
+  td.warn { color: var(--warn); font-weight: 600; }
+  td.route { white-space: normal; min-width: 280px; }
+  .hop { font-size: 11.5px; color: var(--ink2); }
+  tr.win td { background: var(--good-bg); }
+  a { color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 12px; }
+
+  .chartbox { position: relative; }
+  svg#chart { width: 100%; height: 180px; display: block; }
+  svg .grid { stroke: var(--line); stroke-width: 1; }
+  svg .zero { stroke: var(--ink2); stroke-width: 1; stroke-dasharray: 4 4; }
+  svg .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+  svg .axis { fill: var(--ink2); font-size: 11px; font-family: system-ui; }
+  svg .cross { stroke: var(--ink2); stroke-width: 1; }
+  svg .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+  #tip { position: absolute; top: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 180px; }
+
+  ul#log { margin: 0; padding-left: 18px; font-size: 13px; }
+  ul#log li { margin: 4px 0; }
+  .muted { color: var(--ink2); }
+  .notes { font-size: 12.5px; color: var(--ink2); }
+  .notes li { margin: 3px 0; }
+</style>
+<script src="./ethers.umd.min.js"></script>
+</head>
+<body>
+<main>
+  <h1>Simulador del protocolo de arbitraje con flashloan</h1>
+  <p class="lead">Lee la red Base en vivo, bloque a bloque, desde tu navegador y ejecuta el mismo pipeline del bot: descubre pools, lee precios y reservas on-chain, busca ciclos, calcula el monto óptimo, descuenta comisiones, flashloan y gas real (L2 + L1), y decide si enviaría la operación. <b>No envía ninguna transacción.</b></p>
+  <div id="status" data-kind="wait">Iniciando…</div>
+  <form id="rpc-form">
+    <input id="rpc" placeholder="RPC de Base (https://…)" aria-label="RPC de Base">
+    <button type="submit">Conectar</button>
+  </form>
+
+  <section class="card">
+    <h2>Pipeline en este bloque</h2>
+    <p class="sub">Las 8 etapas del protocolo (punto 1). Se ilumina en verde cuando una ruta pasa el filtro de valor esperado.</p>
+    <div class="pipe">
+      <div class="st" id="st-ingesta"><div class="st-name">1 · Ingesta</div><div class="st-val">—</div></div>
+      <div class="st" id="st-estado"><div class="st-name">2 · Estado</div><div class="st-val">—</div></div>
+      <div class="st" id="st-deteccion"><div class="st-name">3 · Detección</div><div class="st-val">—</div></div>
+      <div class="st" id="st-tamano"><div class="st-name">4 · Tamaño óptimo</div><div class="st-val">—</div></div>
+      <div class="st" id="st-simulacion"><div class="st-name">5 · Simulación</div><div class="st-val">—</div></div>
+      <div class="st" id="st-filtro"><div class="st-name">6 · Filtro EV</div><div class="st-val">—</div></div>
+      <div class="st" id="st-ejecucion"><div class="st-name">7 · Ejecución</div><div class="st-val">—</div></div>
+      <div class="st" id="st-registro"><div class="st-name">8 · Registro</div><div class="st-val">—</div></div>
+    </div>
+  </section>
+
+  <section class="kpis" style="margin-top:14px">
+    <div class="kpi"><div class="l">Bloque de Base</div><div class="v" id="k-block">—</div><div class="s" id="k-age"></div></div>
+    <div class="kpi"><div class="l">ETH (mediana de pools WETH/USDC)</div><div class="v" id="k-eth">—</div><div class="s">calculado on-chain</div></div>
+    <div class="kpi"><div class="l">Base fee</div><div class="v" id="k-gas">—</div><div class="s" id="k-gas-sub"></div></div>
+    <div class="kpi"><div class="l">Gas de un arbitraje de 2 saltos</div><div class="v" id="k-cost">—</div><div class="s">L2 + fee de datos L1</div></div>
+    <div class="kpi"><div class="l">Mejor beneficio neto</div><div class="v" id="k-best">—</div><div class="s" id="k-best-sub"></div></div>
+    <div class="kpi"><div class="l">Bloques con oportunidad</div><div class="v" id="k-rate">—</div><div class="s">desde que abriste la página</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Mejor beneficio neto por bloque (USD)</h2>
+    <p class="sub">Por encima de la línea punteada, el protocolo ejecutaría. Pasa el cursor para ver el detalle.</p>
+    <div class="chartbox"><svg id="chart" role="img" aria-label="Mejor beneficio neto por bloque"></svg><div id="tip" hidden></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Mejores rutas de este bloque</h2>
+    <p class="sub">Spread marginal = lo que gana un monto muy pequeño en la ruta, ya con comisiones de los pools. Solo hay arbitraje si es positivo, y solo es rentable si además cubre gas y flashloan.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Ruta</th><th class="num">Spread marginal (bps)</th><th class="num">Comisiones (bps)</th><th class="num">Monto óptimo</th><th class="num">Bruto</th><th class="num">Flashloan</th><th class="num">Gas</th><th class="num">Neto</th><th>Proveedor</th></tr></thead>
+      <tbody id="res-body"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2>Registro de oportunidades</h2>
+    <ul id="log"></ul>
+  </section>
+
+  <section class="card">
+    <h2>Pools leídos on-chain</h2>
+    <p class="sub">Descubiertos consultando las factories de cada DEX. Desviación = diferencia contra la mediana del mismo par, en bps; en ámbar si supera la comisión del pool.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>DEX</th><th>Par</th><th>Tipo</th><th class="num">Comisión</th><th class="num">Precio</th><th class="num">Desv. (bps)</th><th>Contrato</th></tr></thead>
+      <tbody id="pools-body"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2>Proveedores de flashloan (punto 2)</h2>
+    <p class="sub">Liquidez disponible para préstamo, leída de los contratos. El selector usa primero un proveedor gratuito con saldo suficiente y Aave como respaldo.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Proveedor</th><th class="num">Comisión</th><th class="num">WETH</th><th class="num">USDC</th><th class="num">cbBTC</th><th>Contrato</th></tr></thead>
+      <tbody id="lenders-body"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card notes">
+    <h2 style="color:var(--ink)">Cómo leer esto</h2>
+    <ul>
+      <li>Todo dato viene de la red Base en el momento: reservas, precios, comisiones de cada pool, liquidez de los prestamistas, base fee, prioridad y fee de datos L1 (oráculo <code>GasPriceOracle</code>).</li>
+      <li>Pools v2: matemática exacta, igual a la del contrato <code>ArbExecutor</code>. Pools v3 y Slipstream: reservas virtuales del tick actual; es exacto para montos que no cruzan de tick y una aproximación para montos mayores.</li>
+      <li>Costo de gas: 120,000 + 90,000 por salto, al precio actual, más el fee L1 para unos 740 bytes de calldata.</li>
+      <li>Los bots en producción ven la misma información antes, desde nodos colocados junto al secuenciador. Que aquí aparezca una oportunidad no significa que siga disponible al enviarla.</li>
+      <li>Universo: WETH, USDC y cbBTC en Uniswap v2/v3, PancakeSwap v2/v3, Aerodrome y Aerodrome Slipstream.</li>
+    </ul>
+  </section>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
