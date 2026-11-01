@@ -7,12 +7,12 @@
 <style>
   :root {
     --bg: #f6f5f1; --card: #ffffff; --ink: #1d1d1b; --ink2: #5c5b56; --line: #e4e2db;
-    --accent: #2f5bd3; --good: #1d7a46; --good-bg: #e6f4ec; --bad: #b23a2e; --warn: #9a6a00;
+    --accent: #2f5bd3; --c2: #c46a1b; --good: #1d7a46; --good-bg: #e6f4ec; --bad: #b23a2e; --warn: #9a6a00;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #151514; --card: #1e1e1c; --ink: #ecebe6; --ink2: #a3a29b; --line: #34332f;
-      --accent: #7c9cf0; --good: #5fc68a; --good-bg: #173324; --bad: #f08a7e; --warn: #e2b54f; }
+      --accent: #6d8ee8; --c2: #c97f35; --good: #5fc68a; --good-bg: #173324; --bad: #f08a7e; --warn: #e2b54f; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -70,6 +70,28 @@
   svg .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
   #tip { position: absolute; top: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 180px; }
 
+
+  .simgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 6px 0 8px; }
+  .simgrid label, label.slider { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink2); }
+  select { font: 13px system-ui; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); max-width: 100%; }
+  .simgrid input { flex: none; }
+  label.slider { margin: 6px 0 4px; }
+  label.slider b { color: var(--ink); font-size: 14px; }
+  input[type=range] { flex: none; width: 100%; padding: 0; border: 0; accent-color: var(--accent); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink2); margin: 2px 0 4px; }
+  .legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .sw.net { background: var(--accent); } .sw.gross { background: var(--c2); }
+  .sw.opt { width: 9px; height: 9px; border-radius: 50%; background: var(--card); border: 2px solid var(--ink); }
+  svg .line2 { fill: none; stroke: var(--c2); stroke-width: 2; stroke-linejoin: round; }
+  svg .seg { stroke: var(--ink2); stroke-width: 1; stroke-dasharray: 2 3; }
+  svg .opt { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
+  svg .sel { stroke: var(--ink2); stroke-width: 1; }
+  svg .lbl { fill: var(--ink); font-size: 11.5px; font-weight: 600; font-family: system-ui; }
+  .tip { position: absolute; top: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 200px; }
+  svg#sim-chart { width: 100%; height: 240px; display: block; }
+  table.breakdown td { white-space: normal; }
+  table.breakdown td:first-child { color: var(--ink2); width: 55%; }
+  table.breakdown tr.total td { font-weight: 650; border-top: 2px solid var(--line); }
   ul#log { margin: 0; padding-left: 18px; font-size: 13px; }
   ul#log li { margin: 4px 0; }
   .muted { color: var(--ink2); }
@@ -125,6 +147,24 @@
       <thead><tr><th>Ruta</th><th class="num">Spread marginal (bps)</th><th class="num">Comisiones (bps)</th><th class="num">Monto óptimo</th><th class="num">Bruto</th><th class="num">Flashloan</th><th class="num">Gas</th><th class="num">Neto</th><th>Proveedor</th></tr></thead>
       <tbody id="res-body"></tbody>
     </table></div>
+  </section>
+
+
+  <section class="card" id="sim">
+    <h2>Simulación de ganancias: ¿cuánto pedir prestado?</h2>
+    <p class="sub">Para la ruta elegida, cuánto ganaría el protocolo según el monto del flashloan, con los datos de este bloque. La ganancia bruta crece y luego cae (cada compra mueve el precio); la comisión del préstamo y el gas se restan. El óptimo es el punto más alto de la curva neta, dentro de la liquidez del proveedor.</p>
+    <div class="simgrid">
+      <label>Ruta<select id="sim-route"></select></label>
+      <label>Escenario<select id="sim-pool"><option value="">Mercado actual (sin cambios)</option></select></label>
+      <label id="sim-dir-wrap" hidden>Alguien vende<select id="sim-dir"></select></label>
+      <label id="sim-amt-wrap" hidden>Cantidad vendida<input id="sim-amt" type="number" min="0" step="any" value="50"></label>
+    </div>
+    <p class="sub" id="sim-scn-note" hidden>Escenario hipotético sobre reservas reales: simula una venta grande en ese pool, que es como nacen las oportunidades que el bot captura (back-running).</p>
+    <div class="legend"><span><i class="sw net"></i>Beneficio neto</span><span><i class="sw gross"></i>Ganancia bruta de la ruta</span><span><i class="sw opt"></i>Monto óptimo</span><span>Eje horizontal: monto prestado en USD, escala logarítmica</span></div>
+    <div class="chartbox"><svg id="sim-chart" role="img" aria-label="Beneficio según el monto prestado"></svg><div id="sim-tip" class="tip" hidden></div></div>
+    <p class="sub" id="sim-opt"></p>
+    <label class="slider">Prueba un monto: <b id="sim-x-label">—</b><input id="sim-slider" type="range" min="0" max="1000" value="500"></label>
+    <div class="scroll"><table class="breakdown"><tbody id="sim-break"></tbody></table></div>
   </section>
 
   <section class="card">

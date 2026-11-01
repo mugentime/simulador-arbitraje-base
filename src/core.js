@@ -361,50 +361,121 @@ export async function readGas(ethers, provider) {
 
 // ------------------------------------------------------------------ Evaluación (pipeline completo)
 
+// ------------------------------------------------------------------ Dimensionamiento (monto óptimo con restricción de flashloan)
+
+function ternaryMax(f, lo, hi) {
+  if (hi < lo) return [0n, 0n];
+  for (let i = 0; i < 400 && hi - lo > 2n; i++) {
+    const m1 = lo + (hi - lo) / 3n, m2 = hi - (hi - lo) / 3n;
+    if (f(m1) < f(m2)) lo = m1; else hi = m2;
+  }
+  let bx = 0n, bv = 0n;
+  for (const x of hi - lo <= 2n ? [lo, lo + 1n, hi] : [lo, (lo + hi) / 2n, hi]) {
+    const v = f(x);
+    if (v > bv) { bv = v; bx = x; }
+  }
+  return [bx, bv];
+}
+
+// Segmentos de préstamo: [hasta cuánto se puede pedir, a qué costo]. Primero gratuitos.
+export function lenderSegments(lenders, sym) {
+  const segs = [];
+  const free = lenders.filter((l) => l.ok && l.feeBps === 0n && (l.liquidity[sym] ?? 0n) > 0n)
+    .sort((a, b) => (b.liquidity[sym] > a.liquidity[sym] ? 1 : -1));
+  if (free.length) segs.push({ name: free[0].name, max: free[0].liquidity[sym], bps: 0n });
+  for (const l of lenders) {
+    if (l.ok && l.feeBps !== null && l.feeBps > 0n && (l.liquidity[sym] ?? 0n) > 0n)
+      segs.push({ name: l.name, max: l.liquidity[sym], bps: l.feeBps });
+  }
+  return segs;
+}
+
+// Para un monto x: qué proveedor se usa y cuánto cobra (null si nadie tiene tanta liquidez)
+export function lenderFor(segs, x) {
+  const fits = segs.filter((g) => g.max >= x).sort((a, b) => (a.bps < b.bps ? -1 : a.bps > b.bps ? 1 : 0));
+  if (!fits.length) return null;
+  return { name: fits[0].name, fee: (x * fits[0].bps) / 10000n, bps: fits[0].bps };
+}
+
+// Óptimo de beneficio en token: max_x  out(x) - x - comisión_flash(x), con x <= cap y <= liquidez del proveedor
+export function optimize(start, route, segs, cap) {
+  let best = { x: 0n, gross: 0n, fee: 0n, lender: null };
+  for (const g of segs) {
+    const hi = g.max < cap ? g.max : cap;
+    const f = (x) => routeOut(x, start, route) - x - (x * g.bps) / 10000n;
+    const [x, v] = ternaryMax(f, 1n, hi);
+    const fee = (x * g.bps) / 10000n;
+    if (x > 0n && v > best.gross - best.fee) best = { x, gross: v + fee, fee, lender: g.name };
+  }
+  return best;
+}
+
+// Curva de beneficio vs monto prestado (escala logarítmica), para la gráfica de dimensionamiento
+export function profitCurve(start, route, segs, loX, hiX, toUsd, gasUsd, n = 90) {
+  const pts = [];
+  if (hiX <= 1n) return pts;
+  const hi = Number(hiX), lo = Math.max(1, Math.min(Number(loX), hi / 10));
+  for (let i = 0; i <= n; i++) {
+    const x = BigInt(Math.max(1, Math.floor(lo * Math.pow(hi / lo, i / n))));
+    const out = routeOut(x, start, route);
+    const gross = out - x;
+    const l = lenderFor(segs, x);
+    const fee = l ? l.fee : 0n;
+    pts.push({
+      x, xUsd: toUsd(x), outUsd: toUsd(out), grossUsd: toUsd(gross), feeUsd: toUsd(fee), gasUsd,
+      netUsd: toUsd(gross - fee) - gasUsd, lender: l ? l.name : "sin liquidez", ok: !!l,
+    });
+  }
+  return pts;
+}
+
+export function tokenToUsd(tok, ethUsd) {
+  return (amt) => {
+    const units = Number(amt) / 10 ** tok.decimals;
+    return tok.sym === "USDC" ? units : tok.sym === "WETH" ? units * ethUsd : NaN;
+  };
+}
+
+// Escenario: aplica un swap hipotético a una copia de los pools (para ver cómo nace una oportunidad)
+export function withSwap(pools, poolAddr, tokenAddr, amountIn) {
+  const copy = pools.map((p) => ({ ...p }));
+  const p = copy.find((q) => q.address === poolAddr);
+  if (!p || amountIn <= 0n) return copy;
+  const [ri, ro] = reservesFor(p, tokenAddr);
+  const out = amountOut(amountIn, ri, ro, p.feePips);
+  if (tokenAddr === p.token0.address) { p.reserve0 = ri + amountIn; p.reserve1 = ro - out; }
+  else { p.reserve1 = ri + amountIn; p.reserve0 = ro - out; }
+  return copy;
+}
+
+// ------------------------------------------------------------------ Evaluación (pipeline completo)
+
 export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0 }) {
   const results = [];
+  const gasWeiFor = (hops) => (GAS_BASE + GAS_PER_HOP * BigInt(hops)) * (gas.baseFee + gas.priority) + gas.l1Fee;
   for (const c of cycles) {
     const startTok = c.route[0].token0.address === c.start ? c.route[0].token0 : c.route[0].token1;
     if (c.route.some((p) => p.reserve0 === 0n || p.reserve1 === 0n)) continue;
     const firstRes = reservesFor(c.route[0], c.start)[0];
-    let cap = firstRes / 20n; // como el bot: no más de 1/20 de la reserva de entrada
-    const maxLend = lenders.reduce((m, l) => ((l.liquidity[startTok.sym] ?? 0n) > m ? l.liquidity[startTok.sym] : m), 0n);
-    if (maxLend > 0n && maxLend < cap) cap = maxLend;
+    const cap = firstRes / 2n; // tope de búsqueda; el óptimo real queda muy por debajo por el deslizamiento
+    const segs = lenderSegments(lenders, startTok.sym);
 
-    // spread "marginal": rendimiento de un monto pequeño (1/1e6 de la reserva)
     const probe = firstRes / 1000000n || 1n;
     const marginalBps = Number(((routeOut(probe, c.start, c.route) - probe) * 1000000n) / probe) / 100;
 
-    const [x, gross] = bestSize(c.start, c.route, cap);
-    const toUsd = (amt) => {
-      const units = Number(amt) / 10 ** startTok.decimals;
-      return startTok.sym === "USDC" ? units : startTok.sym === "WETH" ? units * ethUsd : NaN;
-    };
-    const gasUnits = GAS_BASE + GAS_PER_HOP * BigInt(c.route.length);
-    const gasWei = gasUnits * (gas.baseFee + gas.priority) + gas.l1Fee;
-    const gasUsd = (Number(gasWei) / 1e18) * ethUsd;
-    let lender = null, flashFeeUsd = 0, grossUsd = 0, netUsd = -gasUsd;
-    if (x > 0n) {
-      lender = pickLender(lenders, startTok.sym, x);
-      grossUsd = toUsd(gross);
-      flashFeeUsd = lender ? toUsd(lender.fee) : 0;
-      netUsd = grossUsd - flashFeeUsd - gasUsd;
-    }
+    const toUsd = tokenToUsd(startTok, ethUsd);
+    const gasUsd = (Number(gasWeiFor(c.route.length)) / 1e18) * ethUsd;
+    const o = optimize(c.start, c.route, segs, cap);
+    const grossUsd = o.x > 0n ? toUsd(o.gross) : 0;
+    const flashFeeUsd = o.x > 0n ? toUsd(o.fee) : 0;
+    const netUsd = grossUsd - flashFeeUsd - gasUsd;
     results.push({
-      key: c.key,
-      start: startTok.sym,
-      route: c.route,
-      hops: c.route.length,
-      marginalBps,
-      feesBps: c.route.reduce((s, p) => s + p.feeBps, 0),
-      amountIn: x,
-      amountInUsd: x > 0n ? toUsd(x) : 0,
-      grossUsd,
-      gasUsd,
-      flashFeeUsd,
-      lender: lender ? lender.name : x > 0n ? "sin liquidez" : "—",
-      netUsd,
-      profitable: x > 0n && netUsd > minNetUsd,
+      key: c.key, start: startTok.sym, startTok, route: c.route, hops: c.route.length,
+      marginalBps, feesBps: c.route.reduce((s, p) => s + p.feeBps, 0),
+      amountIn: o.x, amountInUsd: o.x > 0n ? toUsd(o.x) : 0,
+      grossUsd, gasUsd, flashFeeUsd,
+      lender: o.lender ?? (segs.length ? "—" : "sin liquidez"),
+      netUsd, profitable: o.x > 0n && netUsd > minNetUsd, cap, segs,
     });
   }
   results.sort((a, b) => b.netUsd - a.netUsd || b.marginalBps - a.marginalBps);
