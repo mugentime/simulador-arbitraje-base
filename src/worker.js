@@ -141,6 +141,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
   const stats = (await store.get("stats")) ?? emptyStats();
   let events = (await store.get("events")) ?? [];
+  sanitize(stats, events);
   const vstats = (await store.get("vaults")) ?? emptyVaultStats();
   const managers = new Map(Object.entries((await store.get("managers")) ?? {}));
   stats.runs++;
@@ -219,6 +220,24 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   }
   if (!evicted) await flush();
   return { stats, evicted };
+}
+
+/** Limpieza única: quita del acumulado los episodios imposibles (> $1,000 netos) registrados antes del filtro de cordura. */
+export function sanitize(stats, events) {
+  if ((stats.version ?? 1) >= 2) return;
+  const bad = events.filter((e) => e.netUsd > 1000);
+  for (const e of bad) {
+    const t = stats.totals;
+    t.episodes--; t.netUsd -= e.netUsd; t.grossUsd -= e.grossUsd; t.gasUsd -= e.gasUsd; t.flashFeeUsd -= e.flashFeeUsd;
+    if (e.netUsd >= 1) { t.over1Usd--; t.over1NetUsd -= e.netUsd; }
+    const h = stats.hourly.find((x) => x.h === Math.floor(e.ts / 3600));
+    if (h) { h.episodes--; h.netUsd -= e.netUsd; }
+  }
+  for (const k of Object.keys(stats.byRoute)) if (stats.byRoute[k].netUsd > 1000) delete stats.byRoute[k];
+  const keep = events.filter((e) => e.netUsd <= 1000);
+  events.length = 0; events.push(...keep);
+  stats.best = keep.reduce((b, e) => (!b || e.netUsd > b.netUsd ? e : b), null);
+  stats.version = 2;
 }
 
 /** ¿Hay un worker vivo? (latido reciente) */
