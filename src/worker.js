@@ -3,6 +3,7 @@
 // En Netlify el store es Netlify Blobs; en las pruebas, un Map en memoria.
 
 import * as core from "./core.js";
+import { emptyVaultStats, harvestTable, processVaultBlock } from "./vaultsim.js";
 
 export const MIN_LIQ = {
   [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, // 0.05 WETH
@@ -140,6 +141,8 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
   const stats = (await store.get("stats")) ?? emptyStats();
   let events = (await store.get("events")) ?? [];
+  const vstats = (await store.get("vaults")) ?? emptyVaultStats();
+  const managers = new Map(Object.entries((await store.get("managers")) ?? {}));
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
   const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); log(phase); };
@@ -169,6 +172,8 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
     if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
     await store.set("stats", stats);
     await store.set("events", events);
+    await store.set("vaults", vstats);
+    await store.set("managers", Object.fromEntries(managers));
     sinceFlush = 0;
   };
   while (now() < deadlineMs && !evicted) {
@@ -189,6 +194,20 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       if (n % 60 === 0) lenders = await core.readLenders(ethers, provider);
       const results = core.evaluateAll({ pools: uni.pools, cycles: uni.cycles, lenders, gas, ethUsd });
       events.push(...accountBlock(stats, b, gas.timestamp, results));
+      // punto 6: rebalanceos, zaps y salidas de vaults en este bloque, y qué habría hecho el protocolo
+      try {
+        const vev = await core.scanVaultEvents(ethers, provider, uni.pools, b);
+        if (vev.length) {
+          await core.describeManagers(ethers, provider, [...new Set(vev.map((e) => e.actor))], managers);
+          const recs = processVaultBlock(vstats, { block: b, ts: gas.timestamp, events: vev, results, pools: uni.pools, ethUsd, managers });
+          for (const r of recs) log(`vault ${r.kind} · ${r.manager} · ${r.pool}${r.opp ? ` · back-run ${r.opp.profitable ? "EV+" : "EV−"} neto $${r.opp.netUsd.toFixed(4)}` : " · sin ruta"}`);
+        } else vstats.blocks++;
+        if (n % 150 === 0 && [...managers.values()].some((m) => m.beefy)) {
+          await core.refreshHarvest(ethers, provider, managers);
+          vstats.harvest = harvestTable(managers, gas, ethUsd, gas.timestamp);
+          vstats.harvestUpdatedAt = gas.timestamp;
+        }
+      } catch (e) { stats.lastError = `vaults bloque ${b}: ${e.shortMessage || e.message}`; }
       stats.lastError = null;
       last = b; n++; sinceFlush++;
       if (sinceFlush >= flushEvery) await flush();

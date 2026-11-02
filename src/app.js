@@ -1,5 +1,6 @@
 import * as core from "./core.js";
 import { accountBlock, emptyStats } from "./worker.js";
+import { emptyVaultStats, processVaultBlock } from "./vaultsim.js";
 
 const ethers = window.ethers;
 const RPCS = [
@@ -19,6 +20,7 @@ const state = {
   provider: null, rpc: null, pools: [], cycles: [], lenders: [], lastBlock: 0, history: [],
   blocksSeen: 0, blocksWithOpp: 0, log: [], busy: false, lastBlockTs: 0, chainId: null,
   session: emptyStats(),
+  vsession: emptyVaultStats(), managers: new Map(),
 };
 
 // ------------------------------------------------------------------ pipeline UI
@@ -144,6 +146,14 @@ async function onBlock() {
     state.ctx = { gas, ethUsd, results };
     accountBlock(state.session, n, gas.timestamp, results);
     renderSession();
+    try {
+      const vev = await core.scanVaultEvents(ethers, state.provider, state.pools, n);
+      if (vev.length) {
+        await core.describeManagers(ethers, state.provider, [...new Set(vev.map((e) => e.actor))], state.managers);
+        processVaultBlock(state.vsession, { block: n, ts: gas.timestamp, events: vev, results, pools: state.pools, ethUsd, managers: state.managers });
+      } else state.vsession.blocks++;
+      renderVaultSession();
+    } catch (e) { console.warn("vaults", e); }
     renderKpis(n, gas, ethUsd, results);
     $("pools-count").textContent = `(${state.pools.length})`;
     if ($("pools-box").open && state.blocksSeen % 10 === 1) renderPools(ethUsd);
@@ -377,6 +387,35 @@ $("res-body").addEventListener("click", (e) => {
   $("sim").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 
+
+// ------------------------------------------------------------------ vaults (punto 6)
+
+function renderVaultSession() {
+  const v = state.vsession;
+  const tot = v.events.rebalanceo + v.events.zap + v.events.salida;
+  $("v-sess").textContent = `${tot} eventos`;
+  $("v-sess-sub").textContent = `${v.withOpp} con oportunidad · ${fmtUsd(v.netUsd, 2)} · ${v.blocks} bloques`;
+}
+
+function oppText(o) {
+  if (!o) return '<span class="muted">sin ruta que toque el pool</span>';
+  if (o.profitable) return `<b>ejecutaría</b>: pide ${fmtUsd(o.amountInUsd, 0)} ${o.start} a ${o.lender}, neto <b>${fmtUsd(o.netUsd, 4)}</b>${o.needsV4 ? " · requiere hop v4" : ""}`;
+  return `<span class="muted">no ejecuta: ${o.marginalBps > 0 ? "no cubre gas" : "desfase menor a comisiones"} (neto ${fmtUsd(o.netUsd, 4)})</span>`;
+}
+
+function renderVaultsServer(v) {
+  if (!v) { $("v-ev").textContent = "—"; $("v-ev-sub").textContent = "el servidor aún no reporta"; return; }
+  const tot = v.events.rebalanceo + v.events.zap + v.events.salida;
+  $("v-ev").textContent = tot.toLocaleString("es-MX");
+  $("v-ev-sub").textContent = `${v.events.rebalanceo} rebalanceos · ${v.events.zap} zaps · ${v.events.salida} salidas · ${v.blocks.toLocaleString("es-MX")} bloques`;
+  $("v-opp").textContent = v.withOpp.toLocaleString("es-MX");
+  $("v-opp-sub").textContent = tot ? `${fmtNum((v.withOpp / tot) * 100, 1)}% de los eventos` : "";
+  $("v-net").textContent = fmtUsd(v.netUsd, 2);
+  $("v-recent").innerHTML = (v.recent || []).slice(0, 25).map((r) => `<tr class="${r.opp?.profitable ? "win" : ""}"><td>${r.block.toLocaleString("es-MX")}</td><td>${r.kind}</td><td>${r.manager} <span class="hop">${r.managerKind}</span></td><td>${r.pool}</td><td class="num">${r.soldUsd === null ? "—" : fmtUsd(r.soldUsd, 0)}</td><td class="num">${r.deviationBps === null ? "—" : fmtNum(r.deviationBps, 1)}</td><td class="route">${oppText(r.opp)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">Todavía no se ha visto ningún rebalanceo, zap ni salida en los pools vigilados.</td></tr>`;
+  $("v-managers").innerHTML = (v.topManagers || []).map((m) => `<tr><td>${m.label}</td><td>${m.kind}</td><td class="num">${m.events}</td><td class="num">${m.withOpp}</td><td class="num strong">${fmtUsd(m.netUsd, 2)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Ninguno todavía.</td></tr>`;
+  $("v-harvest").innerHTML = (v.harvest || []).map((h) => `<tr class="${h.worth ? "win" : ""}"><td>${h.label}</td><td class="num">${fmtUsd(h.rewardUsd, 4)}</td><td class="num">${fmtUsd(h.gasUsd, 4)}</td><td class="num strong">${fmtUsd(h.netUsd, 4)}</td><td>${h.sinceMin === null ? "—" : `hace ${h.sinceMin} min`}</td><td>${h.worth ? "sí" : "no"}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aún no se ha detectado ninguna estrategia de Beefy rebalanceando en los pools vigilados.</td></tr>`;
+}
+
 // ------------------------------------------------------------------ acumulado (sesión + servidor 24/7)
 
 function renderSession() {
@@ -428,6 +467,7 @@ async function loadServerStats() {
   $("acc-routes").innerHTML = d.topRoutes.map((r) => `<tr><td class="route">${r.label}</td><td class="num">${r.episodes}</td><td class="num strong">${fmtUsd(r.netUsd, 2)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Sin oportunidades todavía.</td></tr>`;
   $("acc-recent").innerHTML = d.recent.map((e) => `<tr><td>${e.block.toLocaleString("es-MX")}</td><td>${new Date(e.ts * 1000).toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" })}</td><td class="route">${e.route}${e.needsV4 ? ' <span class="hop">· requiere hop v4</span>' : ""}</td><td class="num">${fmtUsd(e.amountUsd, 0)}</td><td class="num strong">${fmtUsd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin oportunidades todavía.</td></tr>`;
   drawAccChart(d.hourly);
+  renderVaultsServer(d.vaults);
 }
 
 function drawAccChart(hourly) {

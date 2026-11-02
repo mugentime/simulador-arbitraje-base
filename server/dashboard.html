@@ -53,6 +53,21 @@
   <section class="card"><h2>Últimas oportunidades</h2>
     <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="recent"></tbody></table></div></section>
 
+  <section class="card"><h2>Vaults, rebalanceos y zaps (punto 6)</h2>
+    <p class="sub">Transacciones de managers de liquidez (Beefy CLM, Gamma, ICHI, Steer) y zaps en los pools vigilados, y qué habría hecho el protocolo con el desfase que dejaron. Detección on-chain.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Eventos</div><div class="v" id="v-ev">—</div><div class="s" id="v-ev-sub"></div></div>
+      <div class="kpi"><div class="l">Con oportunidad</div><div class="v" id="v-opp">—</div><div class="s" id="v-opp-sub"></div></div>
+      <div class="kpi"><div class="l">Neto tras eventos</div><div class="v" id="v-net">—</div><div class="s">tope superior</div></div>
+    </div>
+    <h2 style="margin-top:12px">Últimos eventos</h2>
+    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Tipo</th><th>Manager</th><th>Pool</th><th class="num">Vendido</th><th class="num">Desfase bps</th><th>Back-run simulado</th></tr></thead><tbody id="v-recent"></tbody></table></div>
+    <h2 style="margin-top:12px">Managers vistos</h2>
+    <div class="scroll"><table><thead><tr><th>Manager</th><th>Tipo</th><th class="num">Eventos</th><th class="num">Con opp.</th><th class="num">Neto</th></tr></thead><tbody id="v-managers"></tbody></table></div>
+    <h2 style="margin-top:12px">Keeper de harvest (Beefy)</h2>
+    <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">Recompensa</th><th class="num">Gas</th><th class="num">Neto</th><th>Último harvest</th></tr></thead><tbody id="v-harvest"></tbody></table></div>
+  </section>
+
   <section class="card"><h2>Bitácora</h2><ul id="diag"></ul></section>
   <p class="sub">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta una sola vez, con el beneficio de su primer bloque. Es un tope superior: supone que el protocolo gana todas, sin competencia de otros bots. Simulador completo: <a href="https://simulador-arbitraje-base.netlify.app">simulador-arbitraje-base.netlify.app</a>.</p>
 </main>
@@ -84,6 +99,22 @@ async function load() {
   $("routes").innerHTML = d.topRoutes.map((r) => `<tr><td>${r.label}</td><td class="num">${r.episodes}</td><td class="num strong">${usd(r.netUsd)}</td></tr>`).join("") || `<tr><td colspan="3">Sin oportunidades todavía.</td></tr>`;
   $("recent").innerHTML = d.recent.map((e) => `<tr><td>${num(e.block)}</td><td>${when(e.ts * 1000)}</td><td>${e.route}${e.needsV4 ? " · requiere hop v4" : ""}</td><td class="num">${usd(e.amountUsd, 0)}</td><td class="num strong">${usd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6">Sin oportunidades todavía.</td></tr>`;
   chart(d.hourly || []);
+  vaults(d.vaults);
+}
+function oppText(o) {
+  if (!o) return "sin ruta que toque el pool";
+  if (o.profitable) return `<b>ejecutaría</b>: pide ${usd(o.amountInUsd, 0)} ${o.start} a ${o.lender}, neto <b>${usd(o.netUsd, 4)}</b>${o.needsV4 ? " · requiere hop v4" : ""}`;
+  return `no ejecuta: ${o.marginalBps > 0 ? "no cubre gas" : "desfase menor a comisiones"} (neto ${usd(o.netUsd, 4)})`;
+}
+function vaults(v) {
+  if (!v) { $("v-ev").textContent = "—"; return; }
+  const tot = v.events.rebalanceo + v.events.zap + v.events.salida;
+  $("v-ev").textContent = num(tot); $("v-ev-sub").textContent = `${v.events.rebalanceo} rebalanceos · ${v.events.zap} zaps · ${v.events.salida} salidas · ${num(v.blocks)} bloques`;
+  $("v-opp").textContent = num(v.withOpp); $("v-opp-sub").textContent = tot ? `${num((v.withOpp / tot) * 100, 1)}% de los eventos` : "";
+  $("v-net").textContent = usd(v.netUsd);
+  $("v-recent").innerHTML = (v.recent || []).slice(0, 25).map((r) => `<tr><td>${num(r.block)}</td><td>${r.kind}</td><td>${r.manager} (${r.managerKind})</td><td>${r.pool}</td><td class="num">${r.soldUsd === null ? "—" : usd(r.soldUsd, 0)}</td><td class="num">${r.deviationBps === null ? "—" : num(r.deviationBps, 1)}</td><td>${oppText(r.opp)}</td></tr>`).join("") || `<tr><td colspan="7">Todavía no se ha visto ningún rebalanceo, zap ni salida en los pools vigilados.</td></tr>`;
+  $("v-managers").innerHTML = (v.topManagers || []).map((m) => `<tr><td>${m.label}</td><td>${m.kind}</td><td class="num">${m.events}</td><td class="num">${m.withOpp}</td><td class="num strong">${usd(m.netUsd)}</td></tr>`).join("") || `<tr><td colspan="5">Ninguno todavía.</td></tr>`;
+  $("v-harvest").innerHTML = (v.harvest || []).map((h) => `<tr><td>${h.label}</td><td class="num">${usd(h.rewardUsd, 4)}</td><td class="num">${usd(h.gasUsd, 4)}</td><td class="num strong">${usd(h.netUsd, 4)}</td><td>${h.sinceMin === null ? "—" : `hace ${h.sinceMin} min`}</td></tr>`).join("") || `<tr><td colspan="5">Ninguna estrategia de Beefy detectada todavía.</td></tr>`;
 }
 function chart(h) {
   const svg = $("chart");

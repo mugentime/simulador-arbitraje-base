@@ -670,3 +670,144 @@ export function referenceEthUsd(pools) {
   for (const x of ps) { acc += x.w; if (acc >= total / 2) return x.px; }
   return ps[ps.length - 1].px;
 }
+
+// ------------------------------------------------------------------ Vaults, rebalanceos y zaps (punto 6)
+//
+// Detección 100% on-chain, sin depender de la API de ningún protocolo:
+//  - un REBALANCEO es una transacción en la que el mismo dueño quema (Burn) y vuelve a abrir (Mint)
+//    posiciones en un pool concentrado, normalmente con un Swap en medio (Gamma, Beefy CLM, ICHI, Steer);
+//  - un ZAP es una transacción con Swap + Mint en el mismo pool (Beefy Zap, zaps de los DEX);
+//  - una SALIDA grande es Burn + Swap (retiro de vault que vende una pata).
+// Los "managers" (dueños de posiciones que rebalancean) se identifican y se etiquetan leyendo su symbol()
+// o el de su vault(); si exponen callReward() son estrategias de Beefy y se evalúa su harvest.
+
+const VAULT_ABI = [
+  "event Mint(address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1)",
+  "event Burn(address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1)",
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
+  "event MintV2(address indexed sender, uint256 amount0, uint256 amount1)",
+  "event BurnV2(address indexed sender, uint256 amount0, uint256 amount1, address indexed to)",
+  "event SwapV2(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)",
+  "function symbol() view returns (string)",
+  "function vault() view returns (address)",
+  "function callReward() view returns (uint256)",
+  "function lastHarvest() view returns (uint256)",
+  "function harvestOnDeposit() view returns (bool)",
+];
+let vaultIface = null;
+const vIface = (ethers) => (vaultIface ??= new ethers.Interface(VAULT_ABI));
+
+export const VAULT_TOPICS = (ethers) => {
+  const i = vIface(ethers);
+  const t = (sig) => "0x" + ethers.keccak256(ethers.toUtf8Bytes(sig)).slice(2);
+  return {
+    mint: t("Mint(address,address,int24,int24,uint128,uint256,uint256)"),
+    burn: t("Burn(address,int24,int24,uint128,uint256,uint256)"),
+    swap: t("Swap(address,address,int256,int256,uint160,uint128,int24)"),
+    swapPcs: t("Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)"),
+    mintV2: t("Mint(address,uint256,uint256)"),
+    burnV2: t("Burn(address,uint256,uint256,address)"),
+    swapV2: t("Swap(address,uint256,uint256,uint256,uint256,address)"),
+    _i: i,
+  };
+};
+
+/** Lee los eventos de un bloque sobre los pools vigilados y los clasifica por transacción. */
+export async function scanVaultEvents(ethers, provider, pools, block) {
+  const T = VAULT_TOPICS(ethers);
+  const byAddr = new Map(pools.filter((p) => p.kind !== "v4").map((p) => [p.address.toLowerCase(), p]));
+  const addrs = [...byAddr.keys()];
+  if (!addrs.length) return [];
+  const logs = [];
+  for (let i = 0; i < addrs.length; i += 400) {
+    logs.push(...(await provider.getLogs({ address: addrs.slice(i, i + 400), fromBlock: block, toBlock: block,
+      topics: [[T.mint, T.burn, T.swap, T.swapPcs, T.mintV2, T.burnV2, T.swapV2]] })));
+  }
+  const addr20 = (topic) => ethers.getAddress("0x" + topic.slice(-40));
+  const txs = new Map(); // txHash|pool -> {pool, mints, burns, swaps, owners}
+  for (const lg of logs) {
+    const p = byAddr.get(lg.address.toLowerCase());
+    if (!p) continue;
+    const key = lg.transactionHash + "|" + p.address;
+    const e = txs.get(key) ?? { tx: lg.transactionHash, pool: p, mints: [], burns: [], swaps: [], owners: new Set(), senders: new Set(), swapOut: 0n, swapOutTok: null };
+    txs.set(key, e);
+    const t0 = lg.topics[0];
+    if (t0 === T.mint) {
+      const owner = addr20(lg.topics[1]);
+      const [, a0, a1] = [0, word(lg.data, 2), word(lg.data, 3)];
+      e.mints.push({ owner, amount0: a0, amount1: a1 }); e.owners.add(owner);
+    } else if (t0 === T.burn) {
+      const owner = addr20(lg.topics[1]);
+      e.burns.push({ owner, amount0: word(lg.data, 1), amount1: word(lg.data, 2) }); e.owners.add(owner);
+    } else if (t0 === T.swap || t0 === T.swapPcs) {
+      const sender = addr20(lg.topics[1]);
+      const a0 = BigInt.asIntN(256, word(lg.data, 0)), a1 = BigInt.asIntN(256, word(lg.data, 1));
+      e.swaps.push({ sender, amount0: a0, amount1: a1 }); e.senders.add(sender);
+    } else if (t0 === T.mintV2) {
+      const sender = addr20(lg.topics[1]);
+      e.mints.push({ owner: sender, amount0: word(lg.data, 0), amount1: word(lg.data, 1) }); e.owners.add(sender);
+    } else if (t0 === T.burnV2) {
+      const sender = addr20(lg.topics[1]);
+      e.burns.push({ owner: sender, amount0: word(lg.data, 0), amount1: word(lg.data, 1) }); e.owners.add(sender);
+    } else if (t0 === T.swapV2) {
+      const sender = addr20(lg.topics[1]);
+      const in0 = word(lg.data, 0), in1 = word(lg.data, 1), out0 = word(lg.data, 2), out1 = word(lg.data, 3);
+      e.swaps.push({ sender, amount0: in0 - out0, amount1: in1 - out1 }); e.senders.add(sender);
+    }
+  }
+  const events = [];
+  for (const e of txs.values()) {
+    const both = [...e.owners].filter((o) => e.burns.some((b) => b.owner === o) && e.mints.some((m) => m.owner === o));
+    let kind = null, actor = null;
+    if (both.length) { kind = "rebalanceo"; actor = both[0]; }
+    else if (e.swaps.length && e.mints.length) { kind = "zap"; actor = e.mints[0].owner; }
+    else if (e.swaps.length && e.burns.length) { kind = "salida"; actor = e.burns[0].owner; }
+    if (!kind) continue;
+    // tamaño de la venta que movió el precio: suma de las patas vendidas en los swaps del actor (o de cualquiera en zaps)
+    let sold0 = 0n, sold1 = 0n;
+    for (const s of e.swaps) { if (s.amount0 > 0n) sold0 += s.amount0; if (s.amount1 > 0n) sold1 += s.amount1; }
+    events.push({ block, tx: e.tx, pool: e.pool, kind, actor, sold0, sold1, nMints: e.mints.length, nBurns: e.burns.length, nSwaps: e.swaps.length });
+  }
+  return events;
+}
+
+/** Etiqueta a un manager: symbol() propio o del vault(); detecta estrategias de Beefy por callReward(). */
+export async function describeManagers(ethers, provider, addrs, known = new Map()) {
+  const i = vIface(ethers);
+  const todo = addrs.filter((a) => !known.has(a));
+  if (!todo.length) return known;
+  const calls = [];
+  for (const a of todo) calls.push([a, i.encodeFunctionData("symbol")], [a, i.encodeFunctionData("vault")], [a, i.encodeFunctionData("callReward")], [a, i.encodeFunctionData("lastHarvest")]);
+  const res = await multicall(ethers, provider, calls);
+  const vaultSyms = [];
+  todo.forEach((a, k) => {
+    const [sym, vault, cr, lh] = res.slice(4 * k, 4 * k + 4);
+    const m = { address: a, label: null, vault: null, beefy: false, callReward: null, lastHarvest: null };
+    try { if (sym && sym.length > 66) m.label = i.decodeFunctionResult("symbol", sym)[0]; } catch { /* no es ERC20 */ }
+    if (vault && vault.length >= 66) { const v = ethers.getAddress("0x" + vault.slice(-40)); if (v !== ZERO) { m.vault = v; vaultSyms.push(m); } }
+    if (cr) { m.beefy = true; m.callReward = word(cr, 0); }
+    if (lh) m.lastHarvest = Number(word(lh, 0));
+    known.set(a, m);
+  });
+  if (vaultSyms.length) {
+    const r2 = await multicall(ethers, provider, vaultSyms.map((m) => [m.vault, i.encodeFunctionData("symbol")]));
+    vaultSyms.forEach((m, k) => { try { if (r2[k] && r2[k].length > 66) m.label = i.decodeFunctionResult("symbol", r2[k])[0]; } catch { /* sin símbolo */ } });
+  }
+  for (const m of known.values()) {
+    if (!m.label) m.label = (m.beefy ? "Estrategia Beefy " : "Manager ") + m.address.slice(0, 8) + "…";
+    m.kind = m.beefy ? "Beefy" : /moo|cow|clm/i.test(m.label) ? "Beefy" : /^x?[A-Z]+-[A-Z]+|hype|gamma/i.test(m.label) ? "Gamma" : /ichi|IV-/i.test(m.label) ? "ICHI" : /steer|SSS/i.test(m.label) ? "Steer" : "otro";
+  }
+  return known;
+}
+
+/** Refresca callReward()/lastHarvest() de las estrategias Beefy conocidas. */
+export async function refreshHarvest(ethers, provider, managers) {
+  const i = vIface(ethers);
+  const list = [...managers.values()].filter((m) => m.beefy);
+  if (!list.length) return;
+  const calls = list.flatMap((m) => [[m.address, i.encodeFunctionData("callReward")], [m.address, i.encodeFunctionData("lastHarvest")]]);
+  const res = await multicall(ethers, provider, calls);
+  list.forEach((m, k) => { if (res[2 * k]) m.callReward = word(res[2 * k], 0); if (res[2 * k + 1]) m.lastHarvest = Number(word(res[2 * k + 1], 0)); });
+}
+
+export const HARVEST_GAS = 650000n;

@@ -151,6 +151,30 @@
     <p class="sub" style="margin-top:8px">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta <b>una sola vez</b>, con el beneficio de su primer bloque, porque al ejecutarla se cierra la diferencia. Es un <b>tope superior</b>: supone que el protocolo gana todas, sin competencia de otros bots. No se envía ninguna transacción.</p>
   </section>
 
+
+  <section class="card" id="vaults">
+    <h2>Vaults, rebalanceos y zaps (punto 6)</h2>
+    <p class="sub">Cada bloque, el bot busca en los pools vigilados transacciones de managers de liquidez (Beefy CLM, Gamma, ICHI, Steer) y de zaps: un <b>rebalanceo</b> es quemar y reabrir posiciones en la misma transacción; un <b>zap</b> es vender y aportar liquidez en una; una <b>salida</b> es retirar y vender. Para cada evento muestra qué habría hecho el protocolo con el desfase que dejó. Detección 100% on-chain, sin APIs de los protocolos.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Eventos (servidor 24/7)</div><div class="v" id="v-ev">—</div><div class="s" id="v-ev-sub"></div></div>
+      <div class="kpi"><div class="l">Eventos que dejaron oportunidad</div><div class="v" id="v-opp">—</div><div class="s" id="v-opp-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio neto tras eventos</div><div class="v" id="v-net">—</div><div class="s">tope superior, sin competencia</div></div>
+      <div class="kpi"><div class="l">Solo esta pestaña</div><div class="v" id="v-sess">—</div><div class="s" id="v-sess-sub">se reinicia al recargar</div></div>
+    </div>
+    <h3 style="font-size:14px;margin:14px 0 4px">Últimos eventos y qué habría hecho el protocolo</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>Bloque</th><th>Tipo</th><th>Manager</th><th>Pool</th><th class="num">Vendido</th><th class="num">Desfase (bps)</th><th>Back-run simulado</th></tr></thead>
+      <tbody id="v-recent"></tbody>
+    </table></div>
+    <details style="margin-top:8px"><summary class="sub" style="cursor:pointer">Managers vistos</summary>
+      <div class="scroll"><table><thead><tr><th>Manager</th><th>Tipo</th><th class="num">Eventos</th><th class="num">Con oportunidad</th><th class="num">Neto</th></tr></thead><tbody id="v-managers"></tbody></table></div>
+    </details>
+    <details style="margin-top:6px"><summary class="sub" style="cursor:pointer">Keeper de harvest (Beefy): recompensa vs gas</summary>
+      <p class="sub">Para cada estrategia de Beefy detectada, lo que pagaría a quien llame <code>harvest()</code> ahora (callReward, en WETH) contra el gas estimado de 650k. Se actualiza cada ~5 min en el servidor.</p>
+      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">Recompensa</th><th class="num">Gas</th><th class="num">Neto</th><th>Último harvest</th><th>¿Vale?</th></tr></thead><tbody id="v-harvest"></tbody></table></div>
+    </details>
+  </section>
+
   <section class="card">
     <h2>Pipeline en este bloque (en tu navegador)</h2>
     <p class="sub">Las 8 etapas del protocolo (punto 1). Se ilumina en verde cuando una ruta pasa el filtro de valor esperado.</p>
