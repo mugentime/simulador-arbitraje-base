@@ -96,11 +96,11 @@ export function v4PoolId(ethers, a, b, fee, tickSpacing, hooks = ZERO) {
 }
 
 /** Pools YA existentes entre cada par de `tokenAddrs`, preguntando a los getters de cada factory. */
-export async function existingPools(ethers, provider, tokenAddrs, factories = FACTORIES) {
+export async function existingPools(ethers, provider, tokenAddrs, factories = FACTORIES, explicitPairs = null) {
   const iface = makeIface(ethers);
   const list = [...new Set(tokenAddrs.map((a) => ethers.getAddress(a)))];
-  const pairs = [];
-  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) pairs.push([list[i], list[j]]);
+  const pairs = explicitPairs ?? [];
+  if (!explicitPairs) for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) pairs.push([list[i], list[j]]);
 
   const calls = [], meta = [];
   for (const f of factories) {
@@ -220,6 +220,47 @@ export async function poolTokens(ethers, provider, addrs) {
     if (t0 && t1) out.set(a, [ethers.getAddress("0x" + t0.slice(-40)), ethers.getAddress("0x" + t1.slice(-40))]);
   });
   return out;
+}
+
+/**
+ * Universo long tail en etapas, para que sea barato con RPC públicos:
+ *  1) pools de los pares principales;
+ *  2) pools creados en la ventana (eventos) -> se cargan y se filtran por liquidez de inmediato
+ *     (la mayoría son polvo y se descartan aquí);
+ *  3) solo para los tokens que sobreviven: sus pools existentes contra WETH/USDC/cbBTC en todos los DEX.
+ */
+export async function longTailUniverse(ethers, provider, { lookback, head, minLiq, progress = () => {} }) {
+  const base = Object.values(TOKENS).map((t) => t.address);
+  const baseMeta = () => new Map(Object.entries(TOKENS).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
+  progress("pares principales");
+  const found = await existingPools(ethers, provider, base);
+  let lastP = 0;
+  const specs = await scanNewPools(ethers, provider, {
+    lookback, head,
+    onProgress: (pr) => { if (Date.now() - lastP > 10000) { lastP = Date.now(); progress(`escaneando ${pr.factory}: ${pr.found} pools nuevos`); } },
+  });
+  progress(`${specs.size} pools nuevos; leyendo sus tokens`);
+  const evm = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);
+  const toks = await poolTokens(ethers, provider, evm);
+  const addrs = new Set(base);
+  for (const [, m] of specs) if (m.kind === "v4") { addrs.add(m.token0); addrs.add(m.token1); }
+  for (const [, [a, b]] of toks) { addrs.add(a); addrs.add(b); }
+  const meta = await tokenMeta(ethers, provider, [...addrs], TOKENS);
+  for (const [k, v] of baseMeta()) meta.set(k, v);
+  progress(`filtrando ${specs.size} pools nuevos por liquidez`);
+  const newPools = filterPools(await loadPools(ethers, provider, specs, meta), base.slice(0, 2), minLiq);
+  const baseSet = new Set(base.map((a) => a.toLowerCase()));
+  const survivors = [...new Set(newPools.flatMap((p) => [p.token0.address, p.token1.address]).filter((a) => !baseSet.has(a.toLowerCase())))];
+  progress(`${newPools.length} pools nuevos con liquidez (${survivors.length} tokens); buscando sus otros pools`);
+  for (const p of newPools) found.set(p.address, specs.get(p.address));
+  for (let i = 0; i < survivors.length; i += 40) {
+    const pairs = survivors.slice(i, i + 40).flatMap((t) => base.map((b) => [b, t]));
+    const part = await existingPools(ethers, provider, [], FACTORIES, pairs);
+    for (const [k, v] of part) if (!found.has(k)) found.set(k, v);
+  }
+  const keepTok = new Set([...baseSet, ...survivors.map((a) => a.toLowerCase())]);
+  const metaList = [...meta.values()].filter((t) => keepTok.has(t.address.toLowerCase()));
+  return { foundEntries: [...found.entries()], metaList };
 }
 
 // ------------------------------------------------------------------ Carga y refresco de pools

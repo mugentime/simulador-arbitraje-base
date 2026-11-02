@@ -122,6 +122,28 @@
   </form>
   <p class="sub" id="universe-note" hidden>Modo long tail: escanea los eventos de creación de pool de Uniswap v2/v3/v4, PancakeSwap v2/v3, Aerodrome y Slipstream en esa ventana, toma los tokens nuevos que tengan al menos 0.05 WETH o 150 USDC de liquidez, y busca sus pools en todos los DEX para cerrar ciclos. Es el nicho que recomienda el punto 1. Los RPC públicos limitan cuántos bloques se pueden leer; si falla, reduce las horas o usa tu propio RPC.</p>
 
+  <section class="card" id="acc">
+    <h2>Acumulado 24/7 (servidor)</h2>
+    <p class="sub">Esto corre en el servidor aunque cierres la página. Todo lo de abajo (pipeline, rutas, sesión) se calcula en tu navegador solo mientras la tienes abierta.</p>
+    <p class="sub" id="acc-status">Consultando el servidor…</p>
+    <details><summary class="sub" style="cursor:pointer">Bitácora del servidor</summary><ul id="acc-diag" class="notes" style="margin:4px 0 0;padding-left:18px"></ul></details>
+    <div class="kpis" style="margin-top:8px">
+      <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="acc-net">—</div><div class="s" id="acc-net-sub"></div></div>
+      <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="acc-eps">—</div><div class="s" id="acc-eps-sub"></div></div>
+      <div class="kpi"><div class="l">De $1 o más</div><div class="v" id="acc-over1">—</div><div class="s" id="acc-over1-sub"></div></div>
+      <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="acc-best">—</div><div class="s" id="acc-best-sub"></div></div>
+      <div class="kpi"><div class="l">Acumulado de esta sesión</div><div class="v" id="acc-session">—</div><div class="s" id="acc-session-sub">desde que abriste la página</div></div>
+    </div>
+    <div class="chartbox" style="margin-top:12px"><svg id="acc-chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg><div id="acc-tip" class="tip" hidden></div></div>
+    <details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Rutas que más han aportado</summary>
+      <div class="scroll"><table><thead><tr><th>Ruta</th><th class="num">Episodios</th><th class="num">Neto acumulado</th></tr></thead><tbody id="acc-routes"></tbody></table></div>
+    </details>
+    <details style="margin-top:6px"><summary class="sub" style="cursor:pointer">Últimas oportunidades registradas</summary>
+      <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="acc-recent"></tbody></table></div>
+    </details>
+    <p class="sub" style="margin-top:8px">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta <b>una sola vez</b>, con el beneficio de su primer bloque, porque al ejecutarla se cierra la diferencia. Es un <b>tope superior</b>: supone que el protocolo gana todas, sin competencia de otros bots. No se envía ninguna transacción.</p>
+  </section>
+
   <section class="card">
     <h2>Pipeline en este bloque</h2>
     <p class="sub">Las 8 etapas del protocolo (punto 1). Se ilumina en verde cuando una ruta pasa el filtro de valor esperado.</p>
@@ -147,26 +169,7 @@
   </section>
 
 
-  <section class="card" id="acc">
-    <h2>Acumulado 24/7 (servidor)</h2>
-    <p class="sub" id="acc-status">Consultando el servidor…</p>
-    <details><summary class="sub" style="cursor:pointer">Bitácora del servidor</summary><ul id="acc-diag" class="notes" style="margin:4px 0 0;padding-left:18px"></ul></details>
-    <div class="kpis" style="margin-top:8px">
-      <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="acc-net">—</div><div class="s" id="acc-net-sub"></div></div>
-      <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="acc-eps">—</div><div class="s" id="acc-eps-sub"></div></div>
-      <div class="kpi"><div class="l">De $1 o más</div><div class="v" id="acc-over1">—</div><div class="s" id="acc-over1-sub"></div></div>
-      <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="acc-best">—</div><div class="s" id="acc-best-sub"></div></div>
-      <div class="kpi"><div class="l">Acumulado de esta sesión</div><div class="v" id="acc-session">—</div><div class="s" id="acc-session-sub">desde que abriste la página</div></div>
-    </div>
-    <div class="chartbox" style="margin-top:12px"><svg id="acc-chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg><div id="acc-tip" class="tip" hidden></div></div>
-    <details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Rutas que más han aportado</summary>
-      <div class="scroll"><table><thead><tr><th>Ruta</th><th class="num">Episodios</th><th class="num">Neto acumulado</th></tr></thead><tbody id="acc-routes"></tbody></table></div>
-    </details>
-    <details style="margin-top:6px"><summary class="sub" style="cursor:pointer">Últimas oportunidades registradas</summary>
-      <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="acc-recent"></tbody></table></div>
-    </details>
-    <p class="sub" style="margin-top:8px">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta <b>una sola vez</b>, con el beneficio de su primer bloque, porque al ejecutarla se cierra la diferencia. Es un <b>tope superior</b>: supone que el protocolo gana todas, sin competencia de otros bots. No se envía ninguna transacción.</p>
-  </section>
+
 
   <section class="card">
     <h2>Mejor beneficio neto por bloque (USD)</h2>

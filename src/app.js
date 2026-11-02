@@ -75,34 +75,13 @@ async function bootstrap() {
     const hours = Math.min(12, Math.max(0.25, Number($("hours").value) || 2));
     const lookback = Math.round((hours * 3600) / 2); // Base: 2 s por bloque
     const head = await state.provider.getBlockNumber();
-    const specs = await core.scanNewPools(ethers, state.provider, {
-      lookback, head,
-      onProgress: (pr) => setStatus(`Escaneando ${pr.factory}: bloques ${pr.from.toLocaleString("es-MX")}–${pr.to.toLocaleString("es-MX")} · ${pr.found} pools nuevos`, "wait"),
+    const { foundEntries, metaList } = await core.longTailUniverse(ethers, state.provider, {
+      lookback, head, minLiq: MIN_LIQ, progress: (m) => setStatus(`Long tail: ${m}…`, "wait"),
     });
-    stage("ingesta", `${specs.size} pools nuevos en ${hours} h`);
-    // tokens de los pools nuevos
-    const evmAddrs = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);
-    const toks = await core.poolTokens(ethers, state.provider, evmAddrs);
-    const tokenAddrs = new Set(Object.values(core.TOKENS).map((t) => t.address));
-    for (const [, m] of specs) if (m.kind === "v4") { tokenAddrs.add(m.token0); tokenAddrs.add(m.token1); }
-    for (const [, [t0, t1]] of toks) { tokenAddrs.add(t0); tokenAddrs.add(t1); }
-    setStatus(`Leyendo ${tokenAddrs.size} tokens…`, "wait");
-    const meta = await core.tokenMeta(ethers, state.provider, [...tokenAddrs], core.TOKENS);
-    for (const [sym, t] of Object.entries(core.TOKENS)) meta.set(t.address.toLowerCase(), { sym, ...t });
-    // pools nuevos + pools existentes de esos tokens en todos los DEX (para cerrar ciclos)
-    setStatus(`Buscando pools existentes de ${meta.size} tokens en todos los DEX…`, "wait");
-    const found = new Map(specs);
-    const tokenList = [...meta.values()].map((t) => t.address);
-    // por lotes de tokens contra los base, para no explotar el número de pares
-    const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
-    const others = tokenList.filter((a) => !baseAddrs.includes(a));
-    for (let i = 0; i < others.length; i += 25) {
-      const part = await core.existingPools(ethers, state.provider, [...baseAddrs, ...others.slice(i, i + 25)]);
-      for (const [k, v] of part) if (!found.has(k)) found.set(k, v);
-    }
-    stage("estado", `${found.size} pools candidatos`, "run");
-    const all = await core.loadPools(ethers, state.provider, found, meta);
-    pools = core.filterPools(all, baseAddrs.slice(0, 2), MIN_LIQ);
+    stage("ingesta", `${foundEntries.length} pools candidatos en ${hours} h`);
+    const meta = new Map(metaList.map((t) => [t.address.toLowerCase(), t]));
+    const all = await core.loadPools(ethers, state.provider, new Map(foundEntries), meta);
+    pools = core.filterPools(all, Object.values(core.TOKENS).map((t) => t.address).slice(0, 2), MIN_LIQ);
     stage("estado", `${pools.length}/${all.length} pools con liquidez mínima`);
   } else {
     const found = await core.existingPools(ethers, state.provider, Object.values(core.TOKENS).map((t) => t.address));

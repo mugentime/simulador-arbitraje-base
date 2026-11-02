@@ -105,33 +105,16 @@ export function accountBlock(stats, block, ts, results) {
 /** Construye el universo: pares principales + long tail de las últimas `ltHours` horas, filtrado por liquidez. */
 export async function buildUniverse(ethers, provider, { ltHours = 2, head, progress = async () => {} } = {}) {
   head = head ?? (await provider.getBlockNumber());
-  const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
-  await progress("pares principales");
-  const found = await core.existingPools(ethers, provider, baseAddrs);
-  let meta = new Map(Object.entries(core.TOKENS).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
-  if (ltHours > 0) {
-    let lastP = 0;
-    const specs = await core.scanNewPools(ethers, provider, {
-      lookback: Math.round((ltHours * 3600) / 2), head,
-      onProgress: (pr) => { if (Date.now() - lastP > 10_000) { lastP = Date.now(); progress(`long tail: ${pr.factory} (${pr.found} pools nuevos)`); } },
-    });
-    await progress(`long tail: ${specs.size} pools nuevos, leyendo tokens`);
-    for (const [k, v] of specs) if (!found.has(k)) found.set(k, v);
-    const evm = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);
-    const toks = await core.poolTokens(ethers, provider, evm);
-    const addrs = new Set(baseAddrs);
-    for (const [, m] of specs) if (m.kind === "v4") { addrs.add(m.token0); addrs.add(m.token1); }
-    for (const [, [a, b]] of toks) { addrs.add(a); addrs.add(b); }
-    meta = await core.tokenMeta(ethers, provider, [...addrs], core.TOKENS);
-    for (const [sym, t] of Object.entries(core.TOKENS)) meta.set(t.address.toLowerCase(), { sym, ...t });
-    const others = [...meta.values()].map((t) => t.address).filter((a) => !baseAddrs.includes(a));
-    for (let i = 0; i < others.length; i += 25) {
-      const part = await core.existingPools(ethers, provider, [...baseAddrs, ...others.slice(i, i + 25)]);
-      for (const [k, v] of part) if (!found.has(k)) found.set(k, v);
-    }
+  if (ltHours <= 0) {
+    const found = await core.existingPools(ethers, provider, Object.values(core.TOKENS).map((t) => t.address));
+    const metaList = Object.entries(core.TOKENS).map(([sym, t]) => ({ sym, ...t }));
+    return fromSpecs(ethers, provider, [...found.entries()], metaList);
   }
-  await progress(`cargando ${found.size} pools`);
-  return fromSpecs(ethers, provider, [...found.entries()], [...meta.values()]);
+  const { foundEntries, metaList } = await core.longTailUniverse(ethers, provider, {
+    lookback: Math.round((ltHours * 3600) / 2), head, minLiq: MIN_LIQ, progress,
+  });
+  await progress(`cargando ${foundEntries.length} pools`);
+  return fromSpecs(ethers, provider, foundEntries, metaList);
 }
 
 /** Reconstruye pools/ciclos a partir de specs guardados (arranque rápido). */
@@ -159,7 +142,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   let events = (await store.get("events")) ?? [];
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
-  const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); };
+  const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); log(phase); };
   await setPhase("armando universo");
 
   let uni;
@@ -174,7 +157,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   stats.universe = { pools: uni.pools.length, cycles: uni.cycles.length, builtAt: new Date(now()).toISOString() };
   await setPhase("procesando bloques");
   let lenders = await core.readLenders(ethers, provider);
-  log(`universo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos`);
+  log(`universo listo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos`);
 
   let last = stats.lastBlock ?? 0;
   let sinceFlush = 0, n = 0;
