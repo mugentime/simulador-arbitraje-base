@@ -7,7 +7,13 @@ import { jsonStore, workerSecret } from "../lib/shared.mts"
 
 export default async (_req: Request, context: Context) => {
   const store = jsonStore()
-  const stats = await store.get("stats")
+  const stats: any = await store.get("stats")
+  // diagnóstico visible en los logs de Netlify (los de funciones en segundo plano no siempre aparecen)
+  console.log(JSON.stringify({
+    phase: stats?.phase ?? null, heartbeatAgeS: stats?.heartbeat ? Math.round((Date.now() - stats.heartbeat) / 1000) : null,
+    runs: stats?.runs ?? 0, blocks: stats?.blocksProcessed ?? 0, lastBlock: stats?.lastBlock ?? null,
+    episodes: stats?.totals?.episodes ?? 0, netUsd: stats?.totals?.netUsd ?? 0, universe: stats?.universe ?? null, lastError: stats?.lastError ?? null,
+  }))
   if (isAlive(stats, Date.now())) {
     console.log("worker vivo; nada que hacer")
     return

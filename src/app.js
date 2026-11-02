@@ -385,53 +385,8 @@ function renderSim() {
       row("= Beneficio neto", fmtUsd(r.netUsd, 4), "total"),
     ].join("");
   }
-  const hiX = r.amountIn > 0n ? (r.amountIn * 30n < r.cap ? r.amountIn * 30n : r.cap) : r.cap;
-  const loX = r.amountIn > 0n ? r.amountIn / 3000n : r.cap / 1000000n;
-  const curve = core.profitCurve(r.startTok.address, r.route, r.segs, loX, hiX, toUsd, r.gasUsd, 60);
-  if (curve.length) drawSimChart(curve, r, Number(curve[0].x), Number(curve[curve.length - 1].x));
 }
 
-function drawSimChart(curve, r, lo, hi) {
-  const svg = $("sim-chart");
-  const W = svg.clientWidth || 640, H = 220, padL = 58, padR = 14, padT = 16, padB = 26;
-  const ys = curve.map((c) => c.netUsd).filter(isFinite);
-  const peak = Math.max(0, ...ys);
-  const floor = -Math.max(peak * 1.5, r.gasUsd * 6, 1e-4);
-  let ymin = Math.max(Math.min(0, ...ys), floor), ymax = Math.max(peak, r.gasUsd * 0.5);
-  const pad = (ymax - ymin) * 0.08 || 1e-4; ymin -= pad; ymax += pad;
-  const X = (x) => padL + (Math.log(Number(x) / lo) / Math.log(hi / lo)) * (W - padL - padR);
-  const Y = (v) => padT + (1 - (v - ymin) / (ymax - ymin)) * (H - padT - padB);
-  const path = curve.map((c, i) => `${i ? "L" : "M"}${X(c.x).toFixed(1)},${Y(c.netUsd).toFixed(1)}`).join("");
-  const yt = [ymin + pad, (ymin + ymax) / 2, ymax - pad];
-  const decades = [];
-  for (let e = Math.ceil(Math.log10(curve[0].xUsd || 1e-9)); e <= Math.log10(curve[curve.length - 1].xUsd); e++) decades.push(10 ** e);
-  const xUsdToX = (u) => { const c = curve.find((c) => c.xUsd >= u); return c ? X(c.x) : null; };
-  const optX = r.amountIn > 0n ? X(r.amountIn) : null, optY = r.amountIn > 0n ? Y(r.netUsd) : null;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.innerHTML = `
-    <defs><clipPath id="sim-clip"><rect x="${padL}" y="${padT - 4}" width="${W - padL - padR}" height="${H - padT - padB + 8}"/></clipPath></defs>
-    ${yt.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${padL - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${fmtAxis(t)}</text>`).join("")}
-    <line x1="${padL}" x2="${W - padR}" y1="${Y(0)}" y2="${Y(0)}" class="zero"/>
-    ${decades.filter((_, i, arr) => W >= 520 || arr.length <= 4 || (arr.length - 1 - i) % 2 === 0).map((u) => { const x = xUsdToX(u); return x ? `<text x="${x}" y="${H - 8}" class="axis" text-anchor="middle">${fmtUsd(u, 0)}</text>` : ""; }).join("")}
-    <g clip-path="url(#sim-clip)"><path d="${path}" class="line"/></g>
-    ${optX !== null ? `<line x1="${optX}" x2="${optX}" y1="${optY}" y2="${Y(0)}" class="seg"/><circle cx="${optX}" cy="${optY}" r="5" class="opt"/><text x="${optX > W * 0.6 ? optX - 10 : optX + 10}" y="${Math.max(optY - 10, padT + 12)}" class="lbl" text-anchor="${optX > W * 0.6 ? "end" : "start"}">óptimo ${fmtAxis(r.amountInUsd)} → ${fmtAxis(r.netUsd)}</text>` : ""}
-    <circle id="sim-dot" r="4" class="dot" cx="-10" cy="-10"/>
-    <rect x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent" id="sim-hit"/>`;
-  const tip = $("sim-tip");
-  const hit = svg.querySelector("#sim-hit");
-  hit.onmousemove = (ev) => {
-    const rect = svg.getBoundingClientRect();
-    const sx = ((ev.clientX - rect.left) / rect.width) * W;
-    let best = curve[0];
-    for (const c of curve) if (Math.abs(X(c.x) - sx) < Math.abs(X(best.x) - sx)) best = c;
-    svg.querySelector("#sim-dot").setAttribute("cx", X(best.x));
-    svg.querySelector("#sim-dot").setAttribute("cy", Y(best.netUsd));
-    tip.hidden = false;
-    tip.style.left = Math.min(rect.width - 210, (X(best.x) / W) * rect.width + 8) + "px";
-    tip.innerHTML = `<b>Pedir ${fmtUsd(best.xUsd, 0)}</b><br>Neto ${fmtUsd(best.netUsd, 4)}`;
-  };
-  hit.onmouseleave = () => { tip.hidden = true; svg.querySelector("#sim-dot").setAttribute("cx", -10); };
-}
 
 $("routes-box").addEventListener("toggle", () => { if ($("routes-box").open && state.ctx) { renderResults(state.ctx.results); renderSim(); } });
 $("pools-box").addEventListener("toggle", () => { if ($("pools-box").open) renderPools(); });
@@ -442,7 +397,6 @@ $("res-body").addEventListener("click", (e) => {
   renderSim();
   $("sim").scrollIntoView({ behavior: "smooth", block: "start" });
 });
-window.addEventListener("resize", () => renderSim());
 
 // ------------------------------------------------------------------ acumulado (sesión + servidor 24/7)
 
