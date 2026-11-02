@@ -101,6 +101,17 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => console.log(`API en :${PORT}, datos en ${DATA_DIR}`));
 process.on("SIGTERM", () => { stopping = true; server.close(); setTimeout(() => process.exit(0), 2000); });
 loop();
+// autocomprobación del frontend público: deja constancia en los logs de que / y /api/stats responden
+const PUBLIC = process.env.RAILWAY_PUBLIC_DOMAIN;
+if (PUBLIC) setTimeout(async () => {
+  for (const path of ["/", "/api/stats"]) {
+    try {
+      const r = await fetch(`https://${PUBLIC}${path}`, { signal: AbortSignal.timeout(10_000) });
+      const body = await r.text();
+      console.log(`${new Date().toISOString()} autocomprobación ${path}: HTTP ${r.status} · ${r.headers.get("content-type")} · ${body.length} bytes${path === "/" ? (body.includes("Worker 24/7") ? " · tablero OK" : " · ¡no es el tablero!") : ""}`);
+    } catch (e) { console.log(`${new Date().toISOString()} autocomprobación ${path}: falló ${e.message}`); }
+  }
+}, 8_000);
 // resumen periódico en los logs de Railway
 setInterval(async () => {
   const st = await store.get("stats");
