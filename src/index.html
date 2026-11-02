@@ -43,7 +43,7 @@
   .st[data-mode="idle"] { opacity: .55; }
   .st[data-mode="hit"] { background: var(--good-bg); border-color: var(--good); }
 
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
   .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .kpi .l { font-size: 12px; color: var(--ink2); }
   .kpi .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
@@ -60,6 +60,8 @@
   td.route { white-space: normal; min-width: 280px; }
   .hop { font-size: 11.5px; color: var(--ink2); }
   tr.win td { background: var(--good-bg); }
+  #res-body tr { cursor: pointer; }
+  #res-body tr.sel td { box-shadow: inset 0 -2px 0 var(--accent); }
   a { color: var(--accent); text-decoration: none; font-family: var(--mono); font-size: 12px; }
 
   .chartbox { position: relative; }
@@ -91,6 +93,8 @@
   svg .lbl { fill: var(--ink); font-size: 11.5px; font-weight: 600; font-family: system-ui; }
   .tip { position: absolute; top: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); width: 200px; }
   svg#sim-chart { width: 100%; height: 240px; display: block; }
+  svg#acc-chart { width: 100%; height: 180px; display: block; }
+  details summary { list-style: revert; }
   table.breakdown td { white-space: normal; }
   table.breakdown td:first-child { color: var(--ink2); width: 55%; }
   table.breakdown tr.total td { font-weight: 650; border-top: 2px solid var(--line); }
@@ -142,6 +146,27 @@
     <div class="kpi"><div class="l">Bloques con oportunidad</div><div class="v" id="k-rate">—</div><div class="s">desde que abriste la página</div></div>
   </section>
 
+
+  <section class="card" id="acc">
+    <h2>Acumulado 24/7 (servidor)</h2>
+    <p class="sub" id="acc-status">Consultando el servidor…</p>
+    <div class="kpis" style="margin-top:8px">
+      <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="acc-net">—</div><div class="s" id="acc-net-sub"></div></div>
+      <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="acc-eps">—</div><div class="s" id="acc-eps-sub"></div></div>
+      <div class="kpi"><div class="l">De $1 o más</div><div class="v" id="acc-over1">—</div><div class="s" id="acc-over1-sub"></div></div>
+      <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="acc-best">—</div><div class="s" id="acc-best-sub"></div></div>
+      <div class="kpi"><div class="l">Acumulado de esta sesión</div><div class="v" id="acc-session">—</div><div class="s" id="acc-session-sub">desde que abriste la página</div></div>
+    </div>
+    <div class="chartbox" style="margin-top:12px"><svg id="acc-chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg><div id="acc-tip" class="tip" hidden></div></div>
+    <details style="margin-top:10px"><summary class="sub" style="cursor:pointer">Rutas que más han aportado</summary>
+      <div class="scroll"><table><thead><tr><th>Ruta</th><th class="num">Episodios</th><th class="num">Neto acumulado</th></tr></thead><tbody id="acc-routes"></tbody></table></div>
+    </details>
+    <details style="margin-top:6px"><summary class="sub" style="cursor:pointer">Últimas oportunidades registradas</summary>
+      <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="acc-recent"></tbody></table></div>
+    </details>
+    <p class="sub" style="margin-top:8px">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta <b>una sola vez</b>, con el beneficio de su primer bloque, porque al ejecutarla se cierra la diferencia. Es un <b>tope superior</b>: supone que el protocolo gana todas, sin competencia de otros bots. No se envía ninguna transacción.</p>
+  </section>
+
   <section class="card">
     <h2>Mejor beneficio neto por bloque (USD)</h2>
     <p class="sub">Por encima de la línea punteada, el protocolo ejecutaría. Pasa el cursor para ver el detalle.</p>
@@ -149,30 +174,26 @@
   </section>
 
   <section class="card">
-    <h2>Mejores rutas de este bloque</h2>
-    <p class="sub">Spread marginal = lo que gana un monto muy pequeño en la ruta, ya con comisiones de los pools. Solo hay arbitraje si es positivo, y solo es rentable si además cubre gas y flashloan.</p>
-    <div class="scroll"><table>
-      <thead><tr><th>Ruta</th><th class="num">Spread marginal (bps)</th><th class="num">Comisiones (bps)</th><th class="num">Monto óptimo</th><th class="num">Bruto</th><th class="num">Flashloan</th><th class="num">Gas</th><th class="num">Neto</th><th>Proveedor</th></tr></thead>
-      <tbody id="res-body"></tbody>
-    </table></div>
+    <details id="routes-box">
+      <summary style="cursor:pointer"><h2 style="display:inline">Detalle: rutas evaluadas en este bloque</h2></summary>
+      <p class="sub" style="margin-top:6px">Las 10 rutas con mejor resultado de todas las que el bot evalúa, y por qué ganan o pierden. Spread marginal = lo que ganaría una operación muy pequeña, ya con comisiones de los pools; si es negativo, cualquier monto pierde. Toca una ruta para ver su préstamo óptimo.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Ruta</th><th class="num">Spread marginal (bps)</th><th class="num">Comisiones (bps)</th><th class="num">Monto óptimo</th><th class="num">Bruto</th><th class="num">Flashloan</th><th class="num">Gas</th><th class="num">Neto</th><th>Proveedor</th></tr></thead>
+        <tbody id="res-body"></tbody>
+      </table></div>
+    </details>
   </section>
 
 
   <section class="card" id="sim">
-    <h2>Simulación de ganancias: ¿cuánto pedir prestado?</h2>
-    <p class="sub">Para la ruta elegida, cuánto ganaría el protocolo según el monto del flashloan, con los datos de este bloque. La ganancia bruta crece y luego cae (cada compra mueve el precio); la comisión del préstamo y el gas se restan. El óptimo es el punto más alto de la curva neta, dentro de la liquidez del proveedor.</p>
-    <div class="simgrid">
-      <label>Ruta<select id="sim-route"></select></label>
-      <label>Escenario<select id="sim-pool"><option value="">Mercado actual (sin cambios)</option></select></label>
-      <label id="sim-dir-wrap" hidden>Alguien vende<select id="sim-dir"></select></label>
-      <label id="sim-amt-wrap" hidden>Cantidad vendida<input id="sim-amt" type="number" min="0" step="any" value="50"></label>
-    </div>
-    <p class="sub" id="sim-scn-note" hidden>Escenario hipotético sobre reservas reales: simula una venta grande en ese pool, que es como nacen las oportunidades que el bot captura (back-running).</p>
-    <div class="legend"><span><i class="sw net"></i>Beneficio neto</span><span><i class="sw gross"></i>Ganancia bruta de la ruta</span><span><i class="sw opt"></i>Monto óptimo</span><span>Eje horizontal: monto prestado en USD, escala logarítmica</span></div>
-    <div class="chartbox"><svg id="sim-chart" role="img" aria-label="Beneficio según el monto prestado"></svg><div id="sim-tip" class="tip" hidden></div></div>
-    <p class="sub" id="sim-opt"></p>
-    <label class="slider">Prueba un monto: <b id="sim-x-label">—</b><input id="sim-slider" type="range" min="0" max="1000" value="500"></label>
+    <h2>Préstamo óptimo de la mejor ruta</h2>
+    <p class="sub" id="sim-route-name">—</p>
+    <p id="sim-opt" style="margin:6px 0 10px"></p>
     <div class="scroll"><table class="breakdown"><tbody id="sim-break"></tbody></table></div>
+    <h3 style="font-size:14px;margin:14px 0 2px">Por qué ese monto</h3>
+    <p class="sub">Beneficio neto según cuánto se pida prestado. Pedir menos deja dinero en la mesa; pedir más mueve tanto el precio que la ganancia cae. El punto marcado es lo que el protocolo pide. Para ver otra ruta, abre "Detalle: rutas evaluadas" más abajo y tócala.</p>
+    <div class="legend"><span><i class="sw net"></i>Beneficio neto</span><span><i class="sw opt"></i>Monto óptimo</span><span>Eje horizontal: monto prestado en USD (escala logarítmica)</span></div>
+    <div class="chartbox"><svg id="sim-chart" role="img" aria-label="Beneficio neto según el monto prestado"></svg><div id="sim-tip" class="tip" hidden></div></div>
   </section>
 
   <section class="card">

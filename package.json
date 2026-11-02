@@ -1,0 +1,10 @@
+{
+  "name": "simulador-arbitraje-base",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^10.0.0",
+    "@netlify/functions": "^4.0.0",
+    "ethers": "^6.13.4"
+  }
+}

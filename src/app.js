@@ -1,4 +1,5 @@
 import * as core from "./core.js";
+import { accountBlock, emptyStats } from "./worker.js";
 
 const ethers = window.ethers;
 const RPCS = [
@@ -17,6 +18,7 @@ const scan = (a) => `https://basescan.org/address/${a}`;
 const state = {
   provider: null, rpc: null, pools: [], cycles: [], lenders: [], lastBlock: 0, history: [],
   blocksSeen: 0, blocksWithOpp: 0, log: [], busy: false, lastBlockTs: 0, chainId: null,
+  session: emptyStats(),
 };
 
 // ------------------------------------------------------------------ pipeline UI
@@ -161,10 +163,12 @@ async function onBlock() {
     state.lastBlock = n;
 
     state.ctx = { gas, ethUsd, results };
+    accountBlock(state.session, n, gas.timestamp, results);
+    renderSession();
     renderKpis(n, gas, ethUsd, results);
-    renderSim();
     renderPools(ethUsd);
     renderResults(results);
+    renderSim();
     renderLog();
     renderChart();
     if (state.blocksSeen % 15 === 1) renderLenders();
@@ -275,7 +279,7 @@ function routeText(r) {
 function renderResults(results) {
   $("res-body").innerHTML = results
     .slice(0, 10)
-    .map((r) => `<tr class="${r.profitable ? "win" : ""}">
+    .map((r) => `<tr data-key="${r.key}" class="${r.profitable ? "win" : ""}">
       <td class="route">${routeText(r)}</td>
       <td class="num">${fmtNum(r.marginalBps, 2)}</td>
       <td class="num">${fmtNum(r.feesBps, 2)}</td>
@@ -335,79 +339,9 @@ function renderChart() {
 }
 
 
-// ------------------------------------------------------------------ simulación de ganancias (dimensionamiento)
+// ------------------------------------------------------------------ préstamo óptimo (solo lectura)
 
-const sim = { routeKey: null, slider: 500, userMovedSlider: false };
-
-function fillScenarioPools() {
-  const sel = $("sim-pool");
-  sel.innerHTML = `<option value="">Mercado actual (sin cambios)</option>` + state.pools
-    .map((p) => `<option value="${p.address}">Venta grande en ${p.dex} ${pairName(p)} ${fmtNum(p.feeBps / 100, p.feeBps < 10 ? 3 : 2)}%</option>`)
-    .join("");
-}
-
-function scenarioPools() {
-  const addr = $("sim-pool").value;
-  if (!addr) return null;
-  const p = state.pools.find((q) => q.address === addr);
-  const dir = $("sim-dir").value;
-  const tok = p.token0.sym === dir ? p.token0 : p.token1;
-  const amt = Number($("sim-amt").value);
-  if (!(amt > 0)) return null;
-  const raw = BigInt(Math.floor(amt * 10 ** Math.min(tok.decimals, 8))) * 10n ** BigInt(Math.max(0, tok.decimals - 8));
-  return core.withSwap(state.pools, addr, tok.address, raw);
-}
-
-function onScenarioPoolChange() {
-  const addr = $("sim-pool").value;
-  const on = !!addr;
-  $("sim-dir-wrap").hidden = $("sim-amt-wrap").hidden = $("sim-scn-note").hidden = !on;
-  if (on) {
-    const p = state.pools.find((q) => q.address === addr);
-    $("sim-dir").innerHTML = [p.token0.sym, p.token1.sym].map((t) => `<option>${t}</option>`).join("");
-    const dir = $("sim-dir").value;
-    $("sim-amt").value = dir === "USDC" ? 150000 : dir === "WETH" ? 50 : 1;
-  }
-  sim.routeKey = null; sim.userMovedSlider = false;
-  renderSim();
-}
-
-function simResults() {
-  if (!state.ctx) return [];
-  const pools = scenarioPools();
-  if (!pools) return state.ctx.results;
-  const cycles = core.enumerateCycles(pools);
-  return core.evaluateAll({ pools, cycles, lenders: state.lenders, gas: state.ctx.gas, ethUsd: state.ctx.ethUsd });
-}
-
-function renderSim() {
-  const results = simResults();
-  const sel = $("sim-route");
-  if (!results.length) { sel.innerHTML = ""; $("sim-chart").innerHTML = ""; $("sim-break").innerHTML = ""; return; }
-  const top = results.slice(0, 15);
-  if (!sim.routeKey || !top.some((r) => r.key === sim.routeKey)) { sim.routeKey = top[0].key; sim.userMovedSlider = false; }
-  sel.innerHTML = top.map((r) => {
-    const txt = routeText(r).replace(/<[^>]+>/g, "");
-    return `<option value="${r.key}" ${r.key === sim.routeKey ? "selected" : ""}>${fmtUsd(r.netUsd, 2)} · ${txt}</option>`;
-  }).join("");
-  const r = top.find((x) => x.key === sim.routeKey);
-  const toUsd = core.tokenToUsd(r.startTok, state.ctx.ethUsd);
-  // rango de montos: alrededor del óptimo si existe; si no, todo el rango posible
-  const hiX = r.amountIn > 0n ? (r.amountIn * 30n < r.cap ? r.amountIn * 30n : r.cap) : r.cap;
-  const loX = r.amountIn > 0n ? r.amountIn / 3000n : r.cap / 1000000n;
-  const curve = core.profitCurve(r.startTok.address, r.route, r.segs, loX, hiX, toUsd, r.gasUsd);
-  if (!curve.length) return;
-  // posición inicial del deslizador: el óptimo (o la mitad si no hay óptimo)
-  const lo = Number(curve[0].x), hi = Number(curve[curve.length - 1].x);
-  const fracOf = (x) => Math.log(Number(x) / lo) / Math.log(hi / lo);
-  if (!sim.userMovedSlider) sim.slider = Math.round(1000 * (r.amountIn > 0n ? Math.min(1, Math.max(0, fracOf(r.amountIn))) : 0.5));
-  $("sim-slider").value = sim.slider;
-  drawSimChart(curve, r, lo, hi);
-  renderBreakdown(r, lo, hi, toUsd);
-  $("sim-opt").innerHTML = r.amountIn > 0n
-    ? `<b>Óptimo:</b> pedir ${fmtUsd(r.amountInUsd, 0)} (${fmtTok(r.amountIn, r.startTok)}) a ${r.lender} → bruto ${fmtUsd(r.grossUsd, 4)}, flashloan ${fmtUsd(r.flashFeeUsd, 4)}, gas ${fmtUsd(r.gasUsd, 4)}, <b>neto ${fmtUsd(r.netUsd, 4)}</b>${r.netUsd > 0 ? " · el protocolo la ejecutaría." : " · no cubre el gas: no se envía."}`
-    : `<b>Sin monto rentable:</b> en esta ruta cualquier préstamo pierde dinero porque el spread (${fmtNum(r.marginalBps, 2)} bps) no cubre las comisiones de los pools. El óptimo es no pedir nada.`;
-}
+const sim = { routeKey: null, pinned: false };
 
 function fmtAxis(v) {
   const a = Math.abs(v), sign = v < 0 ? "−" : "";
@@ -422,64 +356,70 @@ function fmtTok(x, tok) {
   return `${fmtNum(v, v >= 100 ? 2 : v >= 1 ? 4 : 6)} ${tok.sym}`;
 }
 
-function amountAtSlider(r, lo, hi) {
-  if (!sim.userMovedSlider && r.amountIn > 0n) return r.amountIn;
-  return BigInt(Math.max(1, Math.floor(lo * Math.pow(hi / lo, sim.slider / 1000))));
-}
+function fillScenarioPools() { /* ya no hay escenarios */ }
 
-function renderBreakdown(r, lo, hi, toUsd) {
-  const x = amountAtSlider(r, lo, hi);
-  const out = core.routeOut(x, r.startTok.address, r.route);
-  const l = core.lenderFor(r.segs, x);
-  const fee = l ? l.fee : 0n;
-  const gross = out - x;
-  const net = toUsd(gross - fee) - r.gasUsd;
-  $("sim-x-label").textContent = `${fmtUsd(toUsd(x), 0)} (${fmtTok(x, r.startTok)})`;
-  const row = (k, v, cls = "") => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
-  $("sim-break").innerHTML = [
-    row("1. Pide prestado", `${fmtTok(x, r.startTok)} · ${fmtUsd(toUsd(x), 2)}`),
-    row("2. Proveedor del flashloan", l ? `${l.name} (${fmtNum(Number(l.bps) / 100, 2)}%)` : "ninguno tiene tanta liquidez"),
-    row("3. Recibe al final de la ruta", `${fmtTok(out, r.startTok)} · ${fmtUsd(toUsd(out), 2)}`),
-    row("4. Devuelve al proveedor", `${fmtTok(x + fee, r.startTok)}`),
-    row("Ganancia bruta de la ruta", fmtUsd(toUsd(gross), 4)),
-    row("− Comisión del flashloan", fmtUsd(toUsd(fee), 4)),
-    row("− Gas (L2 + L1)", fmtUsd(r.gasUsd, 4)),
-    row("= Beneficio neto", fmtUsd(net, 4), "total"),
-    row("Resultado en cadena", !l ? "revierte: no hay préstamo posible" : net > 0 ? "se ejecuta y el beneficio va al owner" : "revierte por minProfit: solo se pierde el gas si se envía"),
-  ].join("");
+function renderSim() {
+  const results = state.ctx ? state.ctx.results : [];
+  if (!results.length) return;
+  // por defecto: la mejor ruta del bloque; si el usuario tocó una ruta, se mantiene mientras exista
+  let r = sim.pinned ? results.find((x) => x.key === sim.routeKey) : null;
+  if (!r) { r = results[0]; sim.routeKey = r.key; sim.pinned = false; }
+  document.querySelectorAll("#res-body tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.key === r.key));
+  $("sim-route-name").innerHTML = `${sim.pinned ? "Ruta elegida" : "Mejor ruta del bloque"}: ${routeText(r)}${sim.pinned ? ' · <a href="#" id="sim-unpin">volver a la mejor</a>' : ""}`;
+  const un = $("sim-unpin");
+  if (un) un.onclick = (e) => { e.preventDefault(); sim.pinned = false; renderSim(); };
+  const toUsd = core.tokenToUsd(r.startTok, state.ctx.ethUsd);
+
+  if (r.amountIn === 0n) {
+    $("sim-opt").innerHTML = `<b>No se pide nada.</b> En esta ruta cualquier préstamo pierde dinero: la diferencia de precio (${fmtNum(r.marginalBps, 2)} bps) no cubre las comisiones de los pools.`;
+    $("sim-break").innerHTML = "";
+  } else {
+    const x = r.amountIn;
+    const out = core.routeOut(x, r.startTok.address, r.route);
+    const l = core.lenderFor(r.segs, x);
+    const fee = l ? l.fee : 0n;
+    $("sim-opt").innerHTML = `<b>Pide ${fmtUsd(r.amountInUsd, 0)} a ${r.lender}</b> → beneficio neto <b>${fmtUsd(r.netUsd, 4)}</b>${r.netUsd > 0 ? " · el protocolo la ejecutaría" : " · no cubre el gas: no se envía"}${r.needsV4 ? " · requiere hop v4 (aún no soportado por el contrato)" : ""}.`;
+    const row = (k, v, cls = "") => `<tr class="${cls}"><td>${k}</td><td class="num">${v}</td></tr>`;
+    $("sim-break").innerHTML = [
+      row(`1. Pide prestado a ${l ? l.name : "—"} (comisión ${l ? fmtNum(Number(l.bps) / 100, 2) : "—"}%)`, `${fmtTok(x, r.startTok)} · ${fmtUsd(toUsd(x), 2)}`),
+      row("2. Recorre la ruta y recibe", `${fmtTok(out, r.startTok)} · ${fmtUsd(toUsd(out), 2)}`),
+      row("3. Devuelve el préstamo", `${fmtTok(x + fee, r.startTok)}`),
+      row("Ganancia de la ruta", fmtUsd(toUsd(out - x), 4)),
+      row("− Comisión del flashloan", fmtUsd(toUsd(fee), 4)),
+      row("− Gas (L2 + L1)", fmtUsd(r.gasUsd, 4)),
+      row("= Beneficio neto", fmtUsd(r.netUsd, 4), "total"),
+    ].join("");
+  }
+  const hiX = r.amountIn > 0n ? (r.amountIn * 30n < r.cap ? r.amountIn * 30n : r.cap) : r.cap;
+  const loX = r.amountIn > 0n ? r.amountIn / 3000n : r.cap / 1000000n;
+  const curve = core.profitCurve(r.startTok.address, r.route, r.segs, loX, hiX, toUsd, r.gasUsd, 60);
+  if (curve.length) drawSimChart(curve, r, Number(curve[0].x), Number(curve[curve.length - 1].x));
 }
 
 function drawSimChart(curve, r, lo, hi) {
   const svg = $("sim-chart");
-  const W = svg.clientWidth || 640, H = 240, padL = 58, padR = 14, padT = 16, padB = 30;
-  const ys = curve.flatMap((c) => [c.netUsd, c.grossUsd]).filter(isFinite);
+  const W = svg.clientWidth || 640, H = 220, padL = 58, padR = 14, padT = 16, padB = 26;
+  const ys = curve.map((c) => c.netUsd).filter(isFinite);
   const peak = Math.max(0, ...ys);
-  const floor = -Math.max(peak * 1.5, r.gasUsd * 6, 1e-4); // recorta la cola: lo que importa es la zona del óptimo
+  const floor = -Math.max(peak * 1.5, r.gasUsd * 6, 1e-4);
   let ymin = Math.max(Math.min(0, ...ys), floor), ymax = Math.max(peak, r.gasUsd * 0.5);
   const pad = (ymax - ymin) * 0.08 || 1e-4; ymin -= pad; ymax += pad;
   const X = (x) => padL + (Math.log(Number(x) / lo) / Math.log(hi / lo)) * (W - padL - padR);
   const Y = (v) => padT + (1 - (v - ymin) / (ymax - ymin)) * (H - padT - padB);
-  const path = (k) => curve.filter((c) => isFinite(c[k])).map((c, i) => `${i ? "L" : "M"}${X(c.x).toFixed(1)},${Y(c[k]).toFixed(1)}`).join("");
+  const path = curve.map((c, i) => `${i ? "L" : "M"}${X(c.x).toFixed(1)},${Y(c.netUsd).toFixed(1)}`).join("");
   const yt = [ymin + pad, (ymin + ymax) / 2, ymax - pad];
   const decades = [];
-  for (let e = Math.ceil(Math.log10(Number(curve[0].xUsd) || 1e-9)); e <= Math.log10(Number(curve[curve.length - 1].xUsd)); e++) decades.push(10 ** e);
-  const xUsdToX = (u) => { const i = curve.findIndex((c) => c.xUsd >= u); return i < 0 ? null : X(curve[i].x); };
-  // cambios de proveedor (límite de liquidez)
-  const switches = [];
-  for (let i = 1; i < curve.length; i++) if (curve[i].lender !== curve[i - 1].lender) switches.push({ x: X(curve[i].x), name: curve[i].lender });
-  const optX = r.amountIn > 0n ? X(r.amountIn) : null;
-  const optY = r.amountIn > 0n ? Y(r.netUsd) : null;
+  for (let e = Math.ceil(Math.log10(curve[0].xUsd || 1e-9)); e <= Math.log10(curve[curve.length - 1].xUsd); e++) decades.push(10 ** e);
+  const xUsdToX = (u) => { const c = curve.find((c) => c.xUsd >= u); return c ? X(c.x) : null; };
+  const optX = r.amountIn > 0n ? X(r.amountIn) : null, optY = r.amountIn > 0n ? Y(r.netUsd) : null;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = `
     <defs><clipPath id="sim-clip"><rect x="${padL}" y="${padT - 4}" width="${W - padL - padR}" height="${H - padT - padB + 8}"/></clipPath></defs>
     ${yt.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${padL - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${fmtAxis(t)}</text>`).join("")}
     <line x1="${padL}" x2="${W - padR}" y1="${Y(0)}" y2="${Y(0)}" class="zero"/>
-    ${decades.filter((_, i, arr) => W >= 520 || arr.length <= 4 || (arr.length - 1 - i) % 2 === 0).map((u) => { const x = xUsdToX(u); return x ? `<text x="${x}" y="${H - 10}" class="axis" text-anchor="middle">${fmtUsd(u, 0)}</text>` : ""; }).join("")}
-    ${switches.map((s) => `<line x1="${s.x}" x2="${s.x}" y1="${padT}" y2="${H - padB}" class="seg"/><text x="${s.x + 4}" y="${padT + 10}" class="axis">→ ${s.name}</text>`).join("")}
-    <g clip-path="url(#sim-clip)"><path d="${path("grossUsd")}" class="line2"/>
-    <path d="${path("netUsd")}" class="line"/></g>
+    ${decades.filter((_, i, arr) => W >= 520 || arr.length <= 4 || (arr.length - 1 - i) % 2 === 0).map((u) => { const x = xUsdToX(u); return x ? `<text x="${x}" y="${H - 8}" class="axis" text-anchor="middle">${fmtUsd(u, 0)}</text>` : ""; }).join("")}
+    <g clip-path="url(#sim-clip)"><path d="${path}" class="line"/></g>
     ${optX !== null ? `<line x1="${optX}" x2="${optX}" y1="${optY}" y2="${Y(0)}" class="seg"/><circle cx="${optX}" cy="${optY}" r="5" class="opt"/><text x="${optX > W * 0.6 ? optX - 10 : optX + 10}" y="${Math.max(optY - 10, padT + 12)}" class="lbl" text-anchor="${optX > W * 0.6 ? "end" : "start"}">óptimo ${fmtAxis(r.amountInUsd)} → ${fmtAxis(r.netUsd)}</text>` : ""}
-    <line id="sim-sel" class="sel" y1="${padT}" y2="${H - padB}" x1="${X(amountAtSlider(r, lo, hi))}" x2="${X(amountAtSlider(r, lo, hi))}"/>
     <circle id="sim-dot" r="4" class="dot" cx="-10" cy="-10"/>
     <rect x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent" id="sim-hit"/>`;
   const tip = $("sim-tip");
@@ -493,24 +433,95 @@ function drawSimChart(curve, r, lo, hi) {
     svg.querySelector("#sim-dot").setAttribute("cy", Y(best.netUsd));
     tip.hidden = false;
     tip.style.left = Math.min(rect.width - 210, (X(best.x) / W) * rect.width + 8) + "px";
-    tip.innerHTML = `<b>Préstamo ${fmtUsd(best.xUsd, 0)}</b><br>Bruto ${fmtUsd(best.grossUsd, 4)}<br>Flashloan ${fmtUsd(best.feeUsd, 4)} (${best.lender})<br>Gas ${fmtUsd(best.gasUsd, 4)}<br><b>Neto ${fmtUsd(best.netUsd, 4)}</b>`;
+    tip.innerHTML = `<b>Pedir ${fmtUsd(best.xUsd, 0)}</b><br>Neto ${fmtUsd(best.netUsd, 4)}`;
   };
   hit.onmouseleave = () => { tip.hidden = true; svg.querySelector("#sim-dot").setAttribute("cx", -10); };
-  hit.onclick = (ev) => {
-    const rect = svg.getBoundingClientRect();
-    const f = (((ev.clientX - rect.left) / rect.width) * W - padL) / (W - padL - padR);
-    sim.slider = Math.round(1000 * Math.min(1, Math.max(0, f)));
-    sim.userMovedSlider = true;
-    renderSim();
-  };
 }
 
-$("sim-route").addEventListener("change", (e) => { sim.routeKey = e.target.value; sim.userMovedSlider = false; renderSim(); });
-$("sim-pool").addEventListener("change", onScenarioPoolChange);
-$("sim-dir").addEventListener("change", () => { sim.routeKey = null; sim.userMovedSlider = false; renderSim(); });
-$("sim-amt").addEventListener("input", () => { sim.routeKey = null; sim.userMovedSlider = false; renderSim(); });
-$("sim-slider").addEventListener("input", (e) => { sim.slider = Number(e.target.value); sim.userMovedSlider = true; renderSim(); });
+$("res-body").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr");
+  if (!tr || !tr.dataset.key) return;
+  sim.routeKey = tr.dataset.key; sim.pinned = true;
+  renderSim();
+  $("sim").scrollIntoView({ behavior: "smooth", block: "start" });
+});
 window.addEventListener("resize", () => renderSim());
+
+// ------------------------------------------------------------------ acumulado (sesión + servidor 24/7)
+
+function renderSession() {
+  const t = state.session.totals;
+  $("acc-session").textContent = fmtUsd(t.netUsd, 2);
+  $("acc-session-sub").textContent = `${t.episodes} oportunidades en ${state.session.blocksProcessed} bloques desde que abriste la página`;
+}
+
+async function loadServerStats() {
+  if (location.protocol === "file:") {
+    $("acc-status").textContent = "El acumulado 24/7 solo está disponible en la versión publicada (simulador-arbitraje-base.netlify.app).";
+    return;
+  }
+  let d;
+  try {
+    const r = await fetch("/api/stats", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    d = await r.json();
+  } catch (e) {
+    $("acc-status").textContent = "No se pudo leer el servidor: " + e.message;
+    return;
+  }
+  if (!d.ready) { $("acc-status").textContent = "El servidor todavía no procesa su primer bloque. Arranca solo cada 5 minutos."; return; }
+  const ago = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
+  const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
+  const since = d.startedAt ? new Date(d.startedAt) : null;
+  const days = since ? Math.max(1 / 24, (d.now - since.getTime()) / 86400000) : 1;
+  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${ago !== null ? ` hace ${ago} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
+  const t = d.totals;
+  $("acc-net").textContent = fmtUsd(t.netUsd, 2);
+  $("acc-net-sub").textContent = `≈ ${fmtUsd(t.netUsd / days, 2)} por día · gas pagado ${fmtUsd(t.gasUsd, 2)}`;
+  $("acc-eps").textContent = t.episodes.toLocaleString("es-MX");
+  $("acc-eps-sub").textContent = `${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren hop v4` : ""}`;
+  $("acc-over1").textContent = t.over1Usd.toLocaleString("es-MX");
+  $("acc-over1-sub").textContent = `suman ${fmtUsd(t.over1NetUsd, 2)}`;
+  $("acc-best").textContent = d.best ? fmtUsd(d.best.netUsd, 2) : "—";
+  $("acc-best-sub").textContent = d.best ? `bloque ${d.best.block.toLocaleString("es-MX")} · préstamo ${fmtUsd(d.best.amountUsd, 0)}` : "";
+  $("acc-routes").innerHTML = d.topRoutes.map((r) => `<tr><td class="route">${r.label}</td><td class="num">${r.episodes}</td><td class="num strong">${fmtUsd(r.netUsd, 2)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Sin oportunidades todavía.</td></tr>`;
+  $("acc-recent").innerHTML = d.recent.map((e) => `<tr><td>${e.block.toLocaleString("es-MX")}</td><td>${new Date(e.ts * 1000).toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" })}</td><td class="route">${e.route}${e.needsV4 ? ' <span class="hop">· requiere hop v4</span>' : ""}</td><td class="num">${fmtUsd(e.amountUsd, 0)}</td><td class="num strong">${fmtUsd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin oportunidades todavía.</td></tr>`;
+  drawAccChart(d.hourly);
+}
+
+function drawAccChart(hourly) {
+  const svg = $("acc-chart");
+  if (!hourly || hourly.length < 2) { svg.innerHTML = `<text x="8" y="20" class="axis">La gráfica aparece tras la segunda hora de datos.</text>`; return; }
+  let acc = 0;
+  const pts = hourly.map((h) => ({ h: h.h, v: (acc += h.netUsd), eps: h.episodes, net: h.netUsd }));
+  const W = svg.clientWidth || 640, H = 180, padL = 58, padR = 12, padT = 12, padB = 24;
+  const lo = Math.min(0, ...pts.map((p) => p.v)), hi = Math.max(1e-6, ...pts.map((p) => p.v));
+  const X = (i) => padL + (i / (pts.length - 1)) * (W - padL - padR);
+  const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const lbl = (h) => new Date(h * 3600 * 1000).toLocaleString("es-MX", { day: "2-digit", month: "short", hour: "2-digit" });
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = `
+    ${[lo, (lo + hi) / 2, hi].map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${padL - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${fmtAxis(t)}</text>`).join("")}
+    <path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" class="line"/>
+    <text x="${padL}" y="${H - 6}" class="axis">${lbl(pts[0].h)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${lbl(pts[pts.length - 1].h)}</text>
+    <circle id="acc-dot" r="4" class="dot" cx="-10" cy="-10"/>
+    <rect x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent" id="acc-hit"/>`;
+  const tip = $("acc-tip");
+  svg.querySelector("#acc-hit").onmousemove = (ev) => {
+    const r = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round(((((ev.clientX - r.left) / r.width) * W - padL) / (W - padL - padR)) * (pts.length - 1))));
+    const p = pts[i];
+    svg.querySelector("#acc-dot").setAttribute("cx", X(i)); svg.querySelector("#acc-dot").setAttribute("cy", Y(p.v));
+    tip.hidden = false;
+    tip.style.left = Math.min(r.width - 210, (X(i) / W) * r.width + 8) + "px";
+    tip.innerHTML = `<b>${lbl(p.h)} h</b><br>Acumulado ${fmtUsd(p.v, 2)}<br>Esa hora: ${p.eps} oportunidades, ${fmtUsd(p.net, 2)}`;
+  };
+  svg.querySelector("#acc-hit").onmouseleave = () => { tip.hidden = true; };
+}
+
+loadServerStats();
+setInterval(loadServerStats, 15000);
 
 // ------------------------------------------------------------------ inicio
 
