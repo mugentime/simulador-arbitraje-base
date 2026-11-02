@@ -3,7 +3,7 @@
 // tenga la página abierta.
 import type { Config, Context } from "@netlify/functions"
 import { isAlive } from "../../src/worker.js"
-import { jsonStore, workerSecret } from "../lib/shared.mts"
+import { diag, jsonStore, workerSecret } from "../lib/shared.mts"
 
 export default async (_req: Request, context: Context) => {
   const store = jsonStore()
@@ -14,14 +14,11 @@ export default async (_req: Request, context: Context) => {
     runs: stats?.runs ?? 0, blocks: stats?.blocksProcessed ?? 0, lastBlock: stats?.lastBlock ?? null,
     episodes: stats?.totals?.episodes ?? 0, netUsd: stats?.totals?.netUsd ?? 0, universe: stats?.universe ?? null, lastError: stats?.lastError ?? null,
   }))
-  if (isAlive(stats, Date.now())) {
-    console.log("worker vivo; nada que hacer")
-    return
-  }
+  if (isAlive(stats, Date.now())) return // vivo: nada que hacer
   const token = await workerSecret(store)
   const base = context.site?.url || Netlify.env.get("URL")
   const res = await fetch(`${base}/api/worker-run`, { method: "POST", headers: { "x-worker-token": token } })
-  console.log(`worker lanzado: ${res.status}`)
+  await diag(store, `programador: worker lanzado (HTTP ${res.status})`)
 }
 
 export const config: Config = { schedule: "*/5 * * * *" }

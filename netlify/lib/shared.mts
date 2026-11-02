@@ -42,3 +42,13 @@ export async function workerSecret(store: ReturnType<typeof jsonStore>): Promise
   await store.set("secret", { token })
   return token
 }
+
+/** Bitácora corta en Blobs (últimas 30 líneas) para ver qué hace el worker desde la página. */
+export async function diag(store: ReturnType<typeof jsonStore>, msg: string) {
+  try {
+    const list = ((await store.get("diag")) as { t: number; m: string }[] | null) ?? []
+    list.push({ t: Date.now(), m: msg })
+    await store.set("diag", list.slice(-30))
+  } catch { /* la bitácora nunca debe tumbar al worker */ }
+  console.log(msg)
+}

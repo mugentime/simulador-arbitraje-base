@@ -7,13 +7,14 @@ export default async () => {
   const store = jsonStore()
   const stats: any = await store.get("stats")
   const events: any[] = ((await store.get("events")) as any[]) ?? []
-  if (!stats) return Response.json({ ready: false }, { headers: { "cache-control": "no-store" } })
+  const diagLog: any[] = (((await store.get("diag")) as any[]) ?? []).slice(-8).reverse()
+  if (!stats) return Response.json({ ready: false, diag: diagLog, now: Date.now() }, { headers: { "cache-control": "no-store" } })
   const topRoutes = Object.values(stats.byRoute ?? {})
     .sort((a: any, b: any) => b.netUsd - a.netUsd)
     .slice(0, 10)
   const { open, byRoute, ...rest } = stats
   return Response.json(
-    { ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), ...rest, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse() },
+    { ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), ...rest, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog },
     { headers: { "cache-control": "no-store" } },
   )
 }

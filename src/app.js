@@ -420,12 +420,14 @@ async function loadServerStats() {
     $("acc-status").textContent = "No se pudo leer el servidor: " + e.message;
     return;
   }
+  const ago = (t) => { const m = Math.round((d.now - t) / 60000); return m < 1 ? "hace <1 min" : `hace ${m} min`; };
+  $("acc-diag").innerHTML = (d.diag || []).map((x) => `<li>${ago(x.t)} · ${x.m}</li>`).join("") || "<li>Sin registros todavía.</li>";
   if (!d.ready) { $("acc-status").textContent = "El servidor todavía no procesa su primer bloque. Arranca solo cada 5 minutos."; return; }
-  const ago = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
+  const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
   const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
   const since = d.startedAt ? new Date(d.startedAt) : null;
   const days = since ? Math.max(1 / 24, (d.now - since.getTime()) / 86400000) : 1;
-  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${ago !== null ? ` hace ${ago} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
+  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${agoS !== null ? ` hace ${agoS} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
   const t = d.totals;
   $("acc-net").textContent = fmtUsd(t.netUsd, 2);
   $("acc-net-sub").textContent = `≈ ${fmtUsd(t.netUsd / days, 2)} por día · gas pagado ${fmtUsd(t.gasUsd, 2)}`;
