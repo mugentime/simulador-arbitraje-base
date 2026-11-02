@@ -385,14 +385,15 @@ function renderSession() {
   $("acc-session-sub").textContent = `${t.episodes} oportunidades en ${state.session.blocksProcessed} bloques desde que abriste la página`;
 }
 
+const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
 async function loadServerStats() {
-  if (location.protocol === "file:") {
+  if (location.protocol === "file:" && !STATS_URL.startsWith("http")) {
     $("acc-status").textContent = "El acumulado 24/7 solo está disponible en la versión publicada (simulador-arbitraje-base.netlify.app).";
     return;
   }
   let d;
   try {
-    const r = await fetch("/api/stats", { cache: "no-store" });
+    const r = await fetch(STATS_URL, { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     d = await r.json();
   } catch (e) {
@@ -406,7 +407,7 @@ async function loadServerStats() {
   const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
   const since = d.startedAt ? new Date(d.startedAt) : null;
   const days = since ? Math.max(1 / 24, (d.now - since.getTime()) / 86400000) : 1;
-  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${agoS !== null ? ` hace ${agoS} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
+  $("acc-status").innerHTML = `${d.host === "railway" ? "Railway · " : "Netlify · "}${d.alive ? "● Servidor activo" : "○ Servidor en pausa"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${agoS !== null ? ` hace ${agoS} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
   const t = d.totals;
   $("acc-net").textContent = fmtUsd(t.netUsd, 2);
   $("acc-net-sub").textContent = `≈ ${fmtUsd(t.netUsd / days, 2)} por día · gas pagado ${fmtUsd(t.gasUsd, 2)}`;

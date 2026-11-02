@@ -18,3 +18,10 @@ vía StateView y se marca como "requiere hop v4" porque el contrato aún no lo e
 Contabilidad del acumulado: una ruta rentable en bloques consecutivos cuenta una vez (primer bloque). Es un tope
 superior: supone que el protocolo gana todas. Variables opcionales: `RPC_URL` (RPC propio de Base), `LT_HOURS`
 (ventana long tail del worker, por defecto 2).
+
+## Servicio 24/7 en Railway
+
+`server/index.mjs` corre el worker sin parar (tandas de 1 h) y expone `GET /api/stats` con CORS para el panel.
+Railway lo arranca con `npm start` desde la raíz del repo. Recomendado: un volumen montado en `/data` para que
+el acumulado sobreviva a reinicios. Variables opcionales: `RPC_URL`, `LT_HOURS`. Cuando el servicio tenga dominio
+público, se pone su URL + `/api/stats` en `<meta name="stats-url">` de la página.
