@@ -161,6 +161,7 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
       try {
         logs = await provider.getLogs({ address: f.address, topics: [topicOf[f.kind]], fromBlock: from, toBlock: to });
       } catch (e) {
+        onProgress?.({ factory: f.name, from, to, head, found: specs.size, error: (e.shortMessage || e.message || "").slice(0, 120), size });
         if (size > 100) { size = Math.max(100, Math.floor(size / 2)); continue; } // el RPC limita el rango: reducir
         throw e;
       }
@@ -237,7 +238,10 @@ export async function longTailUniverse(ethers, provider, { lookback, head, minLi
   let lastP = 0;
   const specs = await scanNewPools(ethers, provider, {
     lookback, head,
-    onProgress: (pr) => { if (Date.now() - lastP > 10000) { lastP = Date.now(); progress(`escaneando ${pr.factory}: ${pr.found} pools nuevos`); } },
+    onProgress: (pr) => {
+      if (pr.error) { progress(`getLogs ${pr.factory} (${pr.size} bloques) falló: ${pr.error}`); return; }
+      if (Date.now() - lastP > 10000) { lastP = Date.now(); progress(`escaneando ${pr.factory}: ${pr.found} pools nuevos`); }
+    },
   });
   progress(`${specs.size} pools nuevos; leyendo sus tokens`);
   const evm = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);

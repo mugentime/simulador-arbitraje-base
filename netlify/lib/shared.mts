@@ -23,7 +23,9 @@ export async function baseProvider() {
   const list = custom ? [custom, ...RPCS] : RPCS
   for (const url of list) {
     try {
-      const p = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 })
+      const req = new ethers.FetchRequest(url)
+      req.timeout = 15_000 // ninguna llamada puede colgar al worker más de 15 s
+      const p = new ethers.JsonRpcProvider(req, 8453, { staticNetwork: true, batchMaxCount: 1 })
       await p.getBlockNumber()
       return { provider: p, url }
     } catch { /* siguiente */ }
