@@ -13,6 +13,11 @@ const LT_HOURS = Number(process.env.LT_HOURS ?? 2);
 const PORT = Number(process.env.PORT || 8080);
 const CHAIN_ID = BigInt(process.env.CHAIN_ID || 8453);
 fs.mkdirSync(DATA_DIR, { recursive: true });
+const VERSION = {
+  commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "local").slice(0, 7),
+  message: (process.env.RAILWAY_GIT_COMMIT_MESSAGE || "").split("\n")[0].slice(0, 120),
+  startedAt: Date.now(),
+};
 
 // ---------------------------------------------------------------- store en disco (JSON por clave, escritura atómica)
 const cache = new Map();
@@ -80,11 +85,11 @@ const server = http.createServer(async (req, res) => {
     const stats = await store.get("stats");
     const events = (await store.get("events")) ?? [];
     const diagLog = ((await store.get("diag")) ?? []).slice(-8).reverse();
-    if (!stats) { res.writeHead(200, headers); return res.end(JSON.stringify({ ready: false, diag: diagLog, now: Date.now(), host: "railway" })); }
+    if (!stats) { res.writeHead(200, headers); return res.end(JSON.stringify({ ready: false, diag: diagLog, now: Date.now(), host: "railway", version: VERSION })); }
     const topRoutes = Object.values(stats.byRoute ?? {}).sort((a, b) => b.netUsd - a.netUsd).slice(0, 10);
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(JSON.stringify({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog }));
+    return res.end(JSON.stringify({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", version: VERSION, ...rest, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog }));
   }
   if (req.url === "/" || req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   res.writeHead(404, headers); res.end("{}");

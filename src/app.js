@@ -398,8 +398,16 @@ async function loadServerStats() {
     d = await r.json();
   } catch (e) {
     $("acc-status").textContent = "No se pudo leer el servidor: " + e.message;
+    $("srv-badge").dataset.kind = "bad";
+    $("srv-badge").textContent = "✕ Sin conexión con el servidor 24/7 (" + e.message + ")";
     return;
   }
+  const v = d.version || {};
+  const upMin = v.startedAt ? Math.round((d.now - v.startedAt) / 60000) : null;
+  const where = d.host === "railway" ? "Railway" : "Netlify";
+  $("srv-badge").dataset.kind = d.alive ? "ok" : "wait";
+  $("srv-badge").textContent = `${d.alive ? "●" : "○"} ${d.alive ? "En vivo" : "En pausa"} en ${where}${v.commit ? ` · versión ${v.commit}` : ""}${upMin !== null ? ` · arrancó hace ${upMin < 60 ? upMin + " min" : fmtNum(upMin / 60, 1) + " h"}` : ""}`;
+  $("srv-badge").title = v.message || "";
   const ago = (t) => { const m = Math.round((d.now - t) / 60000); return m < 1 ? "hace <1 min" : `hace ${m} min`; };
   $("acc-diag").innerHTML = (d.diag || []).map((x) => `<li>${ago(x.t)} · ${x.m}</li>`).join("") || "<li>Sin registros todavía.</li>";
   if (!d.ready) { $("acc-status").textContent = "El servidor está arrancando; en un minuto empieza a procesar bloques."; return; }

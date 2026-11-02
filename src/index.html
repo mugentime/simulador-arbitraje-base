@@ -99,6 +99,11 @@
   table.breakdown td { white-space: normal; }
   table.breakdown td:first-child { color: var(--ink2); width: 55%; }
   table.breakdown tr.total td { font-weight: 650; border-top: 2px solid var(--line); }
+  .badge { display: inline-block; font: 600 13px system-ui; padding: 6px 12px; border-radius: 999px; margin-bottom: 10px; border: 1px solid var(--line); }
+  .badge[data-kind="ok"] { background: var(--good-bg); color: var(--good); border-color: var(--good); }
+  .badge[data-kind="bad"] { color: var(--bad); border-color: var(--bad); }
+  .badge[data-kind="wait"] { color: var(--warn); border-color: var(--warn); }
+  footer.ver { margin-top: 18px; font-size: 12px; color: var(--ink2); }
   ul#log { margin: 0; padding-left: 18px; font-size: 13px; }
   ul#log li { margin: 4px 0; }
   .muted { color: var(--ink2); }
@@ -124,6 +129,7 @@
   <p class="sub" id="universe-note" hidden>Modo long tail: escanea los eventos de creación de pool de Uniswap v2/v3/v4, PancakeSwap v2/v3, Aerodrome y Slipstream en esa ventana, toma los tokens nuevos que tengan al menos 0.05 WETH o 150 USDC de liquidez, y busca sus pools en todos los DEX para cerrar ciclos. Es el nicho que recomienda el punto 1. Los RPC públicos limitan cuántos bloques se pueden leer; si falla, reduce las horas o usa tu propio RPC.</p>
 
   <section class="card" id="acc">
+    <div id="srv-badge" class="badge" data-kind="wait">Conectando con Railway…</div>
     <h2>Acumulado 24/7 (servidor)</h2>
     <p class="sub">Esto corre en el servidor aunque cierres la página. Todo lo de abajo (pipeline, rutas, sesión) se calcula en tu navegador solo mientras la tienes abierta.</p>
     <p class="sub" id="acc-status">Consultando el servidor…</p>
@@ -231,6 +237,7 @@
       <li>Uniswap v4 se lee vía StateView y solo se observa: las rutas que lo tocan se marcan "requiere hop v4" porque el contrato ArbExecutor todavía no las ejecuta. Pools con hooks o comisión dinámica se ignoran.</li>
     </ul>
   </section>
+  <footer class="ver" id="page-version">Página: versión __PAGE_VERSION__</footer>
 </main>
 <script type="module" src="./app.js"></script>
 </body>
