@@ -28,6 +28,8 @@
   #status[data-kind="bad"]::before { color: var(--bad); }
   #status[data-kind="wait"]::before { color: var(--warn); }
   form { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; }
+  label.inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink2); }
+  label.inline input { flex: none; width: 70px; }
   input { flex: 1 1 260px; font: 13px var(--mono); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
   button { font: 600 13px system-ui; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
 
@@ -107,8 +109,14 @@
   <div id="status" data-kind="wait">Iniciando…</div>
   <form id="rpc-form">
     <input id="rpc" placeholder="RPC de Base (https://…)" aria-label="RPC de Base">
+    <select id="universe" aria-label="Universo de pools">
+      <option value="main">Pares principales (WETH, USDC, cbBTC)</option>
+      <option value="longtail">Long tail: pools creados en las últimas horas</option>
+    </select>
+    <label id="hours-wrap" class="inline" hidden>Horas hacia atrás <input id="hours" type="number" min="0.25" max="12" step="0.25" value="2"></label>
     <button type="submit">Conectar</button>
   </form>
+  <p class="sub" id="universe-note" hidden>Modo long tail: escanea los eventos de creación de pool de Uniswap v2/v3/v4, PancakeSwap v2/v3, Aerodrome y Slipstream en esa ventana, toma los tokens nuevos que tengan al menos 0.05 WETH o 150 USDC de liquidez, y busca sus pools en todos los DEX para cerrar ciclos. Es el nicho que recomienda el punto 1. Los RPC públicos limitan cuántos bloques se pueden leer; si falla, reduce las horas o usa tu propio RPC.</p>
 
   <section class="card">
     <h2>Pipeline en este bloque</h2>
@@ -176,7 +184,7 @@
     <h2>Pools leídos on-chain</h2>
     <p class="sub">Descubiertos consultando las factories de cada DEX. Desviación = diferencia contra la mediana del mismo par, en bps; en ámbar si supera la comisión del pool.</p>
     <div class="scroll"><table>
-      <thead><tr><th>DEX</th><th>Par</th><th>Tipo</th><th class="num">Comisión</th><th class="num">Precio</th><th class="num">Desv. (bps)</th><th>Contrato</th></tr></thead>
+      <thead><tr><th>DEX</th><th>Par</th><th>Tipo</th><th class="num">Comisión</th><th class="num">Precio</th><th class="num">Desv. (bps)</th><th class="num">Liquidez base</th><th>Creado</th><th>Contrato</th></tr></thead>
       <tbody id="pools-body"></tbody>
     </table></div>
   </section>
@@ -197,7 +205,8 @@
       <li>Pools v2: matemática exacta, igual a la del contrato <code>ArbExecutor</code>. Pools v3 y Slipstream: reservas virtuales del tick actual; es exacto para montos que no cruzan de tick y una aproximación para montos mayores.</li>
       <li>Costo de gas: 120,000 + 90,000 por salto, al precio actual, más el fee L1 para unos 740 bytes de calldata.</li>
       <li>Los bots en producción ven la misma información antes, desde nodos colocados junto al secuenciador. Que aquí aparezca una oportunidad no significa que siga disponible al enviarla.</li>
-      <li>Universo: WETH, USDC y cbBTC en Uniswap v2/v3, PancakeSwap v2/v3, Aerodrome y Aerodrome Slipstream.</li>
+      <li>Universo "pares principales": WETH, USDC y cbBTC en Uniswap v2/v3/v4, PancakeSwap v2/v3, Aerodrome y Slipstream. Universo "long tail": tokens cuyos pools se crearon en la ventana elegida, más sus pools ya existentes en todos esos DEX.</li>
+      <li>Uniswap v4 se lee vía StateView y solo se observa: las rutas que lo tocan se marcan "requiere hop v4" porque el contrato ArbExecutor todavía no las ejecuta. Pools con hooks o comisión dinámica se ignoran.</li>
     </ul>
   </section>
 </main>

@@ -20,7 +20,10 @@ export const FACTORIES = [
   { name: "Uniswap v2", kind: "v2pair", address: "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6", feeBps: 30 },
   { name: "PancakeSwap v2", kind: "v2pair", address: "0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E", feeBps: 25 },
   { name: "Aerodrome", kind: "aero", address: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da" },
+  // Uniswap v4: singleton. Solo observación (el contrato aún no ejecuta hops v4); pools con hooks se ignoran.
+  { name: "Uniswap v4", kind: "v4", address: "0x498581fF718922c3f8e6A244956aF099B2652b2b", stateView: "0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71", combos: [[100, 1], [500, 10], [3000, 60], [10000, 200]] },
 ];
+export const V4_DYNAMIC_FEE = 0x800000;
 
 // Proveedores de flashloan (punto 2). La liquidez y la comisión se leen on-chain.
 export const LENDERS = [
@@ -50,6 +53,15 @@ const ABI = [
   "function balanceOf(address) view returns (uint256)",
   "function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)",
   "function getL1Fee(bytes) view returns (uint256)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function getSlot0(bytes32) view returns (uint160,int24,uint24,uint24)",
+  "function getLiquidity(bytes32) view returns (uint128)",
+  "event PairCreated(address indexed token0, address indexed token1, address pair, uint256)",
+  "event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)",
+  "event AeroPoolCreated(address indexed token0, address indexed token1, bool indexed stable, address pool, uint256)",
+  "event CLPoolCreated(address indexed token0, address indexed token1, int24 indexed tickSpacing, address pool)",
+  "event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)",
 ];
 
 export function makeIface(ethers) {
@@ -78,28 +90,36 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 
 // ------------------------------------------------------------------ Descubrimiento
 
-export async function discoverPools(ethers, provider, tokens = TOKENS, factories = FACTORIES) {
+export function v4PoolId(ethers, a, b, fee, tickSpacing, hooks = ZERO) {
+  const [t0, t1] = a.toLowerCase() < b.toLowerCase() ? [a, b] : [b, a];
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "uint24", "int24", "address"], [t0, t1, fee, tickSpacing, hooks]));
+}
+
+/** Pools YA existentes entre cada par de `tokenAddrs`, preguntando a los getters de cada factory. */
+export async function existingPools(ethers, provider, tokenAddrs, factories = FACTORIES) {
   const iface = makeIface(ethers);
-  const list = Object.values(tokens).map((t) => t.address);
+  const list = [...new Set(tokenAddrs.map((a) => ethers.getAddress(a)))];
   const pairs = [];
   for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) pairs.push([list[i], list[j]]);
 
-  const calls = [];
-  const meta = [];
+  const calls = [], meta = [];
   for (const f of factories) {
     for (const [a, b] of pairs) {
       if (f.kind === "v3fee" || f.kind === "v3tick") {
         const sig = f.kind === "v3fee" ? "getPool(address,address,uint24)" : "getPool(address,address,int24)";
-        for (const p of f.params) {
-          calls.push([f.address, enc(iface, sig, [a, b, p])]);
-          meta.push({ dex: f.name, feeHint: null });
-        }
+        for (const p of f.params) { calls.push([f.address, enc(iface, sig, [a, b, p])]); meta.push({ dex: f.name, kind: "v3" }); }
       } else if (f.kind === "v2pair") {
-        calls.push([f.address, enc(iface, "getPair", [a, b])]);
-        meta.push({ dex: f.name, feeHint: f.feeBps });
+        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps });
       } else if (f.kind === "aero") {
         calls.push([f.address, enc(iface, "getPool(address,address,bool)", [a, b, false])]);
-        meta.push({ dex: f.name + " (volátil)", feeHint: null, aeroFactory: f.address });
+        meta.push({ dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
+      } else if (f.kind === "v4") {
+        for (const [fee, ts] of f.combos) {
+          const id = v4PoolId(ethers, a, b, fee, ts);
+          calls.push([f.stateView, enc(iface, "getSlot0", [id])]);
+          const [t0, t1] = a.toLowerCase() < b.toLowerCase() ? [a, b] : [b, a];
+          meta.push({ dex: f.name, kind: "v4", id, feeBps: fee / 100, token0: t0, token1: t1, stateView: f.stateView, manager: f.address });
+        }
       }
     }
   }
@@ -107,57 +127,141 @@ export async function discoverPools(ethers, provider, tokens = TOKENS, factories
   const found = new Map();
   res.forEach((raw, i) => {
     if (!raw) return;
+    const m = meta[i];
+    if (m.kind === "v4") {
+      if (word(raw, 0) === 0n) return; // no inicializado
+      if (!found.has(m.id)) found.set(m.id, m);
+      return;
+    }
     const addr = ethers.getAddress("0x" + raw.slice(-40));
-    if (addr !== ZERO && !found.has(addr)) found.set(addr, meta[i]);
+    if (addr !== ZERO && !found.has(addr)) found.set(addr, m);
   });
-  return found; // address -> {dex, feeHint, aeroFactory?}
+  return found;
+}
+
+// compatibilidad con la versión anterior
+export const discoverPools = (ethers, provider, tokens = TOKENS, factories = FACTORIES) =>
+  existingPools(ethers, provider, Object.values(tokens).map((t) => t.address), factories);
+
+/** Pools NUEVOS: eventos de creación de cada factory en los últimos `lookback` bloques (long tail). */
+export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 1000, head, onProgress, factories = FACTORIES } = {}) {
+  const iface = makeIface(ethers);
+  head = head ?? (await provider.getBlockNumber());
+  const from0 = Math.max(0, head - lookback);
+  const topicOf = {
+    v2pair: iface.getEvent("PairCreated").topicHash, v3fee: iface.getEvent("PoolCreated").topicHash,
+    aero: iface.getEvent("AeroPoolCreated").topicHash, v3tick: iface.getEvent("CLPoolCreated").topicHash, v4: iface.getEvent("Initialize").topicHash,
+  };
+  const specs = new Map();
+  for (const f of factories) {
+    let size = chunk;
+    for (let from = from0; from <= head; ) {
+      const to = Math.min(head, from + size - 1);
+      let logs;
+      try {
+        logs = await provider.getLogs({ address: f.address, topics: [topicOf[f.kind]], fromBlock: from, toBlock: to });
+      } catch (e) {
+        if (size > 100) { size = Math.max(100, Math.floor(size / 2)); continue; } // el RPC limita el rango: reducir
+        throw e;
+      }
+      for (const lg of logs) {
+        const base = { dex: f.name, createdBlock: lg.blockNumber };
+        const t = lg.topics, d = lg.data;
+        if (f.kind === "v2pair") {
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps });
+        } else if (f.kind === "aero") {
+          if (BigInt(t[3]) === 1n) continue; // estable: otra curva
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
+        } else if (f.kind === "v3fee") {
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 64 + 24, 2 + 128)), { ...base, kind: "v3", feeBps: Number(BigInt(t[3])) / 100 });
+        } else if (f.kind === "v3tick") {
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v3" });
+        } else if (f.kind === "v4") {
+          const fee = Number(word(d, 0)), hooks = ethers.getAddress("0x" + d.slice(2 + 128 + 24, 2 + 192));
+          const t0 = ethers.getAddress("0x" + t[2].slice(-40)), t1 = ethers.getAddress("0x" + t[3].slice(-40));
+          if (hooks !== ZERO || fee & V4_DYNAMIC_FEE || t0 === ZERO) continue; // hooks, fee dinámica o ETH nativo
+          specs.set(t[1], { ...base, kind: "v4", id: t[1], feeBps: fee / 100, token0: t0, token1: t1, stateView: f.stateView, manager: f.address });
+        }
+      }
+      onProgress?.({ factory: f.name, from, to, head, found: specs.size });
+      from = to + 1;
+    }
+  }
+  return specs;
+}
+
+/** symbol() y decimals() de una lista de tokens. Tokens sin decimals() se omiten. */
+export async function tokenMeta(ethers, provider, addrs, known = {}) {
+  const iface = makeIface(ethers);
+  const out = new Map(Object.values(known).map((t) => [t.address.toLowerCase(), { ...t }]));
+  const todo = [...new Set(addrs.map((a) => ethers.getAddress(a)))].filter((a) => !out.has(a.toLowerCase()));
+  const calls = [];
+  for (const a of todo) calls.push([a, enc(iface, "symbol")], [a, enc(iface, "decimals")]);
+  const res = await multicall(ethers, provider, calls);
+  todo.forEach((a, i) => {
+    const symRaw = res[2 * i], decRaw = res[2 * i + 1];
+    if (!decRaw) return;
+    let sym = a.slice(0, 6) + "…";
+    try { sym = symRaw && symRaw.length > 66 ? iface.decodeFunctionResult("symbol", symRaw)[0] : ethers.toUtf8String(symRaw).replace(/\0+$/, ""); } catch { /* símbolo raro */ }
+    out.set(a.toLowerCase(), { sym: sym.slice(0, 12) || a.slice(0, 6), address: a, decimals: Number(word(decRaw, 0)) });
+  });
+  return out;
+}
+
+/** token0/token1 de pools EVM (para saber qué tokens nuevos aparecieron). */
+export async function poolTokens(ethers, provider, addrs) {
+  const iface = makeIface(ethers);
+  const calls = [];
+  for (const a of addrs) calls.push([a, enc(iface, "token0")], [a, enc(iface, "token1")]);
+  const res = await multicall(ethers, provider, calls);
+  const out = new Map();
+  addrs.forEach((a, i) => {
+    const t0 = res[2 * i], t1 = res[2 * i + 1];
+    if (t0 && t1) out.set(a, [ethers.getAddress("0x" + t0.slice(-40)), ethers.getAddress("0x" + t1.slice(-40))]);
+  });
+  return out;
 }
 
 // ------------------------------------------------------------------ Carga y refresco de pools
 
+/** found: Map(address|poolId -> spec). tokens: objeto {SYM:{address,decimals}} o Map(addr minúscula -> {sym,address,decimals}). */
 export async function loadPools(ethers, provider, found, tokens = TOKENS) {
   const iface = makeIface(ethers);
-  const byAddr = new Map(Object.entries(tokens).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
-  const addrs = [...found.keys()];
+  const byAddr = tokens instanceof Map ? tokens : new Map(Object.entries(tokens).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
+  const evm = [...found.entries()].filter(([, m]) => m.kind !== "v4");
   const calls = [];
-  for (const a of addrs) {
-    calls.push([a, enc(iface, "token0")], [a, enc(iface, "token1")], [a, "0x3850c7bd"] /* slot0() */,
-      [a, enc(iface, "fee")], [a, enc(iface, "getReserves")]);
+  for (const [a, m] of evm) {
+    calls.push([a, enc(iface, "token0")], [a, enc(iface, "token1")], [a, "0x3850c7bd"] /* slot0() */, [a, enc(iface, "fee")],
+      [a, enc(iface, "getReserves")], m.aeroFactory ? [m.aeroFactory, enc(iface, "getFee", [a, false])] : [MULTICALL3, "0x"]);
   }
   const r = await multicall(ethers, provider, calls);
   const pools = [];
-  const aeroFee = [];
-  addrs.forEach((a, i) => {
-    const [t0, t1, s0, fee, res] = r.slice(5 * i, 5 * i + 5);
+  evm.forEach(([a, m], i) => {
+    const [t0, t1, s0, fee, res, aeroFee] = r.slice(6 * i, 6 * i + 6);
     if (!t0 || !t1) return;
     const tok0 = byAddr.get(ethers.getAddress("0x" + t0.slice(-40)).toLowerCase());
     const tok1 = byAddr.get(ethers.getAddress("0x" + t1.slice(-40)).toLowerCase());
     if (!tok0 || !tok1) return;
-    const m = found.get(a);
-    const p = { address: a, dex: m.dex, token0: tok0, token1: tok1, reserve0: 0n, reserve1: 0n };
-    if (s0 && fee) {
-      p.kind = "v3";
-      p.feeBps = Number(word(fee, 0)) / 100; // pips -> bps (puede ser fraccional: 0.01% = 1 bps)
+    const p = { address: a, dex: m.dex, kind: m.kind ?? (s0 && fee ? "v3" : "v2"), token0: tok0, token1: tok1, reserve0: 0n, reserve1: 0n, createdBlock: m.createdBlock ?? 0 };
+    if (p.kind === "v3") {
+      if (!s0 || !fee) return;
       p.feePips = word(fee, 0);
-    } else if (res) {
-      p.kind = "v2";
-      p.feePips = BigInt(Math.round((m.feeHint ?? 30) * 100));
-      p.feeBps = m.feeHint ?? 30;
-      if (m.aeroFactory) aeroFee.push(p);
-    } else return;
+      p.feeBps = Number(p.feePips) / 100;
+    } else {
+      if (!res) return;
+      let bps = m.feeBps ?? m.feeHint ?? 30;
+      if (aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)); // Aerodrome: bps directos
+      p.feeBps = bps;
+      p.feePips = BigInt(Math.round(bps * 100));
+    }
     pools.push(p);
   });
-  // Aerodrome: comisión real por pool desde su factory
-  if (aeroFee.length) {
-    const calls2 = aeroFee.map((p) => [found.get(p.address).aeroFactory, enc(iface, "getFee", [p.address, false])]);
-    const r2 = await multicall(ethers, provider, calls2);
-    aeroFee.forEach((p, i) => {
-      if (r2[i]) {
-        const bps = Number(word(r2[i], 0)); // Aerodrome expresa la comisión en bps
-        p.feeBps = bps;
-        p.feePips = BigInt(bps * 100);
-      }
-    });
+  for (const [id, m] of found) {
+    if (m.kind !== "v4") continue;
+    const tok0 = byAddr.get(m.token0.toLowerCase()), tok1 = byAddr.get(m.token1.toLowerCase());
+    if (!tok0 || !tok1) continue;
+    pools.push({ address: id, dex: m.dex, kind: "v4", token0: tok0, token1: tok1, reserve0: 0n, reserve1: 0n, feeBps: m.feeBps,
+      feePips: BigInt(Math.round(m.feeBps * 100)), stateView: m.stateView, manager: m.manager, createdBlock: m.createdBlock ?? 0 });
   }
   await refreshPools(ethers, provider, pools);
   return pools;
@@ -168,12 +272,13 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
   const calls = [];
   for (const p of pools) {
     if (p.kind === "v3") calls.push([p.address, "0x3850c7bd"], [p.address, enc(iface, "liquidity")]);
+    else if (p.kind === "v4") calls.push([p.stateView, enc(iface, "getSlot0", [p.address])], [p.stateView, enc(iface, "getLiquidity", [p.address])]);
     else calls.push([p.address, enc(iface, "getReserves")]);
   }
   const r = await multicall(ethers, provider, calls, blockTag);
   let k = 0;
   for (const p of pools) {
-    if (p.kind === "v3") {
+    if (p.kind === "v3" || p.kind === "v4") {
       const s0 = r[k++], liq = r[k++];
       if (!s0 || !liq) { p.reserve0 = p.reserve1 = 0n; continue; }
       p.sqrtPriceX96 = word(s0, 0);
@@ -186,6 +291,25 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
       p.reserve1 = word(res, 1);
     }
   }
+}
+
+/** Filtro del punto 1: liquidez mínima del token base en el pool; pools token-token solo si ambos tokens ya tienen un pool base aceptable. */
+export function filterPools(pools, baseAddrs, minLiq) {
+  const base = new Set(baseAddrs.map((a) => a.toLowerCase()));
+  const good = new Set(base);
+  const kept = [];
+  for (const p of pools) {
+    if (p.reserve0 === 0n || p.reserve1 === 0n) continue;
+    for (const t of [p.token0, p.token1]) {
+      const key = t.address.toLowerCase();
+      if (base.has(key) && reservesFor(p, t.address)[0] >= (minLiq[key] ?? 0n)) { kept.push(p); good.add(other(p, t.address).address.toLowerCase()); break; }
+    }
+  }
+  for (const p of pools) {
+    if (kept.includes(p) || p.reserve0 === 0n || p.reserve1 === 0n) continue;
+    if (good.has(p.token0.address.toLowerCase()) && good.has(p.token1.address.toLowerCase())) kept.push(p);
+  }
+  return kept;
 }
 
 // ------------------------------------------------------------------ Matemática AMM
@@ -263,8 +387,11 @@ export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3
     const k = start + ":" + route.map((p) => p.address).join(">");
     if (!seen.has(k)) { seen.add(k); out.push({ start, route, key: k }); }
   };
+  const addrOf = new Map();
+  for (const p of pools) for (const t of [p.token0, p.token1]) addrOf.set(t.sym, t.address);
   for (const sym of startSyms) {
-    const s = TOKENS[sym].address;
+    const s = addrOf.get(sym) ?? TOKENS[sym]?.address;
+    if (!s) continue;
     for (const a of byTok.get(s) || []) {
       const t1 = other(a, s).address;
       for (const b of byTok.get(t1) || []) {
@@ -476,6 +603,7 @@ export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0
       grossUsd, gasUsd, flashFeeUsd,
       lender: o.lender ?? (segs.length ? "—" : "sin liquidez"),
       netUsd, profitable: o.x > 0n && netUsd > minNetUsd, cap, segs,
+      needsV4: c.route.some((p) => p.kind === "v4"),
     });
   }
   results.sort((a, b) => b.netUsd - a.netUsd || b.marginalBps - a.marginalBps);

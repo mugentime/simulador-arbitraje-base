@@ -63,11 +63,51 @@ function setStatus(text, kind = "ok") {
 
 // ------------------------------------------------------------------ arranque
 
+const MIN_LIQ = { [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, [core.TOKENS.USDC.address.toLowerCase()]: 150n * 10n ** 6n };
+
 async function bootstrap() {
+  const universe = $("universe").value;
   stage("ingesta", "descubriendo pools…", "run");
-  const found = await core.discoverPools(ethers, state.provider);
-  stage("estado", `${found.size} pools encontrados`, "run");
-  state.pools = await core.loadPools(ethers, state.provider, found);
+  let pools;
+  if (universe === "longtail") {
+    const hours = Math.min(12, Math.max(0.25, Number($("hours").value) || 2));
+    const lookback = Math.round((hours * 3600) / 2); // Base: 2 s por bloque
+    const head = await state.provider.getBlockNumber();
+    const specs = await core.scanNewPools(ethers, state.provider, {
+      lookback, head,
+      onProgress: (pr) => setStatus(`Escaneando ${pr.factory}: bloques ${pr.from.toLocaleString("es-MX")}–${pr.to.toLocaleString("es-MX")} · ${pr.found} pools nuevos`, "wait"),
+    });
+    stage("ingesta", `${specs.size} pools nuevos en ${hours} h`);
+    // tokens de los pools nuevos
+    const evmAddrs = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);
+    const toks = await core.poolTokens(ethers, state.provider, evmAddrs);
+    const tokenAddrs = new Set(Object.values(core.TOKENS).map((t) => t.address));
+    for (const [, m] of specs) if (m.kind === "v4") { tokenAddrs.add(m.token0); tokenAddrs.add(m.token1); }
+    for (const [, [t0, t1]] of toks) { tokenAddrs.add(t0); tokenAddrs.add(t1); }
+    setStatus(`Leyendo ${tokenAddrs.size} tokens…`, "wait");
+    const meta = await core.tokenMeta(ethers, state.provider, [...tokenAddrs], core.TOKENS);
+    for (const [sym, t] of Object.entries(core.TOKENS)) meta.set(t.address.toLowerCase(), { sym, ...t });
+    // pools nuevos + pools existentes de esos tokens en todos los DEX (para cerrar ciclos)
+    setStatus(`Buscando pools existentes de ${meta.size} tokens en todos los DEX…`, "wait");
+    const found = new Map(specs);
+    const tokenList = [...meta.values()].map((t) => t.address);
+    // por lotes de tokens contra los base, para no explotar el número de pares
+    const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
+    const others = tokenList.filter((a) => !baseAddrs.includes(a));
+    for (let i = 0; i < others.length; i += 25) {
+      const part = await core.existingPools(ethers, state.provider, [...baseAddrs, ...others.slice(i, i + 25)]);
+      for (const [k, v] of part) if (!found.has(k)) found.set(k, v);
+    }
+    stage("estado", `${found.size} pools candidatos`, "run");
+    const all = await core.loadPools(ethers, state.provider, found, meta);
+    pools = core.filterPools(all, baseAddrs.slice(0, 2), MIN_LIQ);
+    stage("estado", `${pools.length}/${all.length} pools con liquidez mínima`);
+  } else {
+    const found = await core.existingPools(ethers, state.provider, Object.values(core.TOKENS).map((t) => t.address));
+    stage("estado", `${found.size} pools encontrados`, "run");
+    pools = await core.loadPools(ethers, state.provider, found);
+  }
+  state.pools = pools;
   state.cycles = core.enumerateCycles(state.pools);
   state.lenders = await core.readLenders(ethers, state.provider);
   renderLenders();
@@ -154,16 +194,30 @@ function renderKpis(n, gas, ethUsd, results) {
   $("k-rate").textContent = `${state.blocksWithOpp} / ${state.blocksSeen}`;
 }
 
-function pairName(p) {
-  const order = ["WETH", "cbBTC", "USDC"];
-  const [a, b] = [p.token0.sym, p.token1.sym].sort((x, y) => order.indexOf(x) - order.indexOf(y));
-  return `${a}/${b}`;
+const QUOTE_RANK = { USDC: 0, WETH: 1, cbBTC: 2 };
+const rank = (sym) => QUOTE_RANK[sym] ?? 9;
+function baseQuote(p) {
+  const [a, b] = [p.token0.sym, p.token1.sym];
+  return rank(a) > rank(b) || (rank(a) === rank(b) && a > b) ? [a, b] : [b, a]; // [base, quote]
 }
-
+function pairName(p) {
+  const [base, quote] = baseQuote(p);
+  return `${base}/${quote}`;
+}
 function displayPrice(p) {
-  const order = ["WETH", "cbBTC", "USDC"];
-  const base = [p.token0.sym, p.token1.sym].sort((x, y) => order.indexOf(x) - order.indexOf(y))[0];
-  return core.poolPrice(p, base);
+  return core.poolPrice(p, baseQuote(p)[0]);
+}
+function baseLiquidity(p) {
+  for (const sym of ["WETH", "USDC"]) {
+    const t = p.token0.sym === sym ? p.token0 : p.token1.sym === sym ? p.token1 : null;
+    if (t) { const r = core.reservesFor(p, t.address)[0]; return `${fmtNum(Number(r) / 10 ** t.decimals, sym === "WETH" ? 3 : 0)} ${sym}`; }
+  }
+  return "—";
+}
+function createdAgo(p) {
+  if (!p.createdBlock || !state.lastBlock) return "existente";
+  const mins = ((state.lastBlock - p.createdBlock) * 2) / 60;
+  return mins < 90 ? `hace ${Math.round(mins)} min` : `hace ${fmtNum(mins / 60, 1)} h`;
 }
 
 function renderPools() {
@@ -186,10 +240,12 @@ function renderPools() {
         <td class="num">${fmtNum(p.feeBps / 100, p.feeBps < 10 ? 3 : 2)}%</td>
         <td class="num">${isFinite(px) ? fmtNum(px, px > 100 ? 2 : 6) : "sin liquidez en rango"}</td>
         <td class="num ${Math.abs(dev) > p.feeBps ? "warn" : ""}">${isFinite(dev) ? fmtNum(dev, 2) : "—"}</td>
-        <td><a href="${scan(p.address)}" target="_blank" rel="noopener">${short(p.address)}</a></td></tr>`);
+        <td class="num">${baseLiquidity(p)}</td>
+        <td>${createdAgo(p)}</td>
+        <td>${p.kind === "v4" ? `<a href="${scan(p.manager)}" target="_blank" rel="noopener">v4 ${short(p.address)}</a>` : `<a href="${scan(p.address)}" target="_blank" rel="noopener">${short(p.address)}</a>`}</td></tr>`);
     }
   }
-  $("pools-body").innerHTML = rows.join("");
+  $("pools-body").innerHTML = rows.slice(0, 300).join("") + (rows.length > 300 ? `<tr><td colspan="9" class="muted">… y ${rows.length - 300} pools más</td></tr>` : "");
 }
 
 function renderLenders() {
@@ -228,7 +284,7 @@ function renderResults(results) {
       <td class="num">${fmtUsd(r.flashFeeUsd, 4)}</td>
       <td class="num">${fmtUsd(r.gasUsd, 4)}</td>
       <td class="num strong">${fmtUsd(r.netUsd, 4)}</td>
-      <td>${r.lender}</td></tr>`)
+      <td>${r.lender}${r.needsV4 ? ' <span class="hop">· requiere hop v4</span>' : ""}</td></tr>`)
     .join("");
 }
 
@@ -471,6 +527,10 @@ async function start(url) {
   await onBlock();
 }
 
+$("universe").addEventListener("change", () => {
+  const lt = $("universe").value === "longtail";
+  $("hours-wrap").hidden = $("universe-note").hidden = !lt;
+});
 $("rpc-form").addEventListener("submit", (e) => {
   e.preventDefault();
   start($("rpc").value.trim());
