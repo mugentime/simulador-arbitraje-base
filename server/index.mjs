@@ -7,7 +7,7 @@ import path from "node:path";
 import { ethers } from "ethers";
 import { runWorker, isAlive } from "../src/worker.js";
 
-const RPCS = [process.env.RPC_URL, "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.llamarpc.com", "https://1rpc.io/base"].filter(Boolean);
+const RPCS = [process.env.RPC_URL, "https://base-rpc.publicnode.com", "https://base.llamarpc.com", "https://mainnet.base.org", "https://1rpc.io/base", "https://base.drpc.org"].filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/data") ? "/data" : path.resolve("data"));
 const LT_HOURS = Number(process.env.LT_HOURS ?? 2);
 const PORT = Number(process.env.PORT || 8080);
@@ -45,6 +45,11 @@ async function provider() {
       const p = new ethers.JsonRpcProvider(req, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
       const id = BigInt(await p.send("eth_chainId", []));
       if (id !== CHAIN_ID) throw new Error(`chainId ${id}`);
+      // el long tail necesita eth_getLogs: se descarta el RPC que no lo responde a tiempo
+      if (LT_HOURS > 0 && CHAIN_ID === 8453n) {
+        const head = await p.getBlockNumber();
+        await p.getLogs({ address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", fromBlock: head - 500, toBlock: head });
+      }
       return { p, url };
     } catch (e) { console.warn("RPC falló", url, e.shortMessage || e.message); }
   }

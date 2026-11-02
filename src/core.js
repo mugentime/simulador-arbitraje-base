@@ -163,7 +163,8 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
       } catch (e) {
         onProgress?.({ factory: f.name, from, to, head, found: specs.size, error: (e.shortMessage || e.message || "").slice(0, 120), size });
         if (size > 100) { size = Math.max(100, Math.floor(size / 2)); continue; } // el RPC limita el rango: reducir
-        throw e;
+        onProgress?.({ factory: f.name, from, to, head, found: specs.size, error: "se omite este DEX en esta ventana", size });
+        break; // un DEX que el RPC no puede escanear no debe frenar a los demás
       }
       for (const lg of logs) {
         const base = { dex: f.name, createdBlock: lg.blockNumber };
