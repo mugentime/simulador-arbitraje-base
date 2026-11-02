@@ -92,3 +92,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => console.log(`API en :${PORT}, datos en ${DATA_DIR}`));
 process.on("SIGTERM", () => { stopping = true; server.close(); setTimeout(() => process.exit(0), 2000); });
 loop();
+// resumen periódico en los logs de Railway
+setInterval(async () => {
+  const st = await store.get("stats");
+  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
+}, 60_000);
