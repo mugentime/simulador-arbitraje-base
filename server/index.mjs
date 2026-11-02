@@ -91,7 +91,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, headers);
     return res.end(JSON.stringify({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", version: VERSION, ...rest, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog }));
   }
-  if (req.url === "/" || req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
+  if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
+  if (req.url === "/" || req.url.startsWith("/index.html")) {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    return res.end(fs.readFileSync(new URL("./dashboard.html", import.meta.url)));
+  }
   res.writeHead(404, headers); res.end("{}");
 });
 server.listen(PORT, () => console.log(`API en :${PORT}, datos en ${DATA_DIR}`));

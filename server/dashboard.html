@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worker 24/7 · arbitraje con flashloan en Base</title>
+<style>
+  :root { --bg:#f6f5f1; --card:#fff; --ink:#1d1d1b; --ink2:#5c5b56; --line:#e4e2db; --accent:#2f5bd3; --good:#1d7a46; --good-bg:#e6f4ec; --bad:#b23a2e; --warn:#9a6a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --card:#1e1e1c; --ink:#ecebe6; --ink2:#a3a29b; --line:#34332f; --accent:#6d8ee8; --good:#5fc68a; --good-bg:#173324; --bad:#f08a7e; --warn:#e2b54f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 6px; } h2 { font-size:15px; margin:0 0 6px; }
+  .sub { color:var(--ink2); font-size:13px; margin:0 0 8px; }
+  .badge { display:inline-block; font:600 13px system-ui; padding:6px 12px; border-radius:999px; margin:6px 0 12px; border:1px solid var(--line); }
+  .badge[data-kind="ok"] { background:var(--good-bg); color:var(--good); border-color:var(--good); }
+  .badge[data-kind="bad"] { color:var(--bad); border-color:var(--bad); }
+  .badge[data-kind="wait"] { color:var(--warn); border-color:var(--warn); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .kpi { border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .kpi .l { font-size:12px; color:var(--ink2); } .kpi .v { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; } .kpi .s { font-size:12px; color:var(--ink2); }
+  table { width:100%; border-collapse:collapse; font-size:13px; } th,td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { font-size:12px; color:var(--ink2); } td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; } td.strong { font-weight:650; }
+  .scroll { overflow-x:auto; }
+  svg { width:100%; height:170px; display:block; } .grid { stroke:var(--line); } .line { fill:none; stroke:var(--accent); stroke-width:2; } .axis { fill:var(--ink2); font-size:11px; }
+  ul { margin:0; padding-left:18px; font-size:12.5px; color:var(--ink2); } li { margin:3px 0; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Worker 24/7 · protocolo de arbitraje con flashloan en Base</h1>
+  <p class="sub">Corre en este servidor aunque nadie tenga la página abierta. Solo observa y contabiliza; <b>no envía transacciones</b>. Esta página se actualiza sola cada 15 s.</p>
+  <div id="badge" class="badge" data-kind="wait">Consultando…</div>
+  <p class="sub" id="status"></p>
+
+  <section class="card">
+    <div class="kpis">
+      <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
+      <div class="kpi"><div class="l">Oportunidades</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
+      <div class="kpi"><div class="l">De $1 o más</div><div class="v" id="over1">—</div><div class="s" id="over1-sub"></div></div>
+      <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="best">—</div><div class="s" id="best-sub"></div></div>
+      <div class="kpi"><div class="l">Bloques procesados</div><div class="v" id="blocks">—</div><div class="s" id="blocks-sub"></div></div>
+    </div>
+  </section>
+
+  <section class="card"><h2>Acumulado por hora (USD)</h2><svg id="chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg></section>
+
+  <section class="card"><h2>Rutas que más han aportado</h2>
+    <div class="scroll"><table><thead><tr><th>Ruta</th><th class="num">Veces</th><th class="num">Neto</th></tr></thead><tbody id="routes"></tbody></table></div></section>
+
+  <section class="card"><h2>Últimas oportunidades</h2>
+    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="recent"></tbody></table></div></section>
+
+  <section class="card"><h2>Bitácora</h2><ul id="diag"></ul></section>
+  <p class="sub">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta una sola vez, con el beneficio de su primer bloque. Es un tope superior: supone que el protocolo gana todas, sin competencia de otros bots. Simulador completo: <a href="https://simulador-arbitraje-base.netlify.app">simulador-arbitraje-base.netlify.app</a>.</p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (v, d = 2) => !isFinite(v) ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d });
+const num = (v, d = 0) => v.toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d });
+const when = (t) => new Date(t).toLocaleString("es-MX", { timeZone: "America/Mexico_City", dateStyle: "short", timeStyle: "short" });
+async function load() {
+  let d;
+  try { d = await (await fetch("/api/stats", { cache: "no-store" })).json(); }
+  catch (e) { $("badge").dataset.kind = "bad"; $("badge").textContent = "✕ Sin respuesta del servidor"; return; }
+  const v = d.version || {};
+  const up = v.startedAt ? Math.round((d.now - v.startedAt) / 60000) : null;
+  $("badge").dataset.kind = d.alive ? "ok" : "wait";
+  $("badge").textContent = `${d.alive ? "● En vivo" : "○ En pausa"} en Railway · versión ${v.commit || "?"} · arrancó hace ${up === null ? "?" : up < 60 ? up + " min" : (up / 60).toFixed(1) + " h"}${d.phase ? " · " + d.phase : ""}`;
+  $("diag").innerHTML = (d.diag || []).map((x) => `<li>${when(x.t)} · ${x.m}</li>`).join("") || "<li>Sin registros.</li>";
+  if (!d.ready) { $("status").textContent = "Todavía no hay datos: el worker está arrancando."; return; }
+  const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
+  const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
+  const days = d.startedAt ? Math.max(1 / 24, (d.now - new Date(d.startedAt).getTime()) / 86400000) : 1;
+  $("status").textContent = `Último bloque ${num(d.lastBlock)}${agoS !== null ? ` (hace ${agoS} s)` : ""} · ${d.universe.pools} pools, ${num(d.universe.cycles)} rutas vigiladas · observando desde ${when(d.startedAt)}${d.lastError ? " · último error: " + d.lastError : ""}`;
+  const t = d.totals;
+  $("net").textContent = usd(t.netUsd); $("net-sub").textContent = `≈ ${usd(t.netUsd / days)} por día · gas ${usd(t.gasUsd)}`;
+  $("eps").textContent = num(t.episodes); $("eps-sub").textContent = `${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren hop v4` : ""}`;
+  $("over1").textContent = num(t.over1Usd); $("over1-sub").textContent = `suman ${usd(t.over1NetUsd)}`;
+  $("best").textContent = d.best ? usd(d.best.netUsd) : "—"; $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)}` : "";
+  $("blocks").textContent = num(d.blocksProcessed); $("blocks-sub").textContent = `cobertura ${num(covered * 100, 1)}% · ${d.blocksWithOpp} con oportunidad`;
+  $("routes").innerHTML = d.topRoutes.map((r) => `<tr><td>${r.label}</td><td class="num">${r.episodes}</td><td class="num strong">${usd(r.netUsd)}</td></tr>`).join("") || `<tr><td colspan="3">Sin oportunidades todavía.</td></tr>`;
+  $("recent").innerHTML = d.recent.map((e) => `<tr><td>${num(e.block)}</td><td>${when(e.ts * 1000)}</td><td>${e.route}${e.needsV4 ? " · requiere hop v4" : ""}</td><td class="num">${usd(e.amountUsd, 0)}</td><td class="num strong">${usd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6">Sin oportunidades todavía.</td></tr>`;
+  chart(d.hourly || []);
+}
+function chart(h) {
+  const svg = $("chart");
+  if (h.length < 2) { svg.innerHTML = `<text x="8" y="20" class="axis">La gráfica aparece tras la segunda hora de datos.</text>`; return; }
+  let acc = 0; const pts = h.map((x) => ({ h: x.h, v: (acc += x.netUsd) }));
+  const W = svg.clientWidth || 640, H = 170, L = 58, R = 12, T = 12, B = 24;
+  const lo = Math.min(0, ...pts.map((p) => p.v)), hi = Math.max(1e-6, ...pts.map((p) => p.v));
+  const X = (i) => L + (i / (pts.length - 1)) * (W - L - R), Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const lbl = (x) => new Date(x * 3600e3).toLocaleString("es-MX", { timeZone: "America/Mexico_City", day: "2-digit", month: "short", hour: "2-digit" });
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = [lo, (lo + hi) / 2, hi].map((t) => `<line x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${L - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${usd(t)}</text>`).join("")
+    + `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" class="line"/>`
+    + `<text x="${L}" y="${H - 6}" class="axis">${lbl(pts[0].h)}</text><text x="${W - R}" y="${H - 6}" class="axis" text-anchor="end">${lbl(pts.at(-1).h)}</text>`;
+}
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>
