@@ -196,18 +196,17 @@
     <div class="chartbox"><svg id="sim-chart" role="img" aria-label="Beneficio neto según el monto prestado"></svg><div id="sim-tip" class="tip" hidden></div></div>
   </section>
 
-  <section class="card">
-    <h2>Registro de oportunidades</h2>
-    <ul id="log"></ul>
-  </section>
+
 
   <section class="card">
-    <h2>Pools leídos on-chain</h2>
-    <p class="sub">Descubiertos consultando las factories de cada DEX. Desviación = diferencia contra la mediana del mismo par, en bps; en ámbar si supera la comisión del pool.</p>
-    <div class="scroll"><table>
-      <thead><tr><th>DEX</th><th>Par</th><th>Tipo</th><th class="num">Comisión</th><th class="num">Precio</th><th class="num">Desv. (bps)</th><th class="num">Liquidez base</th><th>Creado</th><th>Contrato</th></tr></thead>
-      <tbody id="pools-body"></tbody>
-    </table></div>
+    <details id="pools-box">
+      <summary style="cursor:pointer"><h2 style="display:inline">Detalle: pools leídos on-chain</h2> <span class="sub" id="pools-count"></span></summary>
+      <p class="sub" style="margin-top:6px">Descubiertos consultando las factories de cada DEX. Desviación = diferencia contra la mediana del mismo par, en bps; en ámbar si supera la comisión del pool. Se actualiza cada 10 bloques mientras esté abierto.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>DEX</th><th>Par</th><th>Tipo</th><th class="num">Comisión</th><th class="num">Precio</th><th class="num">Desv. (bps)</th><th class="num">Liquidez base</th><th>Creado</th><th>Contrato</th></tr></thead>
+        <tbody id="pools-body"></tbody>
+      </table></div>
+    </details>
   </section>
 
   <section class="card">

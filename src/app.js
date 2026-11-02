@@ -166,10 +166,10 @@ async function onBlock() {
     accountBlock(state.session, n, gas.timestamp, results);
     renderSession();
     renderKpis(n, gas, ethUsd, results);
-    renderPools(ethUsd);
-    renderResults(results);
+    $("pools-count").textContent = `(${state.pools.length})`;
+    if ($("pools-box").open && state.blocksSeen % 10 === 1) renderPools(ethUsd);
+    if ($("routes-box").open) renderResults(results);
     renderSim();
-    renderLog();
     renderChart();
     if (state.blocksSeen % 15 === 1) renderLenders();
   } catch (e) {
@@ -292,11 +292,6 @@ function renderResults(results) {
     .join("");
 }
 
-function renderLog() {
-  $("log").innerHTML = state.log.length
-    ? state.log.map((x) => `<li><b>Bloque ${x.n.toLocaleString("es-MX")}</b> · ${routeText(x.r)} · neto <b>${fmtUsd(x.r.netUsd, 4)}</b> con ${x.r.lender}</li>`).join("")
-    : `<li class="muted">Aún no aparece ningún bloque con beneficio neto positivo. Es lo esperado en pares líquidos: el spread entre pools rara vez supera la suma de comisiones y, cuando lo hace, otro bot lo cierra en el mismo bloque.</li>`;
-}
 
 // ------------------------------------------------------------------ gráfica (una serie: mejor neto por bloque)
 
@@ -438,6 +433,8 @@ function drawSimChart(curve, r, lo, hi) {
   hit.onmouseleave = () => { tip.hidden = true; svg.querySelector("#sim-dot").setAttribute("cx", -10); };
 }
 
+$("routes-box").addEventListener("toggle", () => { if ($("routes-box").open && state.ctx) { renderResults(state.ctx.results); renderSim(); } });
+$("pools-box").addEventListener("toggle", () => { if ($("pools-box").open) renderPools(); });
 $("res-body").addEventListener("click", (e) => {
   const tr = e.target.closest("tr");
   if (!tr || !tr.dataset.key) return;

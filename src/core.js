@@ -592,7 +592,8 @@ export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0
 
     const toUsd = tokenToUsd(startTok, ethUsd);
     const gasUsd = (Number(gasWeiFor(c.route.length)) / 1e18) * ethUsd;
-    const o = optimize(c.start, c.route, segs, cap);
+    // si una operación mínima ya pierde, ningún monto gana (la curva es cóncava): no hace falta optimizar
+    const o = marginalBps > 0 ? optimize(c.start, c.route, segs, cap) : { x: 0n, gross: 0n, fee: 0n, lender: null };
     const grossUsd = o.x > 0n ? toUsd(o.gross) : 0;
     const flashFeeUsd = o.x > 0n ? toUsd(o.fee) : 0;
     const netUsd = grossUsd - flashFeeUsd - gasUsd;
