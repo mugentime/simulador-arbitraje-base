@@ -224,8 +224,8 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
 /** Limpieza única: quita del acumulado los episodios imposibles (> $1,000 netos) registrados antes del filtro de cordura. */
 export function sanitize(stats, events) {
-  if ((stats.version ?? 1) >= 2) return;
-  const bad = events.filter((e) => e.netUsd > 1000);
+  if ((stats.version ?? 1) >= 3) return;
+  const bad = events.filter((e) => e.netUsd > 100 || e.grossUsd > e.amountUsd * 0.1);
   for (const e of bad) {
     const t = stats.totals;
     t.episodes--; t.netUsd -= e.netUsd; t.grossUsd -= e.grossUsd; t.gasUsd -= e.gasUsd; t.flashFeeUsd -= e.flashFeeUsd;
@@ -233,11 +233,11 @@ export function sanitize(stats, events) {
     const h = stats.hourly.find((x) => x.h === Math.floor(e.ts / 3600));
     if (h) { h.episodes--; h.netUsd -= e.netUsd; }
   }
-  for (const k of Object.keys(stats.byRoute)) if (stats.byRoute[k].netUsd > 1000) delete stats.byRoute[k];
-  const keep = events.filter((e) => e.netUsd <= 1000);
+  for (const k of Object.keys(stats.byRoute)) if (stats.byRoute[k].netUsd > 100) delete stats.byRoute[k];
+  const keep = events.filter((e) => !bad.includes(e));
   events.length = 0; events.push(...keep);
   stats.best = keep.reduce((b, e) => (!b || e.netUsd > b.netUsd ? e : b), null);
-  stats.version = 2;
+  stats.version = 3;
 }
 
 /** ¿Hay un worker vivo? (latido reciente) */
