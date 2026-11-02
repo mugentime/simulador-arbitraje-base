@@ -471,7 +471,7 @@ async function loadServerStats() {
   const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
   const since = d.startedAt ? new Date(d.startedAt) : null;
   const days = since ? Math.max(1 / 24, (d.now - since.getTime()) / 86400000) : 1;
-  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${ago !== null ? ` hace ${ago} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
+  $("acc-status").innerHTML = `${d.alive ? "● Servidor activo" : "○ Servidor en pausa (se reactiva solo en ≤5 min)"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${ago !== null ? ` hace ${ago} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
   const t = d.totals;
   $("acc-net").textContent = fmtUsd(t.netUsd, 2);
   $("acc-net-sub").textContent = `≈ ${fmtUsd(t.netUsd / days, 2)} por día · gas pagado ${fmtUsd(t.gasUsd, 2)}`;

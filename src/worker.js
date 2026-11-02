@@ -9,6 +9,8 @@ export const MIN_LIQ = {
   [core.TOKENS.USDC.address.toLowerCase()]: 150n * 10n ** 6n, // 150 USDC
 };
 export const HEARTBEAT_STALE_MS = 45_000;
+export const BUILDING_STALE_MS = 4 * 60_000; // armar el universo puede tardar minutos con RPC públicos
+const UNIVERSE_TTL_MS = 30 * 60_000; // el universo se reconstruye cada 30 min; mientras, se reutiliza
 const MAX_EVENTS = 500;
 const MAX_HOURS = 24 * 14;
 
@@ -31,6 +33,7 @@ export function emptyStats() {
     open: {}, // episodios abiertos: routeKey -> {startBlock, netUsd, peakUsd}
     gaps: [], // huecos de cobertura [{from, to}]
     lastError: null,
+    phase: null,
   };
 }
 
@@ -100,13 +103,19 @@ export function accountBlock(stats, block, ts, results) {
 }
 
 /** Construye el universo: pares principales + long tail de las últimas `ltHours` horas, filtrado por liquidez. */
-export async function buildUniverse(ethers, provider, { ltHours = 2, head } = {}) {
+export async function buildUniverse(ethers, provider, { ltHours = 2, head, progress = async () => {} } = {}) {
   head = head ?? (await provider.getBlockNumber());
   const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
+  await progress("pares principales");
   const found = await core.existingPools(ethers, provider, baseAddrs);
   let meta = new Map(Object.entries(core.TOKENS).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
   if (ltHours > 0) {
-    const specs = await core.scanNewPools(ethers, provider, { lookback: Math.round((ltHours * 3600) / 2), head });
+    let lastP = 0;
+    const specs = await core.scanNewPools(ethers, provider, {
+      lookback: Math.round((ltHours * 3600) / 2), head,
+      onProgress: (pr) => { if (Date.now() - lastP > 10_000) { lastP = Date.now(); progress(`long tail: ${pr.factory} (${pr.found} pools nuevos)`); } },
+    });
+    await progress(`long tail: ${specs.size} pools nuevos, leyendo tokens`);
     for (const [k, v] of specs) if (!found.has(k)) found.set(k, v);
     const evm = [...specs.entries()].filter(([, m]) => m.kind !== "v4").map(([a]) => a);
     const toks = await core.poolTokens(ethers, provider, evm);
@@ -121,9 +130,22 @@ export async function buildUniverse(ethers, provider, { ltHours = 2, head } = {}
       for (const [k, v] of part) if (!found.has(k)) found.set(k, v);
     }
   }
+  await progress(`cargando ${found.size} pools`);
+  return fromSpecs(ethers, provider, [...found.entries()], [...meta.values()]);
+}
+
+/** Reconstruye pools/ciclos a partir de specs guardados (arranque rápido). */
+export async function fromSpecs(ethers, provider, foundEntries, metaList) {
+  const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
+  const meta = new Map(metaList.map((t) => [t.address.toLowerCase(), t]));
+  const found = new Map(foundEntries);
   const all = await core.loadPools(ethers, provider, found, meta);
   const pools = core.filterPools(all, baseAddrs.slice(0, 2), MIN_LIQ);
-  return { pools, cycles: core.enumerateCycles(pools) };
+  // guardar solo los specs que pasaron el filtro, para que el próximo arranque sea ligero
+  const keep = new Set(pools.map((p) => p.address));
+  const keptEntries = foundEntries.filter(([k]) => keep.has(k));
+  const usedTokens = new Set(pools.flatMap((p) => [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()]));
+  return { pools, cycles: core.enumerateCycles(pools), specs: { found: keptEntries, meta: metaList.filter((t) => usedTokens.has(t.address.toLowerCase())) } };
 }
 
 /**
@@ -137,11 +159,20 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   let events = (await store.get("events")) ?? [];
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
-  stats.heartbeat = now();
-  await store.set("stats", stats);
+  const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); };
+  await setPhase("armando universo");
 
-  const uni = await buildUniverse(ethers, provider, { ltHours });
+  let uni;
+  const cached = await store.get("universe");
+  if (cached && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
+    await setPhase("cargando universo guardado");
+    uni = await fromSpecs(ethers, provider, cached.found, cached.meta);
+  } else {
+    uni = await buildUniverse(ethers, provider, { ltHours, progress: (m) => setPhase(`armando universo: ${m}`) });
+    await store.set("universe", { builtAt: now(), ...uni.specs });
+  }
   stats.universe = { pools: uni.pools.length, cycles: uni.cycles.length, builtAt: new Date(now()).toISOString() };
+  await setPhase("procesando bloques");
   let lenders = await core.readLenders(ethers, provider);
   log(`universo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos`);
 
@@ -190,5 +221,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
 /** ¿Hay un worker vivo? (latido reciente) */
 export function isAlive(stats, nowMs) {
-  return !!stats && !!stats.heartbeat && nowMs - stats.heartbeat < HEARTBEAT_STALE_MS;
+  if (!stats || !stats.heartbeat) return false;
+  const limit = stats.phase && stats.phase.startsWith("procesando") ? HEARTBEAT_STALE_MS : BUILDING_STALE_MS;
+  return nowMs - stats.heartbeat < limit;
 }
