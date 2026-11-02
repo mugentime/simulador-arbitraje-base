@@ -12,8 +12,7 @@ vía StateView y se marca como "requiere hop v4" porque el contrato aún no lo e
 
 - `public/index.html`: página publicada, un solo archivo (incluye ethers v6).
 - `src/`: código fuente legible (`core.js` lógica, `app.js` interfaz, `worker.js` worker 24/7).
-- `netlify/functions/`: `worker` (función en segundo plano, corre ~14 min bloque a bloque y guarda en Netlify Blobs),
-  `kick` (programada cada 5 min: relanza el worker si no hay uno vivo) y `stats` (`GET /api/stats`, lo que muestra el panel de acumulado).
+- `server/index.mjs`: servicio 24/7 en Railway (worker continuo + `GET /api/stats`).
 
 Contabilidad del acumulado: una ruta rentable en bloques consecutivos cuenta una vez (primer bloque). Es un tope
 superior: supone que el protocolo gana todas. Variables opcionales: `RPC_URL` (RPC propio de Base), `LT_HOURS`

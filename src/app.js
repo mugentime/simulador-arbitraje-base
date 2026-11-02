@@ -402,7 +402,7 @@ async function loadServerStats() {
   }
   const ago = (t) => { const m = Math.round((d.now - t) / 60000); return m < 1 ? "hace <1 min" : `hace ${m} min`; };
   $("acc-diag").innerHTML = (d.diag || []).map((x) => `<li>${ago(x.t)} · ${x.m}</li>`).join("") || "<li>Sin registros todavía.</li>";
-  if (!d.ready) { $("acc-status").textContent = "El servidor todavía no procesa su primer bloque. Arranca solo cada 5 minutos."; return; }
+  if (!d.ready) { $("acc-status").textContent = "El servidor está arrancando; en un minuto empieza a procesar bloques."; return; }
   const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
   const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
   const since = d.startedAt ? new Date(d.startedAt) : null;
