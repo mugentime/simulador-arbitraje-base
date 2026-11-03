@@ -107,15 +107,23 @@ export function makeIface(ethers) {
 
 // ------------------------------------------------------------------ Multicall
 
-export async function multicall(ethers, provider, calls, blockTag = "latest") {
+export const MULTICALL_CHUNK = 200;
+export async function multicall(ethers, provider, calls, blockTag = "latest", { parallel = 4 } = {}) {
   const iface = makeIface(ethers);
-  const out = [];
-  for (let i = 0; i < calls.length; i += 200) {
-    const part = calls.slice(i, i + 200).map((c) => ({ target: c[0], allowFailure: true, callData: c[1] }));
+  const chunks = [];
+  for (let i = 0; i < calls.length; i += MULTICALL_CHUNK) chunks.push(calls.slice(i, i + MULTICALL_CHUNK));
+  const one = async (chunk) => {
+    const part = chunk.map((c) => ({ target: c[0], allowFailure: true, callData: c[1] }));
     const data = iface.encodeFunctionData("aggregate3", [part]);
     const raw = await provider.call({ to: MULTICALL3, data, blockTag });
     const [res] = iface.decodeFunctionResult("aggregate3", raw);
-    for (const r of res) out.push(r.success && r.returnData !== "0x" ? r.returnData : null);
+    return res.map((r) => (r.success && r.returnData !== "0x" ? r.returnData : null));
+  };
+  // los tramos se piden en paralelo (hasta `parallel` a la vez): una lectura de ~800 llamadas tarda lo que una ida y vuelta
+  const out = [];
+  for (let i = 0; i < chunks.length; i += parallel) {
+    const parts = await Promise.all(chunks.slice(i, i + parallel).map(one));
+    for (const p of parts) out.push(...p);
   }
   return out;
 }
