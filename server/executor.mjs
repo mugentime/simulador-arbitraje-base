@@ -17,6 +17,7 @@ import * as core from "../src/core.js";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
+const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
 const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]);
@@ -80,6 +81,10 @@ export class Executor {
     if (this.p1.executor) {
       const code = await this.provider.getCode(this.p1.executor);
       if (code === "0x") { await this.diag(`fase 1: no hay contrato en ${this.p1.executor}; se redespliega`); this.p1.executor = null; if (this.autoDeploy) await this.deploy(); }
+      else if (this.p1.artifact !== ART_ID) {
+        await this.diag(`fase 1: el contrato en ${this.p1.executor} es de una versión anterior (${this.p1.artifact ?? "sin versión"} ≠ ${ART_ID})${this.autoDeploy ? "; se despliega la nueva" : "; pon AUTO_DEPLOY=1 para desplegar la nueva"}`);
+        if (this.autoDeploy) { this.p1.previousExecutor = this.p1.executor; this.p1.executor = null; await this.deploy(); }
+      }
     }
     await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ETH · contrato ${this.p1.executor ?? "no desplegado"}`);
     await this.save();
@@ -95,7 +100,7 @@ export class Executor {
         return f.deploy(this.wallet.address, { gasLimit: (gasLimit * 12n) / 10n });
       });
       const rc = await c.deploymentTransaction().wait();
-      this.p1.executor = await c.getAddress();
+      this.p1.executor = await c.getAddress(); this.p1.artifact = ART_ID;
       this.p1.deployTx = rc.hash; this.p1.deployedAt = Date.now();
       this.p1.gasPaidUsd += 0; // se contabiliza en ETH abajo
       await this.diag(`fase 1: ArbExecutor desplegado en ${this.p1.executor} (tx ${rc.hash}, gas ${rc.gasUsed})`);
@@ -110,12 +115,13 @@ export class Executor {
   buildPlan(r, lenders, ethUsd) {
     const lender = lenders.find((l) => l.name === r.lender);
     if (!lender || !(r.lender in SOURCE)) return null;
-    if (r.route.some((p) => p.kind === "v4")) return null; // el contrato aún no ejecuta hops v4
+    if (r.route.some((p) => p.kind === "v4" && !p.tickSpacing)) return null; // v4 sin tickSpacing conocido (universo viejo): se reconstruye solo
     let tokenIn = r.startTok.address;
     const hops = [];
     for (const p of r.route) {
       const tokenOut = core.other(p, tokenIn).address;
-      hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps))]);
+      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing]);
+      else hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0]);
       tokenIn = tokenOut;
     }
     if (tokenIn !== r.startTok.address) return null;
@@ -137,7 +143,7 @@ export class Executor {
     try {
       for (const r of cands) {
         const plan = this.buildPlan(r, lenders, ethUsd);
-        if (!plan) { text = `${label(r)}: ruta por Uniswap v4; el contrato aún no cubre ese salto`; continue; }
+        if (!plan) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
         const rec = await this.simulate(plan, block, ts, gas, ethUsd);
         if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
         else text = `Simulado on-chain: revertiría (${rec.reason})`;
