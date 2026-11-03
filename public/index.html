@@ -102,7 +102,11 @@
       <div class="kpi"><div class="l">Simulaciones</div><div class="v" id="h-sim">—</div><div class="s" id="h-sim-sub"></div></div>
     </div>
     <details><summary>Mejores candidatas en la última lectura</summary>
-      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">comisión medida (WETH)</th><th class="num">gas</th><th class="num">neto</th><th class="num">último harvest</th></tr></thead><tbody id="h-cands"></tbody></table></div>
+      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">comisión medida (WETH)</th><th class="num">gas</th><th class="num">neto</th><th class="num">último harvest</th><th class="num">próximo previsto</th></tr></thead><tbody id="h-cands"></tbody></table></div>
+    </details>
+    <details><summary>Modelo predictivo: historial de harvests (quién cosecha, cada cuánto, cuánto paga)</summary>
+      <p class="sub" id="h-hist-sub"></p>
+      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">harvests</th><th class="num">cada (h)</th><th class="num">comisión mediana (ETH)</th><th>cosechador principal</th><th class="num">cosechadores</th></tr></thead><tbody id="h-hist"></tbody></table></div>
     </details>
 
     <h3>Acumulado por hora</h3>
@@ -132,7 +136,7 @@
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 13:32 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 14:26 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
@@ -271,7 +275,10 @@ async function load() {
     $("h-worth-sub").textContent = "comisión medida por simulación ≥ 2.5× gas y neto ≥ $0.005";
     $("h-sim").textContent = num(hv.simulated);
     $("h-sim-sub").textContent = `${hv.wouldSucceed} ejecutables · ${hv.wouldRevert} revertirían${hv.lastError ? ` · ${hv.lastError}` : ""}`;
-    $("h-cands").innerHTML = (hv.candidates || []).map((c) => `<tr><td>${esc(c.id)}</td><td class="num">${c.feeUsd === null || c.feeUsd === undefined ? "<span class=muted>" + esc(c.quoteError || "no medida") + "</span>" : usd(c.feeUsd, 4)}</td><td class="num">${usd(c.gasUsd, 4)}</td><td class="num${c.worth ? " strong" : ""}">${c.netUsd === null || c.netUsd === undefined ? "—" : usd(c.netUsd, 4)}</td><td class="num">${c.sinceMin !== null ? "hace " + (c.sinceMin >= 60 ? (c.sinceMin / 60).toFixed(1) + " h" : c.sinceMin + " min") : "—"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Sin lectura todavía.</td></tr>`;
+    $("h-cands").innerHTML = (hv.candidates || []).map((c) => `<tr><td>${esc(c.id)}</td><td class="num">${c.feeUsd === null || c.feeUsd === undefined ? "<span class=muted>" + esc(c.quoteError || "no medida") + "</span>" : usd(c.feeUsd, 4)}</td><td class="num">${usd(c.gasUsd, 4)}</td><td class="num${c.worth ? " strong" : ""}">${c.netUsd === null || c.netUsd === undefined ? "—" : usd(c.netUsd, 4)}</td><td class="num">${c.sinceMin !== null ? "hace " + (c.sinceMin >= 60 ? (c.sinceMin / 60).toFixed(1) + " h" : c.sinceMin + " min") : "—"}</td><td class="num">${c.nextInSec === null || c.nextInSec === undefined ? "—" : (c.nextInSec < 0 ? "vencido " + Math.round(-c.nextInSec / 60) + " min" : "en " + Math.round(c.nextInSec / 60) + " min")}${c.due ? " ●" : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin lectura todavía.</td></tr>`;
+    const hh = hv.history;
+    $("h-hist-sub").textContent = hh ? `${hh.days.toFixed(1)} días de eventos on-chain · ${hh.withData} estrategias con ≥2 harvests · intervalo mediano ${hh.intervalMedH ? hh.intervalMedH.toFixed(1) + " h" : "—"}. Previsión: próximo harvest = último + intervalo mediano; se intenta cosechar en la ventana previa si la comisión medida supera el gas.` : "Analizando el historial…";
+    $("h-hist").innerHTML = (hh?.top || []).map((x) => `<tr><td>${esc(x.id)}</td><td class="num">${x.n}</td><td class="num">${x.intervalH ? x.intervalH.toFixed(1) : "—"}</td><td class="num">${x.callFeeMedUsd !== null ? x.callFeeMedUsd.toFixed(6) : "—"}</td><td class="mono">${x.topHarvester ? x.topHarvester.slice(0, 10) + "…" : "—"}</td><td class="num">${x.harvesters}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Sin datos todavía.</td></tr>`;
   }
 }
 

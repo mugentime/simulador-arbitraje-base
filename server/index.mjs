@@ -161,7 +161,7 @@ async function loop() {
       await exec.init();
       let nb = 0;
       executor = exec;
-      const hv = new Harvester({ provider: p, store, diag, executor: exec, mode: EXECUTE_MODE });
+      const hv = new Harvester({ provider: p, store, diag, executor: exec, mode: EXECUTE_MODE, logsProvider: logsProviderFor(p, url) });
       await hv.init();
       harvester = hv;
       const lq = new Liquidations({ provider: p, logsProvider: logsProviderFor(p, url), store, diag });
@@ -203,6 +203,11 @@ const server = http.createServer(async (req, res) => {
     const vaults = live.vstats ? JSON.parse(J(live.vstats)) : ((await store.get("vaults")) ?? null);
     const phase1 = executor?.p1 ?? (await store.get("phase1")) ?? null;
     const harvest = harvester?.h ?? (await store.get("harvest")) ?? null;
+    if (harvest && harvester?.hist) {
+      const xs = Object.values(harvester.hist.strats).filter((x) => x.n >= 2);
+      harvest.history = { days: harvester.hist.days, withData: xs.length, intervalMedH: xs.length ? [...xs.map((x) => x.intervalMed)].sort((a, b) => a - b)[Math.floor(xs.length / 2)] / 3600 : null,
+        top: xs.map((x) => ({ id: x.id, n: x.n, intervalH: x.intervalMed / 3600, callFeeMedUsd: x.callFeeMedWei !== null ? x.callFeeMedWei / 1e18 : null, topHarvester: x.topHarvester, harvesters: x.harvesters })).sort((a, b) => (b.callFeeMedUsd ?? 0) - (a.callFeeMedUsd ?? 0)).slice(0, 15) };
+    }
     const liq = liquidations?.liq ?? (await store.get("liq")) ?? null;
     const liqExec = liquidator?.x ?? (await store.get("liqExec")) ?? null;
     const fastStats = fast?.f ?? null;
