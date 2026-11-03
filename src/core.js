@@ -898,4 +898,4 @@ export async function refreshHarvest(ethers, provider, managers) {
   list.forEach((m, k) => { if (res[2 * k]) m.callReward = word(res[2 * k], 0); if (res[2 * k + 1]) m.lastHarvest = Number(word(res[2 * k + 1], 0)); });
 }
 
-export const HARVEST_GAS = 650000n;
+export const HARVEST_GAS = 2_000_000n; // harvests de posiciones concentradas en Base: ~1.5–2.5M gas

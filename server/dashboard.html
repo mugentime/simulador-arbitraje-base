@@ -101,7 +101,7 @@
       <div class="kpi"><div class="l">Simulaciones</div><div class="v" id="h-sim">—</div><div class="s" id="h-sim-sub"></div></div>
     </div>
     <details><summary>Mejores candidatas en la última lectura</summary>
-      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">callReward</th><th class="num">gas</th><th class="num">neto</th><th class="num">último harvest</th></tr></thead><tbody id="h-cands"></tbody></table></div>
+      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">comisión medida (WETH)</th><th class="num">gas</th><th class="num">neto</th><th class="num">último harvest</th></tr></thead><tbody id="h-cands"></tbody></table></div>
     </details>
 
     <h3>Acumulado por hora</h3>
@@ -227,10 +227,10 @@ async function load() {
     $("h-strats").textContent = num(hv.strategies);
     $("h-strats-sub").textContent = hv.lastScan ? `última lectura ${ago(d.now, hv.lastScan)} (bloque ${num(hv.scanBlock)})` : "esperando la primera lectura";
     $("h-worth").textContent = num(hv.worthNow);
-    $("h-worth-sub").textContent = "callReward ≥ 2.5× gas y neto ≥ $0.005";
+    $("h-worth-sub").textContent = "comisión medida por simulación ≥ 2.5× gas y neto ≥ $0.005";
     $("h-sim").textContent = num(hv.simulated);
     $("h-sim-sub").textContent = `${hv.wouldSucceed} ejecutables · ${hv.wouldRevert} revertirían${hv.lastError ? ` · ${hv.lastError}` : ""}`;
-    $("h-cands").innerHTML = (hv.candidates || []).map((c) => `<tr><td>${esc(c.id)}</td><td class="num">${usd(c.rewardUsd, 4)}</td><td class="num">${usd(c.gasUsd, 4)}</td><td class="num${c.worth ? " strong" : ""}">${usd(c.netUsd, 4)}</td><td class="num">${c.sinceMin !== null ? "hace " + (c.sinceMin >= 60 ? (c.sinceMin / 60).toFixed(1) + " h" : c.sinceMin + " min") : "—"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Sin lectura todavía.</td></tr>`;
+    $("h-cands").innerHTML = (hv.candidates || []).map((c) => `<tr><td>${esc(c.id)}</td><td class="num">${c.feeUsd === null || c.feeUsd === undefined ? "<span class=muted>" + esc(c.quoteError || "no medida") + "</span>" : usd(c.feeUsd, 4)}</td><td class="num">${usd(c.gasUsd, 4)}</td><td class="num${c.worth ? " strong" : ""}">${c.netUsd === null || c.netUsd === undefined ? "—" : usd(c.netUsd, 4)}</td><td class="num">${c.sinceMin !== null ? "hace " + (c.sinceMin >= 60 ? (c.sinceMin / 60).toFixed(1) + " h" : c.sinceMin + " min") : "—"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Sin lectura todavía.</td></tr>`;
   }
 }
 

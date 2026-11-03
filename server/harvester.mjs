@@ -10,6 +10,8 @@ import * as core from "../src/core.js";
 
 const BEEFY_API = "https://api.beefy.finance/vaults";
 const ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[])",
   "function callReward() view returns (uint256)",
   "function lastHarvest() view returns (uint256)",
   "function paused() view returns (bool)",
@@ -99,10 +101,21 @@ export class Harvester {
       const gasUsd = (Number(core.HARVEST_GAS * gasPrice + gas.l1Fee) / 1e18) * ethUsd;
       rows.push({ address: s.address, id: s.id, platform: s.platform, rewardUsd, gasUsd, netUsd: rewardUsd - gasUsd, sinceMin: lastHarvest ? Math.round((ts - lastHarvest) / 60) : null, worth: rewardUsd >= gasUsd * this.limits.rewardOverGas && rewardUsd - gasUsd >= this.limits.minNetUsd });
     });
-    rows.sort((a, b) => b.netUsd - a.netUsd);
+    // callReward() no tiene unidad fiable (en Base muchas estrategias lo devuelven en el token de recompensa, no en WETH):
+    // sirve solo para ordenar. La comisión real se MIDE simulando el harvest y comparando el saldo WETH de la wallet.
+    rows.sort((a, b) => b.rewardUsd - a.rewardUsd);
+    const wallet = this.executor?.wallet;
+    const top = rows.filter((r) => r.rewardUsd > 0).slice(0, Number(process.env.HARVEST_QUOTE_TOP ?? 25));
+    if (wallet && top.length) {
+      const quotes = await this.quoteFees(top, wallet.address, ethUsd);
+      for (const r of top) { const q = quotes.get(r.address); r.feeUsd = q ? q.feeUsd : null; r.quoteError = q ? q.error : "sin cotización"; r.netUsd = q && q.feeUsd !== null ? q.feeUsd - r.gasUsd : null; r.worth = r.netUsd !== null && q.feeUsd >= r.gasUsd * this.limits.rewardOverGas && r.netUsd >= this.limits.minNetUsd; }
+      for (const r of rows) if (!top.includes(r)) { r.feeUsd = null; r.netUsd = null; r.worth = false; }
+    } else for (const r of rows) { r.feeUsd = null; r.netUsd = null; r.worth = false; }
+    rows.sort((a, b) => (b.netUsd ?? -1e9) - (a.netUsd ?? -1e9));
     this.h.candidates = rows.slice(0, 12); this.h.worthNow = rows.filter((r) => r.worth).length;
     this.h.lastScan = Date.now(); this.h.scanBlock = block;
-    const wallet = this.executor?.wallet;
+    const measured = rows.filter((r) => r.feeUsd !== null && r.feeUsd !== undefined);
+    if (measured.length && (this.h.worthNow || block % (this.limits.scanEvery * 10) === 0)) await this.diag(`harvest: ${measured.length} comisiones medidas · ${this.h.worthNow} rentables · top: ${measured.slice(0, 3).map((r) => `${r.id} $${r.feeUsd.toFixed(4)} vs gas $${r.gasUsd.toFixed(4)}`).join(" · ")}`);
     for (const r of rows.filter((x) => x.worth).slice(0, 3)) {
       if (!wallet) break;
       await this.attempt(r, { block, ts, gas, ethUsd });
@@ -110,9 +123,27 @@ export class Harvester {
     await this.save();
   }
 
+  /** Comisión real en WETH de cada harvest: [balanceOf, harvest(wallet), balanceOf] en un solo eth_call por estrategia. */
+  async quoteFees(rows, wallet, ethUsd) {
+    const WETH = core.TOKENS.WETH.address;
+    const bal = this.iface.encodeFunctionData("balanceOf", [wallet]);
+    const out = new Map();
+    await Promise.all(rows.map(async (r) => {
+      const calls = [[WETH, true, bal], [r.address, true, this.iface.encodeFunctionData("harvest(address)", [wallet])], [WETH, true, bal]];
+      try {
+        const raw = await this.provider.call({ to: core.MULTICALL3, from: wallet, data: this.iface.encodeFunctionData("aggregate3", [calls.map(([target, allowFailure, callData]) => ({ target, allowFailure, callData }))]) });
+        const [res] = this.iface.decodeFunctionResult("aggregate3", raw);
+        if (!res[1].success) { out.set(r.address, { feeUsd: null, error: "harvest revertiría en simulación" }); return; }
+        const b0 = BigInt(res[0].returnData), b1 = BigInt(res[2].returnData);
+        out.set(r.address, { feeUsd: (Number(b1 - b0) / 1e18) * ethUsd, error: null });
+      } catch (e) { out.set(r.address, { feeUsd: null, error: (e.shortMessage || e.message).slice(0, 60) }); }
+    }));
+    return out;
+  }
+
   async attempt(r, { block, ts, gas, ethUsd }) {
     const wallet = this.executor.wallet;
-    const rec = { block, ts, strategy: r.address, id: r.id, rewardUsd: r.rewardUsd, ok: false, reason: null, gasUsd: null, netUsd: null, sent: null };
+    const rec = { block, ts, strategy: r.address, id: r.id, rewardUsd: r.feeUsd ?? r.rewardUsd, ok: false, reason: null, gasUsd: null, netUsd: null, sent: null };
     let data = this.iface.encodeFunctionData("harvest(address)", [wallet.address]);
     let tx = { to: r.address, from: wallet.address, data };
     let gasEst;
@@ -122,7 +153,8 @@ export class Harvester {
       catch (e2) { rec.reason = (e2.shortMessage || e2.message).slice(0, 80); this.h.simulated++; this.h.wouldRevert++; this.push(rec); return; }
     }
     rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
-    rec.netUsd = r.rewardUsd - rec.gasUsd; rec.ok = true; rec.gasEst = Number(gasEst);
+    rec.netUsd = (r.feeUsd ?? 0) - rec.gasUsd; rec.ok = true; rec.gasEst = Number(gasEst);
+    if (r.feeUsd !== null && r.feeUsd !== undefined && r.feeUsd < rec.gasUsd * this.limits.rewardOverGas) { rec.sent = `omitida: comisión medida $${r.feeUsd.toFixed(4)} < ${this.limits.rewardOverGas}× gas real $${rec.gasUsd.toFixed(4)}`; this.push(rec); return; }
     this.h.simulated++; this.h.wouldSucceed++;
     if (this.mode !== "live" || rec.netUsd < this.limits.minNetUsd) { rec.sent = this.mode !== "live" ? "modo simulación" : "omitida: neto < mínimo"; this.push(rec); return; }
     const now = Date.now();
@@ -132,8 +164,8 @@ export class Harvester {
       const prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
       const sent = await this.executor.withSender((w) => w.sendTransaction({ to: r.address, data, gasLimit: (gasEst * 13n) / 10n, maxFeePerGas: gas.baseFee * 3n + prio, maxPriorityFeePerGas: prio }));
       this.sentTimes.push(now); this.h.sent++; rec.sent = sent.hash;
-      this.h.pending.push({ hash: sent.hash, sentAt: now, id: r.id, strategy: r.address, rewardUsd: r.rewardUsd });
-      await this.diag(`harvest: enviada ${sent.hash} · ${r.id} · callReward $${r.rewardUsd.toFixed(4)} vs gas $${rec.gasUsd.toFixed(4)}`);
+      this.h.pending.push({ hash: sent.hash, sentAt: now, id: r.id, strategy: r.address, rewardUsd: r.feeUsd ?? r.rewardUsd });
+      await this.diag(`harvest: enviada ${sent.hash} · ${r.id} · comisión medida $${(r.feeUsd ?? 0).toFixed(4)} vs gas $${rec.gasUsd.toFixed(4)}`);
     } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.h.lastError = rec.sent; await this.diag(`harvest: ${rec.sent}`); }
     this.push(rec);
   }
