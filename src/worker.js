@@ -240,7 +240,8 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
           vstats.harvest = harvestTable(managers, gas, ethUsd, gas.timestamp);
           vstats.harvestUpdatedAt = gas.timestamp;
         }
-      } catch (e) { stats.lastError = `vaults bloque ${b}: ${e.shortMessage || e.message}`; }
+        vstats.lastError = null;
+      } catch (e) { vstats.lastError = `bloque ${b}: ${e.shortMessage || e.message}`; vstats.scanned = { block: b, ts: gas.timestamp, pools: uni.pools.length, found: 0, error: vstats.lastError }; }
       stats.lastError = null;
       last = b; n++; sinceFlush++;
       if (sinceFlush >= flushEvery) await flush();

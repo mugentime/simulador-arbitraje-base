@@ -313,6 +313,8 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
   return pools;
 }
 
+const MIN_SQRT_RATIO = 4295128739n;
+const MAX_SQRT_RATIO = 1461446703485210103287273642190157433829878702059n;
 export async function refreshPools(ethers, provider, pools, blockTag = "latest") {
   const iface = makeIface(ethers);
   const calls = [];
@@ -329,6 +331,9 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
       if (!s0 || !liq) { p.reserve0 = p.reserve1 = 0n; continue; }
       p.sqrtPriceX96 = word(s0, 0);
       p.liquidity = word(liq, 0);
+      // Pool en el extremo del rango de precios (tick mínimo/máximo): el swap on-chain revierte con SPL y
+      // la liquidez virtual no significa nada. Se trata como sin liquidez.
+      if (p.sqrtPriceX96 <= MIN_SQRT_RATIO * 4n || p.sqrtPriceX96 >= MAX_SQRT_RATIO / 4n) { p.reserve0 = p.reserve1 = 0n; continue; }
       [p.reserve0, p.reserve1] = v3VirtualReserves(p.sqrtPriceX96, p.liquidity);
     } else {
       const res = r[k++];

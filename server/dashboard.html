@@ -189,7 +189,7 @@ async function load() {
     const sc = vs.scanned, L = vs.last;
     const sameBlock = sc && L && L.block === sc.block;
     const stages = [
-      { name: "1 · Escaneo", t: sc ? `Bloque ${num(sc.block)}: se revisaron los eventos Mint/Burn/Swap de los ${sc.pools} pools vigilados · ${sc.found ? sc.found + " transacción(es) de vault" : "ninguna transacción de vault"}` : "Esperando…" },
+      { name: "1 · Escaneo", t: sc ? (sc.error ? `Bloque ${num(sc.block)}: no se pudieron leer los eventos (${sc.error})` : `Bloque ${num(sc.block)}: se revisaron los eventos Mint/Burn/Swap de los ${sc.pools} pools vigilados · ${sc.found ? sc.found + " transacción(es) de vault" : "ninguna transacción de vault"}`) : "Esperando el primer bloque…" },
       { name: "2 · Clasificación", t: L ? `${sameBlock ? "En este bloque" : "Último evento (bloque " + num(L.block) + ")"}: ${L.kinds.join(", ")} · manager ${L.managers.join(", ")}` : "Aún no hay eventos clasificados (rebalanceo = Burn+Mint del mismo dueño, zap = Swap+Mint, salida = Burn+Swap)" },
       { name: "3 · Desfase", t: L ? `El evento movió el pool ${L.maxDevBps.toFixed(2)} bps respecto a la mediana de su par${L.soldUsd ? ` · vendió ≈ ${usd(L.soldUsd, 0)}` : ""}` : "—" },
       { name: "4 · Back-run", hit: !!L?.best, t: L ? (L.best ? `Ruta con EV > 0: ${L.best.start} · ${L.best.hops} saltos · préstamo ${usd(L.best.amountInUsd, 0)} de ${L.best.lender} · neto ${usd(L.best.netUsd, 4)}${L.best.needsV4 ? " · requiere salto v4" : ""}` : "El desfase no alcanza para cubrir comisiones y gas: sin back-run rentable") : "—" },

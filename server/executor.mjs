@@ -168,6 +168,7 @@ export class Executor {
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
+      await this.diag(`fase 1: revertiría (${rec.reason}) · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
     }
     this.p1.simulated++;
     this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
