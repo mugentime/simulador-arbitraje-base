@@ -205,11 +205,11 @@ export class Executor {
       return rec;
     }
     const toUsd = core.tokenToUsd(r.startTok, ethUsd);
-    // misma ruta en el bloque que vio el modelo (para separar "modelo mal" de "la oportunidad ya no está")
-    try { const retB = await this.provider.call({ ...tx, blockTag: block }); rec.profitAtBlockUsd = toUsd(this.iface.decodeFunctionResult("execute", retB)[0]); }
-    catch (e) { rec.profitAtBlockUsd = null; rec.reasonAtBlock = decodeRevert(this.iface, e); }
+    // en paralelo: misma ruta en el bloque que vio el modelo (diagnóstico) y en "latest" + estimación de gas (decisión)
+    const atBlock = this.provider.call({ ...tx, blockTag: block }).then((retB) => { rec.profitAtBlockUsd = toUsd(this.iface.decodeFunctionResult("execute", retB)[0]); }).catch((e) => { rec.profitAtBlockUsd = null; rec.reasonAtBlock = decodeRevert(this.iface, e); });
     try {
       const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
+      atBlock.catch(() => {});
       const profit = this.iface.decodeFunctionResult("execute", ret)[0];
       rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);
       rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
@@ -218,6 +218,7 @@ export class Executor {
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
+      await atBlock;
       await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : rec.reasonAtBlock} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
       if (Date.now() - (this.lastProbe ?? 0) > 60_000) { this.lastProbe = Date.now(); await this.probe(plan).catch((e) => this.diag(`fase 1: sonda falló: ${e.shortMessage || e.message}`)); }
     }

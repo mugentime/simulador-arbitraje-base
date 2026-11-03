@@ -88,6 +88,40 @@ function logsProviderFor(main, mainUrl) {
   };
 }
 
+// ---------------------------------------------------------------- bloques nuevos por WebSocket (con respaldo por sondeo)
+// Despierta al worker en cuanto el nodo anuncia un bloque, en vez de preguntar cada segundo.
+const WS_RPCS = (process.env.WS_RPC_URL ? [process.env.WS_RPC_URL] : []).concat(["wss://base-rpc.publicnode.com", "wss://base.drpc.org", "wss://mainnet.base.org"]);
+let wsWaiters = [];
+let wsBlock = 0, wsAlive = false;
+function blockWaiter(fallbackMs) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { wsWaiters = wsWaiters.filter((w) => w !== resolve); resolve(); }, wsAlive ? Math.max(fallbackMs, 2500) : fallbackMs);
+    wsWaiters.push(() => { clearTimeout(t); resolve(); });
+  });
+}
+async function wsLoop() {
+  let i = 0;
+  while (!stopping) {
+    const url = WS_RPCS[i % WS_RPCS.length];
+    try {
+      const ws = new ethers.WebSocketProvider(url, Number(CHAIN_ID));
+      await ws.getBlockNumber();
+      wsAlive = true;
+      await diag(`bloques: suscrito por WebSocket a ${new URL(url).host}`);
+      await new Promise((resolve) => {
+        ws.on("block", (n) => { wsBlock = n; const w = wsWaiters; wsWaiters = []; for (const f of w) f(); });
+        ws.websocket.onclose = () => resolve();
+        ws.websocket.onerror = () => resolve();
+        setTimeout(resolve, 6 * 3600_000); // reconectar cada 6 h de todos modos
+      });
+      try { ws.destroy(); } catch { /* */ }
+    } catch (e) { await diag(`bloques: WebSocket ${new URL(url).host} falló (${(e.shortMessage || e.message).slice(0, 60)}); siguiente`); i++; }
+    wsAlive = false;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+wsLoop();
+
 // ---------------------------------------------------------------- bucle infinito
 let stopping = false;
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
@@ -103,7 +137,7 @@ async function loop() {
       executor = exec;
       const onBlock = async (ctx) => { nb++; if (nb % 300 === 0) await exec.refreshBalance(); return exec.onBlock(ctx); };
       // tandas de 1 h: el universo se refresca solo (lo guarda 30 min)
-      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock, live, logsProvider: logsProviderFor(p, url) });
+      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock, live, logsProvider: logsProviderFor(p, url), waitBlock: blockWaiter });
       await diag(`servidor: tanda terminada · ${stats.blocksProcessed} bloques · ${stats.totals.episodes} oportunidades`);
     } catch (e) {
       await diag(`servidor: error ${e.shortMessage || e.message}; reintento en 20 s`);

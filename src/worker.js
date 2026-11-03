@@ -161,7 +161,7 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
  * Corre hasta `deadlineMs` (epoch ms). Guarda stats y eventos en el store cada `flushEvery` bloques.
  * Devuelve las stats finales. No envía transacciones.
  */
-export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null, live = null, logsProvider = null }) {
+export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null, live = null, logsProvider = null, waitBlock = null }) {
   const runId = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
   const MODEL_VERSION = 2; // 2 = liquidez concentrada con cruce de ticks. Al cambiar, el acumulado anterior deja de ser comparable: se reinicia.
@@ -222,7 +222,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       await sleep(pollMs * 3);
       continue;
     }
-    if (head <= last) { await sleep(pollMs); continue; }
+    if (head <= last) { if (waitBlock) await waitBlock(pollMs); else await sleep(pollMs); continue; }
     // Si nos atrasamos mucho (arranque o hueco), saltamos al bloque actual: el estado histórico no siempre está disponible.
     const b = head - last > 5 ? head : last + 1;
     try {
