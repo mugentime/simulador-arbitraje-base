@@ -257,8 +257,10 @@ export class Executor {
         const ev = rcpt.logs.map((l) => { try { return this.iface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "Executed");
         const realized = ev ? core.tokenToUsd(plan.meta.startTok, ethUsd)(ev.args.profit) : 0;
         this.p1.realizedUsd += realized - paid; rec.sent = `${tx.hash} · confirmada · +$${(realized - paid).toFixed(4)}`;
+        await this.diag(`fase 1: confirmada ${tx.hash} · beneficio bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${(realized - paid) >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber}`);
       } else {
         this.p1.reverted++; this.consecutiveReverts++; rec.sent = `${tx.hash} · revertida (gas $${paid.toFixed(4)})`;
+        await this.diag(`fase 1: revertida ${tx.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber}`);
         if (this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
     } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; }
