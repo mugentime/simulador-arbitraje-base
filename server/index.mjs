@@ -109,7 +109,7 @@ async function wsLoop() {
       sock.on("error", () => {}); // los errores se manejan por cierre; sin esto el proceso moriría
       await new Promise((res, rej) => { sock.once("open", res); sock.once("close", () => rej(new Error("cerrado al conectar"))); setTimeout(() => rej(new Error("tiempo de conexión")), 8000); });
       const ws = new ethers.WebSocketProvider(sock, Number(CHAIN_ID));
-      await ws.getBlockNumber();
+      await Promise.race([ws.getBlockNumber(), new Promise((_, rej) => setTimeout(() => rej(new Error("sin respuesta al suscribir")), 10_000))]);
       wsAlive = true;
       await diag(`bloques: suscrito por WebSocket a ${new URL(url).host}`);
       await new Promise((resolve) => {
