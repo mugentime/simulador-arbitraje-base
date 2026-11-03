@@ -120,10 +120,9 @@ async function wsLoop() {
     await new Promise((r) => setTimeout(r, 5000));
   }
 }
-wsLoop();
-
 // ---------------------------------------------------------------- bucle infinito
 let stopping = false;
+wsLoop();
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
 let executor = null;
 async function loop() {
