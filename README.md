@@ -24,3 +24,11 @@ superior: supone que el protocolo gana todas. Variables opcionales: `RPC_URL` (R
 Railway lo arranca con `npm start` desde la raíz del repo. Recomendado: un volumen montado en `/data` para que
 el acumulado sobreviva a reinicios. Variables opcionales: `RPC_URL`, `LT_HOURS`. Cuando el servicio tenga dominio
 público, se pone su URL + `/api/stats` en `<meta name="stats-url">` de la página.
+
+## Fase 1 (ejecución) desde Railway
+
+`server/executor.mjs`. Variables en Railway (nunca en el repo):
+- `PRIVATE_KEY`: llave de la wallet que paga gas y recibe el beneficio (el contrato no guarda fondos).
+- `AUTO_DEPLOY=1`: despliega `ArbExecutor` una vez si no hay dirección guardada (artefacto en `server/artifacts/`).
+- `EXECUTE_MODE=simulate|live` (por defecto simulate: solo `eth_call`, nunca envía).
+- Límites en live: `MAX_GAS_USD` (0.25), `MAX_TX_PER_HOUR` (20), `PAUSE_AFTER_REVERTS` (3), `MIN_NET_USD` (0.05).

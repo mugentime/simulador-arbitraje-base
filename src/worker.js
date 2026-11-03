@@ -136,7 +136,7 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
  * Corre hasta `deadlineMs` (epoch ms). Guarda stats y eventos en el store cada `flushEvery` bloques.
  * Devuelve las stats finales. No envía transacciones.
  */
-export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {} }) {
+export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null }) {
   const runId = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
   const stats = (await store.get("stats")) ?? emptyStats();
@@ -195,6 +195,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       if (n % 60 === 0) lenders = await core.readLenders(ethers, provider);
       const results = core.evaluateAll({ pools: uni.pools, cycles: uni.cycles, lenders, gas, ethUsd });
       events.push(...accountBlock(stats, b, gas.timestamp, results));
+      if (onBlock) { try { await onBlock({ block: b, ts: gas.timestamp, results, lenders, gas, ethUsd, pools: uni.pools }); } catch (e) { stats.lastError = `onBlock ${b}: ${e.shortMessage || e.message}`; } }
       // punto 6: rebalanceos, zaps y salidas de vaults en este bloque, y qué habría hecho el protocolo
       try {
         const vev = await core.scanVaultEvents(ethers, provider, uni.pools, b);

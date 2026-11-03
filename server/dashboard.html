@@ -45,6 +45,19 @@
     </div>
   </section>
 
+  <section class="card"><h2>Fase 1 · ejecución con el contrato real</h2>
+    <p class="sub" id="p1-status">—</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Simulaciones (eth_call)</div><div class="v" id="p1-sim">—</div><div class="s" id="p1-sim-sub"></div></div>
+      <div class="kpi"><div class="l">Habrían tenido éxito</div><div class="v" id="p1-ok">—</div><div class="s" id="p1-ok-sub"></div></div>
+      <div class="kpi"><div class="l">Neto proyectado (simulado)</div><div class="v" id="p1-net">—</div><div class="s" id="p1-net-sub"></div></div>
+      <div class="kpi"><div class="l">Enviadas reales</div><div class="v" id="p1-sent">—</div><div class="s" id="p1-sent-sub"></div></div>
+    </div>
+    <h2 style="margin-top:12px">Últimas simulaciones</h2>
+    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Modelo</th><th class="num">On-chain</th><th class="num">Gas</th><th>Resultado</th></tr></thead><tbody id="p1-recent"></tbody></table></div>
+    <p class="sub" style="margin-top:6px">Cada fila es el Plan real enviado al contrato con <code>eth_call</code> desde la wallet, en el bloque en que apareció la oportunidad. "Modelo" es lo que calculó el bot; "On-chain" es lo que devolvió el contrato. Si difieren, el modelo está mal; si revierte, la razón dice por qué.</p>
+  </section>
+
   <section class="card"><h2>Acumulado por hora (USD)</h2><svg id="chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg></section>
 
   <section class="card"><h2>Rutas que más han aportado</h2>
@@ -100,6 +113,19 @@ async function load() {
   $("recent").innerHTML = d.recent.map((e) => `<tr><td>${num(e.block)}</td><td>${when(e.ts * 1000)}</td><td>${e.route}${e.needsV4 ? " · requiere hop v4" : ""}</td><td class="num">${usd(e.amountUsd, 0)}</td><td class="num strong">${usd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6">Sin oportunidades todavía.</td></tr>`;
   chart(d.hourly || []);
   vaults(d.vaults);
+  phase1(d.phase1);
+}
+function phase1(p) {
+  if (!p) { $("p1-status").textContent = "Fase 1 no iniciada."; return; }
+  const exec = p.executor ? `contrato <a href="https://basescan.org/address/${p.executor}" target="_blank" rel="noopener">${p.executor.slice(0, 10)}…</a>` : "contrato no desplegado";
+  const wal = p.wallet ? `wallet <a href="https://basescan.org/address/${p.wallet}" target="_blank" rel="noopener">${p.wallet.slice(0, 10)}…</a> (${p.balanceEth?.toFixed(5) ?? "?"} ETH)` : "sin wallet";
+  $("p1-status").innerHTML = `Modo <b>${p.mode}</b> · ${wal} · ${exec}${p.paused ? ` · <b>PAUSADA</b>: ${p.pausedReason}` : ""}${p.lastError ? ` · último error: ${p.lastError}` : ""}`;
+  $("p1-sim").textContent = num(p.simulated); $("p1-sim-sub").textContent = `${num(p.wouldRevert)} revertirían`;
+  $("p1-ok").textContent = num(p.wouldSucceed); $("p1-ok-sub").textContent = p.simulated ? `${num((p.wouldSucceed / p.simulated) * 100, 1)}%` : "";
+  $("p1-net").textContent = usd(p.projectedNetUsd); $("p1-net-sub").textContent = `gas simulado ${usd(p.gasUsdSimulated)}`;
+  $("p1-sent").textContent = num(p.sent); $("p1-sent-sub").textContent = `${p.confirmed} confirmadas · ${p.reverted} revertidas · realizado ${usd(p.realizedUsd)}`;
+  const reasons = Object.entries(p.byReason || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  $("p1-recent").innerHTML = (p.recent || []).slice(0, 20).map((r) => `<tr><td>${num(r.block)}</td><td>${r.route}</td><td class="num">${usd(r.amountUsd, 0)} ${r.start}</td><td class="num">${usd(r.modelNetUsd + (r.gasUsd ?? 0), 4)}</td><td class="num">${r.ok ? usd(r.profitUsd, 4) : "—"}</td><td class="num">${r.ok ? usd(r.gasUsd, 4) : "—"}</td><td>${r.ok ? `<b>éxito</b> · neto ${usd(r.netUsd, 4)}${r.sent ? " · " + r.sent : ""}` : `revierte: ${r.reason}`}</td></tr>`).join("") || `<tr><td colspan="7">Sin simulaciones todavía${reasons ? " · " + reasons : ""}.</td></tr>`;
 }
 function oppText(o) {
   if (!o) return "sin ruta que toque el pool";
