@@ -142,10 +142,21 @@ export class Executor {
     let text = null;
     try {
       for (const r of cands) {
-        const plan = this.buildPlan(r, lenders, ethUsd);
-        if (!plan) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
-        const rec = await this.simulate(plan, block, ts, gas, ethUsd);
-        if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
+        const plan0 = this.buildPlan(r, lenders, ethUsd);
+        if (!plan0) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
+        // El modelo de liquidez virtual (v3/v4) es exacto dentro del tick activo pero optimista si el swap cruza ticks:
+        // si el contrato dice que con el monto óptimo no alcanza para devolver el préstamo, se prueba con montos menores.
+        let plan = plan0, rec = null;
+        const ladder = [1n, 2n, 4n, 8n, 16n, 32n];
+        for (let i = 0; i < ladder.length; i++) {
+          const div = ladder[i];
+          plan = { ...plan0, amount: plan0.amount / div, meta: { ...r, amountIn: r.amountIn / div, amountInUsd: r.amountInUsd / Number(div) } };
+          rec = await this.simulate(plan, block, ts, gas, ethUsd, i === ladder.length - 1 ? true : "tentative");
+          if (rec.ok) { rec.sizeDiv = Number(div); break; }
+          if (!/transferFrom reverted|InsufficientProfit|IIA|STF|TRANSFER_FROM_FAILED|CurrencyNotSettled|insufficient|BalanceNotSettled/i.test(rec.reason)) break;
+        }
+        if (!rec.ok && rec.tentative) { rec = await this.simulate(plan, block, ts, gas, ethUsd); }
+        if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito con préstamo $${rec.amountUsd.toFixed(0)}${rec.sizeDiv > 1 ? ` (óptimo del modelo ÷${rec.sizeDiv})` : ""} · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
         else text = `Simulado on-chain: revertiría (${rec.reason})`;
         if (rec.ok && this.mode === "live" && !this.p1.paused) { await this.send(plan, rec, gas, ethUsd); text += ` · envío: ${rec.sent}`; }
         if (rec.ok) break; // una por bloque
@@ -158,11 +169,24 @@ export class Executor {
     return text;
   }
 
-  async simulate(plan, block, ts, gas, ethUsd) {
+  async simulate(plan, block, ts, gas, ethUsd, mode = true) {
     const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
     const tx = { to: this.p1.executor, from: this.wallet.address, data };
     const r = plan.meta;
     const rec = { block, ts, route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: false, reason: null, profitUsd: null, gasUsd: null, netUsd: null, sent: null };
+    if (mode === "tentative") { // intento intermedio de la escalera de montos: no se contabiliza salvo que tenga éxito
+      try {
+        const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
+        const profit = this.iface.decodeFunctionResult("execute", ret)[0];
+        const toUsd = core.tokenToUsd(r.startTok, ethUsd);
+        rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);
+        rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
+        rec.netUsd = rec.profitUsd - rec.gasUsd;
+        this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd; this.p1.simulated++;
+        this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+      } catch (e) { rec.reason = decodeRevert(this.iface, e); rec.tentative = true; }
+      return rec;
+    }
     try {
       const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
       const profit = this.iface.decodeFunctionResult("execute", ret)[0];
