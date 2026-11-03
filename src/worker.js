@@ -178,12 +178,13 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  if (cached && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
+  const UNIVERSE_FORMAT = 2; // v2: pools v4 con tickSpacing
+  if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);
   } else {
     uni = await buildUniverse(ethers, provider, { ltHours, progress: (m) => setPhase(`armando universo: ${m}`) });
-    await store.set("universe", { builtAt: now(), ...uni.specs });
+    await store.set("universe", { builtAt: now(), format: UNIVERSE_FORMAT, ...uni.specs });
   }
   stats.universe = { pools: uni.pools.length, cycles: uni.cycles.length, builtAt: new Date(now()).toISOString() };
   await setPhase("procesando bloques");
