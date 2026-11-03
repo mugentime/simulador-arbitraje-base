@@ -195,6 +195,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
     await store.set("universe", { builtAt: now(), format: UNIVERSE_FORMAT, ...uni.specs });
   }
   stats.universe = { pools: uni.pools.length, cycles: uni.cycles.length, builtAt: new Date(now()).toISOString() };
+  if (live) live.cycles = uni.cycles;
   await setPhase("procesando bloques");
   let lenders = await core.readLenders(ethers, provider);
   log(`universo listo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos`);

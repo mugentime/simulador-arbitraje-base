@@ -148,14 +148,15 @@ export class Executor {
   }
 
   /** Llamado por el worker en cada bloque con los resultados ya evaluados. */
-  async onBlock({ block, ts, results, lenders, gas, ethUsd }) {
+  async onBlock({ block, ts, results, lenders, gas, ethUsd, fast = null }) {
+    const sim = { sp: fast ?? this.provider, tag: fast ? "pending" : undefined };
     if (this.wallet && (this.p1.pending ?? []).length && !this.reconciling) { this.reconciling = true; try { await this.reconcile(ethUsd); } catch (e) { this.p1.lastError = `reconcile: ${e.shortMessage || e.message}`; } finally { this.reconciling = false; } }
     if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
     if (!this.p1.executor) return results.some((r) => r.profitable) ? "Fase 1: contrato no desplegado" : null;
-    if (this.inflight || block <= this.lastSimBlock) return null;
+    if (this.inflight || (typeof block === "number" && block <= this.lastSimBlock)) return null;
     const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious).slice(0, 3);
     if (!cands.length) return results.some((r) => r.profitable) ? `Oportunidad por debajo del mínimo de ${this.limits.minNetUsd} USD; no se simula` : null;
-    this.inflight = true; this.lastSimBlock = block;
+    this.inflight = true; if (typeof block === "number") this.lastSimBlock = block;
     let text = null;
     try {
       for (const r of cands) {
@@ -168,11 +169,11 @@ export class Executor {
         for (let i = 0; i < ladder.length; i++) {
           const div = ladder[i];
           plan = { ...plan0, amount: plan0.amount / div, meta: { ...r, amountIn: r.amountIn / div, amountInUsd: r.amountInUsd / Number(div) } };
-          rec = await this.simulate(plan, block, ts, gas, ethUsd, i === ladder.length - 1 ? true : "tentative");
+          rec = await this.simulate(plan, block, ts, gas, ethUsd, i === ladder.length - 1 ? true : "tentative", sim);
           if (rec.ok) { rec.sizeDiv = Number(div); break; }
           if (!/transferFrom reverted|InsufficientProfit|IIA|STF|TRANSFER_FROM_FAILED|CurrencyNotSettled|insufficient|BalanceNotSettled/i.test(rec.reason)) break;
         }
-        if (!rec.ok && rec.tentative) { rec = await this.simulate(plan, block, ts, gas, ethUsd); }
+        if (!rec.ok && rec.tentative) { rec = await this.simulate(plan, block, ts, gas, ethUsd, true, sim); }
         if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito con préstamo $${rec.amountUsd.toFixed(0)}${rec.sizeDiv > 1 ? ` (óptimo del modelo ÷${rec.sizeDiv})` : ""} · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
         else text = `Simulado on-chain: revertiría (${rec.reason})`;
         if (rec.ok && this.mode === "live" && !this.p1.paused) { await this.send(plan, rec, gas, ethUsd); text += ` · envío: ${rec.sent}`; }
@@ -186,14 +187,15 @@ export class Executor {
     return text;
   }
 
-  async simulate(plan, block, ts, gas, ethUsd, mode = true) {
+  async simulate(plan, block, ts, gas, ethUsd, mode = true, sim = null) {
     const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
     const tx = { to: this.p1.executor, from: this.wallet.address, data };
     const r = plan.meta;
     const rec = { block, ts, route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: false, reason: null, profitUsd: null, gasUsd: null, netUsd: null, sent: null };
     if (mode === "tentative") { // intento intermedio de la escalera de montos: no se contabiliza salvo que tenga éxito
       try {
-        const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
+        const sp2 = sim?.sp ?? this.provider, tag2 = sim?.tag;
+        const [ret, gasEst] = await Promise.all([sp2.call(tag2 ? { ...tx, blockTag: tag2 } : tx), sp2.estimateGas(tag2 ? { ...tx, blockTag: tag2 } : tx)]);
         const profit = this.iface.decodeFunctionResult("execute", ret)[0];
         const toUsd = core.tokenToUsd(r.startTok, ethUsd);
         rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);
@@ -206,9 +208,11 @@ export class Executor {
     }
     const toUsd = core.tokenToUsd(r.startTok, ethUsd);
     // en paralelo: misma ruta en el bloque que vio el modelo (diagnóstico) y en "latest" + estimación de gas (decisión)
-    const atBlock = this.provider.call({ ...tx, blockTag: block }).then((retB) => { rec.profitAtBlockUsd = toUsd(this.iface.decodeFunctionResult("execute", retB)[0]); }).catch((e) => { rec.profitAtBlockUsd = null; rec.reasonAtBlock = decodeRevert(this.iface, e); });
+    const sp = sim?.sp ?? this.provider, tag = sim?.tag;
+    const atBlock = typeof block === "number" ? this.provider.call({ ...tx, blockTag: block }).then((retB) => { rec.profitAtBlockUsd = toUsd(this.iface.decodeFunctionResult("execute", retB)[0]); }).catch((e) => { rec.profitAtBlockUsd = null; rec.reasonAtBlock = decodeRevert(this.iface, e); }) : Promise.resolve();
+    rec.fast = !!tag;
     try {
-      const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
+      const [ret, gasEst] = await Promise.all([sp.call(tag ? { ...tx, blockTag: tag } : tx), sp.estimateGas(tag ? { ...tx, blockTag: tag } : tx)]);
       atBlock.catch(() => {});
       const profit = this.iface.decodeFunctionResult("execute", ret)[0];
       rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);

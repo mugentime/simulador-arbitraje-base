@@ -11,6 +11,7 @@ import { Executor } from "./executor.mjs";
 import { Harvester } from "./harvester.mjs";
 import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
+import { FastLoop } from "./fastloop.mjs";
 
 const RPCS = [process.env.RPC_URL, "https://base-rpc.publicnode.com", "https://base.llamarpc.com", "https://mainnet.base.org", "https://1rpc.io/base", "https://base.drpc.org"].filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/data") ? "/data" : path.resolve("data"));
@@ -149,6 +150,8 @@ let executor = null;
 let harvester = null;
 let liquidations = null;
 let liquidator = null;
+let fast = null;
+const FLASH_RPC = process.env.FLASH_RPC_URL || "https://mainnet.base.org";
 async function loop() {
   while (!stopping) {
     try {
@@ -168,8 +171,10 @@ async function loop() {
       await lx.init();
       liquidator = lx;
       lq.onCandidate = (cand, ctx) => lx.attempt(cand, ctx).catch(() => {});
+      if (process.env.FLASHBLOCKS !== "0") { fast = new FastLoop({ url: FLASH_RPC, executor: exec, diag }); fast.start(); await diag(`flashblocks: bucle rápido cada 250 ms vía ${new URL(FLASH_RPC).host} (estado pending)`); }
       const onBlock = async (ctx) => {
         nb++; if (nb % 300 === 0) await exec.refreshBalance();
+        if (fast) { if (fast.main !== ctx.pools) fast.setUniverse(ctx.pools, live.cycles ?? []); fast.setContext({ gas: ctx.gas, ethUsd: ctx.ethUsd, lenders: ctx.lenders }); }
         const text = await exec.onBlock(ctx);
         hv.onBlock(ctx).catch((e) => { hv.h.lastError = e.shortMessage || e.message; }); // en paralelo: no retrasa el siguiente bloque
         lq.onBlock(ctx).catch((e) => { lq.liq.aave.error = e.shortMessage || e.message; });
@@ -200,13 +205,14 @@ const server = http.createServer(async (req, res) => {
     const harvest = harvester?.h ?? (await store.get("harvest")) ?? null;
     const liq = liquidations?.liq ?? (await store.get("liq")) ?? null;
     const liqExec = liquidator?.x ?? (await store.get("liqExec")) ?? null;
+    const fastStats = fast?.f ?? null;
     if (vaults) {
       vaults.topManagers = Object.values(vaults.byManager ?? {}).sort((a, b) => b.events - a.events).slice(0, 12);
       delete vaults.byManager;
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html")) {
@@ -234,5 +240,5 @@ setInterval(async () => {
   const st = await store.get("stats");
   const p1 = executor?.p1;
   const vs = live.vstats;
-  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent} (${p1.confirmed} confirmadas, ${p1.reverted} revertidas, realizado $${p1.realizedUsd.toFixed(4)}, gas pagado $${p1.gasPaidUsd.toFixed(4)})${p1.paused ? " PAUSADA" : ""}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}${vs.lastError ? ` (error: ${vs.lastError})` : ""}` : ""}${liquidations ? ` · liquidaciones: Aave ${liquidations.liq.aave.borrowers} prestatarios, ${liquidations.liq.aave.liquidatable} liquidables; Morpho ${liquidations.liq.morpho.liquidatable} liquidables (${liquidations.liq.morpho.apiPositions} en API); ${liquidations.liq.opportunities} episodios, est. $${liquidations.liq.estProfitUsd.toFixed(2)}; ajenas ${liquidations.liq.seen.aave}+${liquidations.liq.seen.morpho}${liquidator ? `; ejecución: ${liquidator.x.simulated} sim, ${liquidator.x.wouldSucceed} ok, ${liquidator.x.sent} enviadas (${liquidator.x.confirmed} conf, ${liquidator.x.reverted} rev), realizado $${liquidator.x.realizedUsd.toFixed(4)}` : ""}${liquidations.liq.aave.error ? ` (Aave: ${liquidations.liq.aave.error})` : ""}${liquidations.liq.morpho.error ? ` (Morpho: ${liquidations.liq.morpho.error})` : ""}` : ""}${harvester ? ` · harvest ${harvester.h.strategies} estrategias, ${harvester.h.worthNow} rentables ahora, ${harvester.h.sent} enviadas (${harvester.h.confirmed} ok, ${harvester.h.reverted} rev), realizado $${harvester.h.realizedUsd.toFixed(4)}${harvester.h.lastError ? ` (error: ${harvester.h.lastError})` : ""}` : ""}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
+  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent} (${p1.confirmed} confirmadas, ${p1.reverted} revertidas, realizado $${p1.realizedUsd.toFixed(4)}, gas pagado $${p1.gasPaidUsd.toFixed(4)})${p1.paused ? " PAUSADA" : ""}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}${vs.lastError ? ` (error: ${vs.lastError})` : ""}` : ""}${liquidations ? ` · liquidaciones: Aave ${liquidations.liq.aave.borrowers} prestatarios, ${liquidations.liq.aave.liquidatable} liquidables; Morpho ${liquidations.liq.morpho.liquidatable} liquidables (${liquidations.liq.morpho.apiPositions} en API); ${liquidations.liq.opportunities} episodios, est. $${liquidations.liq.estProfitUsd.toFixed(2)}; ajenas ${liquidations.liq.seen.aave}+${liquidations.liq.seen.morpho}${liquidator ? `; ejecución: ${liquidator.x.simulated} sim, ${liquidator.x.wouldSucceed} ok, ${liquidator.x.sent} enviadas (${liquidator.x.confirmed} conf, ${liquidator.x.reverted} rev), realizado $${liquidator.x.realizedUsd.toFixed(4)}` : ""}${liquidations.liq.aave.error ? ` (Aave: ${liquidations.liq.aave.error})` : ""}${liquidations.liq.morpho.error ? ` (Morpho: ${liquidations.liq.morpho.error})` : ""}` : ""}${fast ? ` · flashblocks ${fast.f.loops} lecturas, ${fast.f.changedPools} cambios, ${fast.f.evaluated} rutas, ${fast.f.profitable} rentables, ${fast.f.simulated} sim, ${fast.f.sent} env, ${fast.f.avgMs} ms${fast.f.lastError ? ` (error: ${fast.f.lastError})` : ""}` : ""}${harvester ? ` · harvest ${harvester.h.strategies} estrategias, ${harvester.h.worthNow} rentables ahora, ${harvester.h.sent} enviadas (${harvester.h.confirmed} ok, ${harvester.h.reverted} rev), realizado $${harvester.h.realizedUsd.toFixed(4)}${harvester.h.lastError ? ` (error: ${harvester.h.lastError})` : ""}` : ""}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
 }, 60_000);
