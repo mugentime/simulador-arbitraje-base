@@ -192,10 +192,13 @@ export class Executor {
       } catch (e) { rec.reason = decodeRevert(this.iface, e); rec.tentative = true; }
       return rec;
     }
+    const toUsd = core.tokenToUsd(r.startTok, ethUsd);
+    // misma ruta en el bloque que vio el modelo (para separar "modelo mal" de "la oportunidad ya no está")
+    try { const retB = await this.provider.call({ ...tx, blockTag: block }); rec.profitAtBlockUsd = toUsd(this.iface.decodeFunctionResult("execute", retB)[0]); }
+    catch (e) { rec.profitAtBlockUsd = null; rec.reasonAtBlock = decodeRevert(this.iface, e); }
     try {
       const [ret, gasEst] = await Promise.all([this.provider.call(tx), this.provider.estimateGas(tx)]);
       const profit = this.iface.decodeFunctionResult("execute", ret)[0];
-      const toUsd = core.tokenToUsd(r.startTok, ethUsd);
       rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);
       rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
       rec.netUsd = rec.profitUsd - rec.gasUsd;
@@ -203,7 +206,7 @@ export class Executor {
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
-      await this.diag(`fase 1: revertiría (${rec.reason}) · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
+      await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : rec.reasonAtBlock} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
       if (Date.now() - (this.lastProbe ?? 0) > 60_000) { this.lastProbe = Date.now(); await this.probe(plan).catch((e) => this.diag(`fase 1: sonda falló: ${e.shortMessage || e.message}`)); }
     }
     this.p1.simulated++;
