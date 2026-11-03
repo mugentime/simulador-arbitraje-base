@@ -177,14 +177,14 @@ export class Liquidations {
       queries.push(`{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], borrowShares_gte: 1 }) { ${f} } }`);
       queries.push(`{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [8453] }) { ${f} } }`);
     }
-    let items = null, lastErr = null;
+    let items = null; const errs = [];
     for (const query of queries) {
       const r = await fetch(MORPHO_API, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(15_000) });
       let j = null; try { j = await r.json(); } catch { /* sin JSON */ }
-      if (!r.ok || j?.errors?.length) { lastErr = `HTTP ${r.status}${j?.errors?.length ? " · " + j.errors[0].message.slice(0, 100) : ""}`; continue; }
-      items = j?.data?.marketPositions?.items ?? []; break;
+      if (!r.ok || j?.errors?.length) { errs.push(`v${errs.length + 1}: ${j?.errors?.length ? j.errors[0].message.slice(0, 90) : "HTTP " + r.status}`); continue; }
+      items = j?.data?.marketPositions?.items ?? []; this.liq.morpho.queryVariant = errs.length + 1; break;
     }
-    if (items === null) throw new Error("API Morpho: " + lastErr);
+    if (items === null) throw new Error("API Morpho: " + errs.join(" | ").slice(0, 400));
     items = items.map((it) => ({ ...it, healthFactor: it.healthFactor ?? it.state?.healthFactor, borrowAssets: it.state?.borrowAssets ?? it.borrowAssets, borrowAssetsUsd: it.state?.borrowAssetsUsd ?? it.borrowAssetsUsd, collateral: it.state?.collateral ?? it.collateral, collateralUsd: it.state?.collateralUsd ?? it.collateralUsd }))
       .filter((it) => it.market?.oracleAddress && it.user?.address && Number(it.healthFactor ?? 0) < 1.05 && Number(it.borrowAssets ?? 0) > 0);
     this.liq.morpho.lastApi = Date.now(); this.liq.morpho.apiPositions = items.length;
