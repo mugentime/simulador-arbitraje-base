@@ -77,8 +77,11 @@ function logsProviderFor(main, mainUrl) {
       let lastErr;
       for (let i = 0; i < urls.length; i++) {
         const u = urls[(idx + i) % urls.length];
-        try { const r = await get(u).getLogs(filter); if (i) { idx = (idx + i) % urls.length; await diag(`vaults: eth_getLogs ahora vía ${new URL(u).host}`); } return r; }
-        catch (e) { lastErr = e; }
+        try {
+          const r = await Promise.race([get(u).getLogs(filter), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout 6 s")), 6000))]);
+          if (i) { idx = (idx + i) % urls.length; await diag(`vaults: eth_getLogs ahora vía ${new URL(u).host}`); }
+          return r;
+        } catch (e) { lastErr = e; }
       }
       throw lastErr;
     },
@@ -145,7 +148,7 @@ if (PUBLIC) setTimeout(async () => {
     try {
       const r = await fetch(`https://${PUBLIC}${path}`, { signal: AbortSignal.timeout(10_000) });
       const body = await r.text();
-      console.log(`${new Date().toISOString()} autocomprobación ${path}: HTTP ${r.status} · ${r.headers.get("content-type")} · ${body.length} bytes${path === "/" ? (body.includes("Worker 24/7") ? " · tablero OK" : " · ¡no es el tablero!") : ""}`);
+      console.log(`${new Date().toISOString()} autocomprobación ${path}: HTTP ${r.status} · ${r.headers.get("content-type")} · ${body.length} bytes${path === "/" ? (body.includes("Protocolo de arbitraje con flashloan") ? " · tablero OK" : " · ¡no es el tablero!") : ""}`);
     } catch (e) { console.log(`${new Date().toISOString()} autocomprobación ${path}: falló ${e.message}`); }
   }
 }, 8_000);
