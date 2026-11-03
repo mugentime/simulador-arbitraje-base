@@ -132,5 +132,7 @@ if (PUBLIC) setTimeout(async () => {
 // resumen periódico en los logs de Railway
 setInterval(async () => {
   const st = await store.get("stats");
-  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
+  const p1 = executor?.p1;
+  const vs = live.vstats;
+  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}` : ""}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
 }, 60_000);
