@@ -65,6 +65,26 @@ async function provider() {
   throw new Error("ningún RPC de Base respondió");
 }
 
+// ---------------------------------------------------------------- proveedor de eth_getLogs con respaldo
+// Algunos nodos públicos (publicnode) devuelven 403 a eth_getLogs con muchas direcciones; se prueba otro.
+function logsProviderFor(main, mainUrl) {
+  const urls = [mainUrl, ...RPCS.filter((u) => u !== mainUrl)];
+  const provs = new Map([[mainUrl, main]]);
+  let idx = 0;
+  const get = (u) => { if (!provs.has(u)) provs.set(u, new ethers.JsonRpcProvider(u, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 })); return provs.get(u); };
+  return {
+    async getLogs(filter) {
+      let lastErr;
+      for (let i = 0; i < urls.length; i++) {
+        const u = urls[(idx + i) % urls.length];
+        try { const r = await get(u).getLogs(filter); if (i) { idx = (idx + i) % urls.length; await diag(`vaults: eth_getLogs ahora vía ${new URL(u).host}`); } return r; }
+        catch (e) { lastErr = e; }
+      }
+      throw lastErr;
+    },
+  };
+}
+
 // ---------------------------------------------------------------- bucle infinito
 let stopping = false;
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
@@ -80,7 +100,7 @@ async function loop() {
       executor = exec;
       const onBlock = async (ctx) => { nb++; if (nb % 300 === 0) await exec.refreshBalance(); return exec.onBlock(ctx); };
       // tandas de 1 h: el universo se refresca solo (lo guarda 30 min)
-      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock, live });
+      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock, live, logsProvider: logsProviderFor(p, url) });
       await diag(`servidor: tanda terminada · ${stats.blocksProcessed} bloques · ${stats.totals.episodes} oportunidades`);
     } catch (e) {
       await diag(`servidor: error ${e.shortMessage || e.message}; reintento en 20 s`);
