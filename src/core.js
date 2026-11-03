@@ -700,7 +700,7 @@ export function withSwap(pools, poolAddr, tokenAddr, amountIn) {
 
 // ------------------------------------------------------------------ Evaluación (pipeline completo)
 
-export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0, maxOptimize = 400 }) {
+export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0, maxOptimize = 150 }) {
   const results = [];
   const gasWeiFor = (hops) => (GAS_BASE + GAS_PER_HOP * BigInt(hops)) * (gas.baseFee + gas.priority) + gas.l1Fee;
   // 1) sondeo marginal de todos los ciclos (barato); 2) optimización solo de los positivos, los mejores primero
