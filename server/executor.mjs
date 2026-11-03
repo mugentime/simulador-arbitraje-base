@@ -72,6 +72,10 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
+    if (this.p1.sent > 0 && !this.p1.pending && this.p1.confirmed === 0 && this.p1.reverted === 0) {
+      // migración: envíos anteriores sin recibo registrado
+      this.p1.pending = this.p1.recent.filter((r) => typeof r.sent === "string" && /^0x[0-9a-f]{64}/i.test(r.sent)).map((r) => ({ hash: r.sent.slice(0, 66), sentAt: Date.now(), route: r.route, startSym: r.start, startDecimals: r.start === "USDC" ? 6 : r.start === "cbBTC" ? 8 : 18, netSimUsd: r.netUsd }));
+    }
     if (this.p1.modelVersion !== 2) { // contadores de simulaciones del modelo/contrato anteriores: se reinician, se conserva el contrato
       const keep = { executor: this.p1.executor, artifact: this.p1.artifact, deployedAt: this.p1.deployedAt, deployTx: this.p1.deployTx, previousExecutor: this.p1.previousExecutor };
       this.p1 = { ...emptyPhase1(), ...keep, modelVersion: 2, resetAt: Date.now() };
@@ -138,6 +142,7 @@ export class Executor {
 
   /** Llamado por el worker en cada bloque con los resultados ya evaluados. */
   async onBlock({ block, ts, results, lenders, gas, ethUsd }) {
+    if (this.wallet && (this.p1.pending ?? []).length && !this.reconciling) { this.reconciling = true; try { await this.reconcile(ethUsd); } catch (e) { this.p1.lastError = `reconcile: ${e.shortMessage || e.message}`; } finally { this.reconciling = false; } }
     if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
     if (!this.p1.executor) return results.some((r) => r.profitable) ? "Fase 1: contrato no desplegado" : null;
     if (this.inflight || block <= this.lastSimBlock) return null;
@@ -249,21 +254,43 @@ export class Executor {
       const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: (gas.baseFee + gas.priority) * 2n, maxPriorityFeePerGas: gas.priority }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)})`);
-      const rcpt = await tx.wait(1, 60_000);
+      (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
+      await this.save();
+    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
+  }
+
+  /** Resuelve el resultado de las transacciones enviadas (recibo), aunque el proceso se haya reiniciado. */
+  async reconcile(ethUsd) {
+    const pend = this.p1.pending ?? [];
+    if (!pend.length) return;
+    const keep = [];
+    for (const t of pend) {
+      let rcpt = null;
+      try { rcpt = await this.provider.getTransactionReceipt(t.hash); } catch { /* red */ }
+      if (!rcpt) {
+        if (Date.now() - t.sentAt > 15 * 60_000) { await this.diag(`fase 1: ${t.hash} no fue minada en 15 min (descartada por la red; sin costo)`); this.p1.dropped = (this.p1.dropped ?? 0) + 1; }
+        else keep.push(t);
+        continue;
+      }
       const paid = (Number(rcpt.gasUsed * (rcpt.gasPrice ?? 0n)) / 1e18) * ethUsd;
       this.p1.gasPaidUsd += paid;
+      const rec = this.p1.recent.find((r) => typeof r.sent === "string" && r.sent.startsWith(t.hash));
       if (rcpt.status === 1) {
         this.p1.confirmed++; this.consecutiveReverts = 0;
         const ev = rcpt.logs.map((l) => { try { return this.iface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "Executed");
-        const realized = ev ? core.tokenToUsd(plan.meta.startTok, ethUsd)(ev.args.profit) : 0;
-        this.p1.realizedUsd += realized - paid; rec.sent = `${tx.hash} · confirmada · +$${(realized - paid).toFixed(4)}`;
-        await this.diag(`fase 1: confirmada ${tx.hash} · beneficio bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${(realized - paid) >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber}`);
+        const realized = ev ? core.tokenToUsd({ sym: t.startSym, decimals: t.startDecimals }, ethUsd)(ev.args.profit) : 0;
+        this.p1.realizedUsd += realized - paid;
+        if (rec) rec.sent = `${t.hash} · confirmada · +$${(realized - paid).toFixed(4)}`;
+        await this.diag(`fase 1: confirmada ${t.hash} · bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${realized - paid >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
       } else {
-        this.p1.reverted++; this.consecutiveReverts++; rec.sent = `${tx.hash} · revertida (gas $${paid.toFixed(4)})`;
-        await this.diag(`fase 1: revertida ${tx.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber}`);
+        this.p1.reverted++; this.consecutiveReverts++;
+        if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
+        await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
         if (this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
-    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; }
+    }
+    this.p1.pending = keep;
+    await this.save();
   }
 
   async refreshBalance() {

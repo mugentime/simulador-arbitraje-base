@@ -52,7 +52,8 @@
 
     <h3>Acumulado</h3>
     <div class="kpis">
-      <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio REAL (transacciones en Base)</div><div class="v" id="real">—</div><div class="s" id="real-sub"></div></div>
+      <div class="kpi"><div class="l">Detectado por el modelo (techo teórico)</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
       <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
       <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="best">—</div><div class="s" id="best-sub"></div></div>
       <div class="kpi"><div class="l">Bloques procesados</div><div class="v" id="blocks">—</div><div class="s" id="blocks-sub"></div></div>
@@ -133,8 +134,15 @@ async function load() {
   const hNow = Math.floor(d.now / 3600000);
   const rec = (d.hourly || []).filter((h) => h.h >= hNow - 2);
   const recNet = rec.reduce((s, h) => s + h.netUsd, 0), recEps = rec.reduce((s, h) => s + h.episodes, 0);
-  $("net").textContent = usd(t.netUsd); $("net").dataset.sign = t.netUsd > 0 ? "pos" : "";
-  $("net-sub").textContent = `últimas 3 h: ${recEps} oportunidades, ${usd(recNet)} · gas descontado ${usd(t.gasUsd)}`;
+  $("net").textContent = usd(t.netUsd);
+  $("net-sub").textContent = `lo que el modelo calcula que habría dejado ejecutar cada oportunidad al instante · últimas 3 h: ${recEps} oportunidades, ${usd(recNet)}`;
+  {
+    const p = d.phase1;
+    const real = p ? p.realizedUsd : 0;
+    $("real").textContent = p && p.sent ? usd(real, 4) : "$0.00";
+    $("real").dataset.sign = real > 0 ? "pos" : "";
+    $("real-sub").textContent = p ? (p.sent ? `${p.sent} enviadas · ${p.confirmed} confirmadas · ${p.reverted} revertidas${p.dropped ? ` · ${p.dropped} no minadas` : ""} · gas pagado ${usd(p.gasPaidUsd, 4)}` : p.mode === "live" ? "modo live: aún no se ha enviado ninguna transacción" : `modo ${p.mode}: no envía`) : "";
+  }
   $("eps").textContent = num(t.episodes);
   $("eps-sub").textContent = `${t.over1Usd} de $1 o más (suman ${usd(t.over1NetUsd)}) · ${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren salto v4` : ""}`;
   $("best").textContent = d.best ? usd(d.best.netUsd) : "—";
