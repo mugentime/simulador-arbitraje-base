@@ -2,12 +2,12 @@
 // Mide, bloque a bloque, cuánto difiere el precio entre los pools de un par y durante cuántos bloques
 // el desajuste supera las comisiones (es decir, cuánto tarda el mercado en igualarlo). También detecta
 // movimientos repentinos (saltos de precio en un pool) y si el resto del par los sigue o no.
-import { tokenToUsd } from "./core.js";
 
 export const MIN_DEPTH_USD = 2000; // pools con menos profundidad no cuentan (su "precio" no es cotizable)
 export const MOVE_BPS = 50; // salto de precio de un pool entre bloques que se considera "movimiento repentino"
 export const MAX_DUR_HIST = 60; // duraciones de episodios recordadas por par (para la mediana)
 export const MAX_PAIRS = 400;
+export const MAX_DEVIATION_BPS = 2500; // un pool cuyo precio difiere >25% del de referencia no se considera cotizable
 
 export function emptyDisloc() {
   return { v: 1, pairs: {}, open: {}, prev: {}, blocks: 0, lastBlock: null, moves: 0, episodes: 0, persistent: 0, recent: [] };
@@ -23,11 +23,43 @@ export function rawPrice(p) {
   return Number(p.reserve1) / Number(p.reserve0);
 }
 
-function depthUsd(p, ethUsd) {
-  try {
-    const vals = [tokenToUsd(p.token0, ethUsd)(p.reserve0 ?? 0n), tokenToUsd(p.token1, ethUsd)(p.reserve1 ?? 0n)].filter((x) => Number.isFinite(x));
-    return vals.length ? Math.min(...vals) : Infinity; // par sin WETH/USDC: no se puede valorar, se acepta
-  } catch { return 0; }
+const units = (amt, tok) => Number(amt ?? 0n) / 10 ** tok.decimals;
+
+/**
+ * Precio en USD de cada token, tomado de su pool más profundo contra WETH o USDC.
+ * Un token sin pool así no tiene precio (y sus pares no se miden): evita que pools abandonados
+ * con precios absurdos cuenten como "desajustes".
+ */
+export function usdPrices(pools, ethUsd) {
+  const px = new Map([["USDC", 1], ["WETH", ethUsd]]);
+  const best = new Map(); // sym -> profundidad en USD del pool de referencia
+  for (const p of pools) {
+    if (!p.token0 || !p.token1 || p.reserve0 === 0n || p.reserve1 === 0n) continue;
+    for (const [tok, quote, rt, rq] of [[p.token0, p.token1, p.reserve0, p.reserve1], [p.token1, p.token0, p.reserve1, p.reserve0]]) {
+      const qpx = quote.sym === "USDC" ? 1 : quote.sym === "WETH" ? ethUsd : null;
+      if (qpx === null || tok.sym === "USDC" || tok.sym === "WETH") continue;
+      const depth = units(rq, quote) * qpx;
+      if (depth < MIN_DEPTH_USD || depth <= (best.get(tok.sym) ?? 0)) continue;
+      const price = (units(rq, quote) * qpx) / units(rt, tok);
+      if (!(price > 0) || !Number.isFinite(price)) continue;
+      best.set(tok.sym, depth); px.set(tok.sym, price);
+    }
+  }
+  return px;
+}
+
+function depthUsd(p, px) {
+  const a = px.get(p.token0.sym), b = px.get(p.token1.sym);
+  if (a === undefined || b === undefined) return 0;
+  return Math.min(units(p.reserve0, p.token0) * a, units(p.reserve1, p.token1) * b);
+}
+
+/** Desviación del precio del pool respecto a los precios de referencia (bps); pools "rotos" quedan fuera. */
+function deviationBps(p, rawPx, px) {
+  const ref = (px.get(p.token1.sym) ?? 0) / (px.get(p.token0.sym) ?? 1); // token1 por token0, en USD
+  const adj = rawPx * 10 ** (p.token0.decimals - p.token1.decimals);
+  const refRaw = 1 / ref; // precio token1/token0 = usd0/usd1
+  return Math.abs(adj / refRaw - 1) * 1e4;
 }
 
 function median(a) {
@@ -45,12 +77,14 @@ const poolLabel = (p) => `${p.dex ?? p.kind}${p.feeBps !== undefined ? ` ${p.fee
  */
 export function trackBlock(d, { block, ts, pools, ethUsd, attempted = null }) {
   const groups = new Map();
+  const prices = usdPrices(pools, ethUsd);
   for (const p of pools) {
     if (!p.token0 || !p.token1) continue;
     const px = rawPrice(p);
     if (!(px > 0) || !Number.isFinite(px)) continue;
     if (p.liquidity === 0n && (p.kind === "v3" || p.kind === "v4")) continue;
-    if (depthUsd(p, ethUsd) < MIN_DEPTH_USD) continue;
+    if (depthUsd(p, prices) < MIN_DEPTH_USD) continue;
+    if (deviationBps(p, px, prices) > MAX_DEVIATION_BPS) continue; // precio incoherente con el mercado: pool roto o sin cotizar
     const k = pairKey(p);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push({ p, px });

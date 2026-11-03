@@ -80,13 +80,16 @@ export class Harvester {
     const per = new Map(addrs.map((a) => [a.toLowerCase(), { events: [], fees: [] }]));
     const chunk = Number(process.env.HARVEST_HISTORY_CHUNK ?? 2000);
     let failed = 0, done = 0;
-    const ranges = []; for (let from = from0; from <= head; from += chunk) ranges.push([from, Math.min(head, from + chunk - 1)]);
+    // los nodos públicos exigen filtro de dirección pero rechazan listas largas: lotes de 10 direcciones por tramo
+    const ADDR_BATCH = Number(process.env.HARVEST_HISTORY_ADDR_BATCH ?? 10);
+    const batches = []; for (let i = 0; i < addrs.length; i += ADDR_BATCH) batches.push(addrs.slice(i, i + ADDR_BATCH));
+    const ranges = []; for (let from = from0; from <= head; from += chunk) for (const b of batches) ranges.push([from, Math.min(head, from + chunk - 1), b]);
     const total = ranges.length;
     const t0 = Date.now();
     await this.diag(`harvest: leyendo historial de ${(this.cfg_hist() / 43200).toFixed(1)} días en ${total} tramos…`);
     const worker = async () => {
       while (ranges.length) {
-        const [from, to] = ranges.shift();
+        const [from, to, address] = ranges.shift();
         let logs = null, span = to - from + 1, lastErr = null;
         // sin filtro de dirección (los nodos públicos rechazan listas largas); se filtra por dirección al ingerir.
         // Si el nodo rechaza el tramo (400 / demasiados resultados), se parte en dos hasta 250 bloques.
@@ -95,7 +98,7 @@ export class Harvester {
             const parts = [];
             for (let f = from; f <= to; f += span) {
               parts.push(await Promise.race([
-                this.logs.getLogs({ fromBlock: f, toBlock: Math.min(to, f + span - 1), topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }, { timeoutMs: 20_000 }),
+                this.logs.getLogs({ address, fromBlock: f, toBlock: Math.min(to, f + span - 1), topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }, { timeoutMs: 20_000 }),
                 new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 120_000)),
               ]));
             }
@@ -108,7 +111,7 @@ export class Harvester {
           continue;
         }
         done++;
-        if (done % 25 === 0) await this.diag(`harvest: historial ${done}/${total} tramos (${failed} fallidos, ${Math.round((Date.now() - t0) / 1000)} s)`);
+        if (done % 100 === 0) await this.diag(`harvest: historial ${done}/${total} tramos (${failed} fallidos, ${Math.round((Date.now() - t0) / 1000)} s)`);
         this.ingestLogs(logs, per);
       }
     };
