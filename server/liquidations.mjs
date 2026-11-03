@@ -152,7 +152,7 @@ export class Liquidations {
     this.liq.aave.lastScan = Date.now(); this.liq.aave.scanBlock = block; this.liq.aave.error = null;
     const still = new Set(cands.map((c) => c.user));
     for (const [u, b] of this.open) if (list.includes(u) && !still.has(u)) { this.open.delete(u); }
-    for (const c of cands) this.episode("aave", c, block, ts);
+    for (const c of cands) { this.episode("aave", c, block, ts); this.onCandidate?.({ ...c, proto: "aave" }, { block, ts, gas, ethUsd }); }
   }
 
   episode(proto, c, block, ts) {
@@ -167,7 +167,7 @@ export class Liquidations {
 
   /** Morpho Blue: posiciones con HF bajo según la API, verificadas on-chain. */
   async scanMorpho({ block, ts, gas, ethUsd }) {
-    const mk = `market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress }`;
+    const mk = `market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress irmAddress }`;
     const fieldsA = `items { healthFactor user { address } state { borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
     const fieldsB = `items { user { address } state { healthFactor borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
     // variantes por si el esquema no admite algún campo/filtro/orden: se usa la primera que responda sin error
@@ -209,10 +209,11 @@ export class Liquidations {
       const debtUsd = Number(it.borrowAssetsUsd ?? 0), colUsd = Number(it.collateralUsd ?? 0);
       const repayUsd = Math.min(debtUsd, colUsd / lif);
       const estProfitUsd = repayUsd * (lif - 1) - this.cfg.gasUsd;
-      cands.push({ user: it.user.address, hf, debtUsd, colUsd, repayUsd, estProfitUsd, market: `${it.market.collateralAsset.symbol}/${it.market.loanAsset.symbol} LLTV ${(Number(lltv) / 1e16).toFixed(0)}%`, id: it.market.uniqueKey });
+      cands.push({ user: it.user.address, hf, debtUsd, colUsd, repayUsd, estProfitUsd, market: `${it.market.collateralAsset.symbol}/${it.market.loanAsset.symbol} LLTV ${(Number(lltv) / 1e16).toFixed(0)}%`, id: it.market.uniqueKey,
+        raw: it, lif, price, collateralRaw: pos.collateral.toString(), borrowedRaw: borrowed.toString() });
     });
     cands.sort((x, y) => y.estProfitUsd - x.estProfitUsd);
-    this.liq.morpho.candidates = cands.slice(0, 10); this.liq.morpho.liquidatable = cands.length; this.liq.morpho.error = null;
-    for (const c of cands) this.episode("morpho", c, block, ts);
+    this.liq.morpho.candidates = cands.slice(0, 10).map(({ raw, price, collateralRaw, borrowedRaw, ...rest }) => rest); this.liq.morpho.liquidatable = cands.length; this.liq.morpho.error = null;
+    for (const c of cands) { this.episode("morpho", c, block, ts); this.onCandidate?.({ ...c, proto: "morpho" }, { block, ts, gas, ethUsd }); }
   }
 }

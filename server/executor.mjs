@@ -136,8 +136,8 @@ export class Executor {
     const hops = [];
     for (const p of r.route) {
       const tokenOut = core.other(p, tokenIn).address;
-      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing]);
-      else hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0]);
+      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing, "0x"]);
+      else hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0, "0x"]);
       tokenIn = tokenOut;
     }
     if (tokenIn !== r.startTok.address) return null;

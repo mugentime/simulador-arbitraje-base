@@ -112,9 +112,10 @@
 
   <!-- ============================ Protocolo 3: liquidaciones ============================ -->
   <section class="card">
-    <h2>Liquidaciones con flashloan (Aave v3 y Morpho Blue) · detección</h2>
+    <h2>Liquidaciones con flashloan (Aave v3 y Morpho Blue)</h2>
     <p class="sub">Cuando un préstamo queda por debajo de su umbral (factor de salud &lt; 1), quien lo liquide paga parte de la deuda y recibe el colateral con un bono fijo (≈5% en Aave, 4–15% en Morpho). El flashloan pone el dinero de la deuda; se devuelve con el colateral vendido. Aquí se mide cuántas posiciones liquidables aparecen y cuánto tardan otros en tomarlas.</p>
     <div class="kpis">
+      <div class="kpi"><div class="l">Beneficio REAL (liquidaciones en Base)</div><div class="v" id="l-real">—</div><div class="s" id="l-real-sub"></div></div>
       <div class="kpi"><div class="l">Posiciones liquidables vistas</div><div class="v" id="l-opps">—</div><div class="s" id="l-opps-sub"></div></div>
       <div class="kpi"><div class="l">Beneficio estimado (techo)</div><div class="v" id="l-est">—</div><div class="s" id="l-est-sub"></div></div>
       <div class="kpi"><div class="l">Aave v3 · vigilancia</div><div class="v" id="l-aave">—</div><div class="s" id="l-aave-sub"></div></div>
@@ -131,7 +132,7 @@
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 12:53 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 13:10 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
@@ -240,7 +241,12 @@ async function load() {
     if (vchanged) setTimeout(() => document.querySelectorAll("#vpipe .st").forEach((e) => e.classList.remove("flash")), 600);
     drawCumulative($("chart-v"), $("tip-v"), vs.hourly || [], (h) => h.netUsd, (h) => `${h.events} eventos, ${h.withOpp} con back-run, ${usd(h.netUsd)}`);
   }
-  const lq = d.liq;
+  const lq = d.liq, lx = d.liqExec;
+  if (lx) {
+    $("l-real").textContent = lx.sent ? usd(lx.realizedUsd, 4) : "$0.00"; $("l-real").dataset.sign = lx.realizedUsd > 0 ? "pos" : "";
+    const reasons = Object.entries(lx.byReason || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => `${k} ×${n}`).join(", ");
+    $("l-real-sub").textContent = `${lx.simulated} simuladas · ${lx.wouldSucceed} ejecutables · ${lx.sent} enviadas · ${lx.confirmed} confirmadas · ${lx.reverted} revertidas · gas ${usd(lx.gasPaidUsd, 4)}${reasons ? " · " + reasons : ""}${lx.lastError ? " · " + esc(lx.lastError) : ""}`;
+  }
   if (lq) {
     $("l-opps").textContent = num(lq.opportunities);
     $("l-opps-sub").textContent = `ahora: ${lq.aave.liquidatable} en Aave · ${lq.morpho.liquidatable} en Morpho`;
