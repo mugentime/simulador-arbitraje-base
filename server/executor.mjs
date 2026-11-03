@@ -175,10 +175,35 @@ export class Executor {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
       await this.diag(`fase 1: revertiría (${rec.reason}) · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
+      if (Date.now() - (this.lastProbe ?? 0) > 60_000) { this.lastProbe = Date.now(); await this.probe(plan).catch((e) => this.diag(`fase 1: sonda falló: ${e.shortMessage || e.message}`)); }
     }
     this.p1.simulated++;
     this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
     return rec;
+  }
+
+  /** Diagnóstico: por cada salto v3 del plan, lee token0/token1/slot0 del pool y prueba el swap directo desde el contrato
+   *  (eth_call). Si el pool responde UnexpectedCaller, la validación del límite de precio (SPL) pasó. */
+  async probe(plan) {
+    const v3 = new ethers.Interface([
+      "function token0() view returns (address)", "function token1() view returns (address)",
+      "function slot0() view returns (uint160 sqrtPriceX96,int24 tick)",
+      "function swap(address recipient,bool zeroForOne,int256 amountSpecified,uint160 sqrtPriceLimitX96,bytes data) returns (int256,int256)",
+    ]);
+    const MINP1 = 4295128740n, MAXM1 = 1461446703485210103287273642190157433829878702058n;
+    let amount = plan.amount;
+    for (const h of plan.hops) {
+      const [kind, pool, tokenIn, tokenOut] = h;
+      if (kind !== 1) { amount = amount / 2n; continue; }
+      const c = new ethers.Contract(pool, v3, this.provider);
+      const [t0, t1, s0] = await Promise.all([c.token0().catch(() => "?"), c.token1().catch(() => "?"), c.slot0().catch(() => null)]);
+      const zeroForOne = BigInt(tokenIn) < BigInt(tokenOut);
+      const data = v3.encodeFunctionData("swap", [this.p1.executor, zeroForOne, amount, zeroForOne ? MINP1 : MAXM1, ethers.AbiCoder.defaultAbiCoder().encode(["address"], [tokenIn])]);
+      let res;
+      try { await this.provider.call({ to: pool, from: this.p1.executor, data }); res = "ok (sin revert)"; } catch (e) { res = decodeRevert(this.iface, e); }
+      await this.diag(`fase 1 sonda v3 ${pool.slice(0, 10)}: token0 ${String(t0).slice(0, 8)} token1 ${String(t1).slice(0, 8)} √P ${s0 ? s0[0] : "?"} · in ${tokenIn.slice(0, 8)} zeroForOne=${zeroForOne} amount ${amount} → ${res}`);
+      amount = amount / 2n;
+    }
   }
 
   async send(plan, rec, gas, ethUsd) {
