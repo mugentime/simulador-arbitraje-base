@@ -5,6 +5,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { ethers } from "ethers";
+import WebSocket from "ws";
 import { runWorker, isAlive } from "../src/worker.js";
 import { Executor } from "./executor.mjs";
 
@@ -104,14 +105,17 @@ async function wsLoop() {
   while (!stopping) {
     const url = WS_RPCS[i % WS_RPCS.length];
     try {
-      const ws = new ethers.WebSocketProvider(url, Number(CHAIN_ID));
+      const sock = new WebSocket(url);
+      sock.on("error", () => {}); // los errores se manejan por cierre; sin esto el proceso moriría
+      await new Promise((res, rej) => { sock.once("open", res); sock.once("close", () => rej(new Error("cerrado al conectar"))); setTimeout(() => rej(new Error("tiempo de conexión")), 8000); });
+      const ws = new ethers.WebSocketProvider(sock, Number(CHAIN_ID));
       await ws.getBlockNumber();
       wsAlive = true;
       await diag(`bloques: suscrito por WebSocket a ${new URL(url).host}`);
       await new Promise((resolve) => {
         ws.on("block", (n) => { wsBlock = n; const w = wsWaiters; wsWaiters = []; for (const f of w) f(); });
-        ws.websocket.onclose = () => resolve();
-        ws.websocket.onerror = () => resolve();
+        sock.on("close", () => resolve());
+        sock.on("error", () => resolve());
         setTimeout(resolve, 6 * 3600_000); // reconectar cada 6 h de todos modos
       });
       try { ws.destroy(); } catch { /* */ }
@@ -122,6 +126,8 @@ async function wsLoop() {
 }
 // ---------------------------------------------------------------- bucle infinito
 let stopping = false;
+process.on("uncaughtException", (e) => { console.error("excepción no capturada:", e); diag(`servidor: excepción ${(e?.message || String(e)).slice(0, 100)}`).catch(() => {}); });
+process.on("unhandledRejection", (e) => { console.error("promesa rechazada:", e); diag(`servidor: rechazo ${(e?.message || String(e)).slice(0, 100)}`).catch(() => {}); });
 wsLoop();
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
 let executor = null;
