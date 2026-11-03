@@ -58,6 +58,8 @@ export class Liquidations {
 
   async init() {
     this.liq = (await this.store.get("liq")) ?? emptyLiq();
+    if (this.liq.version !== 2) { this.liq.version = 2; this.liq.estProfitUsd = 0; this.liq.opportunities = 0; } // techo recalculado: solo posiciones ejecutables
+    this.badUsers = new Set((await this.store.get("liqBad")) ?? []);
     const saved = await this.store.get("aaveBorrowers");
     if (saved?.list) { for (const a of saved.list) this.borrowers.set(a, {}); this.liq.aave.lastDiscoveryBlock = saved.block; }
     await this.save();
@@ -160,7 +162,8 @@ export class Liquidations {
     if (this.open.has(c.user)) return;
     this.open.set(c.user, block);
     this.liq.opportunities++;
-    if (c.estProfitUsd > 0) this.liq.estProfitUsd += c.estProfitUsd;
+    // el techo solo suma posiciones cuya ejecución no haya revertido en simulación (deuda mala fuera)
+    if (c.estProfitUsd > 0 && !(this.badUsers?.has(c.user))) this.liq.estProfitUsd += c.estProfitUsd;
     const rec = { proto, block, ts, user: c.user, hf: c.hf, debtUsd: c.debtUsd, colUsd: c.colUsd, estProfitUsd: c.estProfitUsd, market: c.market ?? null };
     this.liq.recent.unshift(rec); if (this.liq.recent.length > MAX_RECENT) this.liq.recent.length = MAX_RECENT;
     this.diag(`liquidaciones: ${proto} · posición liquidable ${c.user.slice(0, 10)}… HF ${c.hf.toFixed(4)} · deuda $${c.debtUsd.toFixed(2)} · colateral $${c.colUsd.toFixed(2)} · beneficio estimado $${c.estProfitUsd.toFixed(2)}${c.market ? ` · ${c.market}` : ""}`).catch(() => {});

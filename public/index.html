@@ -136,7 +136,7 @@
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 14:26 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 14:37 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
@@ -255,7 +255,7 @@ async function load() {
     $("l-opps").textContent = num(lq.opportunities);
     $("l-opps-sub").textContent = `ahora: ${lq.aave.liquidatable} en Aave · ${lq.morpho.liquidatable} en Morpho`;
     $("l-est").textContent = usd(lq.estProfitUsd);
-    $("l-est-sub").textContent = "bono − gas de cada episodio, si lo hubiéramos tomado al instante";
+    $("l-est-sub").textContent = "bono − gas de las posiciones cuya venta de colateral cierra en simulación (la deuda mala no cuenta)";
     $("l-aave").textContent = num(lq.aave.borrowers);
     $("l-aave-sub").textContent = lq.aave.lastScan ? `prestatarios · ${lq.aave.watch} con HF < 1.08 · leído ${ago(d.now, lq.aave.lastScan)}${lq.aave.error ? " · " + esc(lq.aave.error) : ""}` : (lq.aave.error ? esc(lq.aave.error) : "descubriendo prestatarios (eventos Borrow)…");
     $("l-seen").textContent = num(lq.seen.aave + lq.seen.morpho);

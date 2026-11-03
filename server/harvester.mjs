@@ -77,12 +77,13 @@ export class Harvester {
     const from0 = head - this.cfg_hist();
     const addrs = this.strats.map((s) => s.address);
     const per = new Map(addrs.map((a) => [a.toLowerCase(), { events: [], fees: [] }]));
-    const chunk = 5000;
+    const chunk = Number(process.env.HARVEST_HISTORY_CHUNK ?? 2000);
+    let failed = 0;
     for (let from = from0; from <= head; from += chunk) {
       const to = Math.min(head, from + chunk - 1);
       let logs;
       try { logs = await this.logs.getLogs({ address: addrs, fromBlock: from, toBlock: to, topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }); }
-      catch (e) { this.h.lastError = `historial ${from}: ${(e.shortMessage || e.message).slice(0, 60)}`; continue; }
+      catch (e) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(e.shortMessage || e.message).slice(0, 50)})`; continue; }
       for (const lg of logs) {
         const rec = per.get(lg.address.toLowerCase()); if (!rec) continue;
         if (lg.topics[0] === TOPICS.stratHarvest || lg.topics[0] === TOPICS.harvest) {
@@ -113,7 +114,7 @@ export class Harvester {
         topHarvester: Object.entries(harvesters).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null, harvesters: Object.keys(harvesters).length,
       };
     }
-    this.hist = { at: Date.now(), head, days: this.cfg_hist() / 43200, strats: out };
+    this.hist = { at: Date.now(), head, days: this.cfg_hist() / 43200, strats: out, failedChunks: failed };
     await this.store.set("harvestHist", this.hist);
     const withData = Object.values(out).filter((x) => x.n >= 2);
     await this.diag(`harvest: historial de ${this.hist.days.toFixed(1)} días · ${withData.length}/${this.strats.length} estrategias con ≥2 harvests · intervalo mediano ${median(withData.map((x) => x.intervalMed)) ? (median(withData.map((x) => x.intervalMed)) / 3600).toFixed(1) + " h" : "—"}`);
