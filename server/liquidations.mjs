@@ -167,7 +167,7 @@ export class Liquidations {
 
   /** Morpho Blue: posiciones con HF bajo según la API, verificadas on-chain. */
   async scanMorpho({ block, ts, gas, ethUsd }) {
-    const mk = `market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress irmAddress }`;
+    const mk = `market { marketId lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracle { address } irmAddress }`;
     const fieldsA = `items { healthFactor user { address } state { borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
     const fieldsB = `items { user { address } state { healthFactor borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
     // variantes por si el esquema no admite algún campo/filtro/orden: se usa la primera que responda sin error
@@ -185,7 +185,7 @@ export class Liquidations {
       items = j?.data?.marketPositions?.items ?? []; this.liq.morpho.queryVariant = errs.length + 1; break;
     }
     if (items === null) throw new Error("API Morpho: " + errs.join(" | ").slice(0, 400));
-    items = items.map((it) => ({ ...it, healthFactor: it.healthFactor ?? it.state?.healthFactor, borrowAssets: it.state?.borrowAssets ?? it.borrowAssets, borrowAssetsUsd: it.state?.borrowAssetsUsd ?? it.borrowAssetsUsd, collateral: it.state?.collateral ?? it.collateral, collateralUsd: it.state?.collateralUsd ?? it.collateralUsd }))
+    items = items.map((it) => ({ ...it, market: it.market ? { ...it.market, uniqueKey: it.market.uniqueKey ?? it.market.marketId, oracleAddress: it.market.oracleAddress ?? it.market.oracle?.address } : it.market, healthFactor: it.healthFactor ?? it.state?.healthFactor, borrowAssets: it.state?.borrowAssets ?? it.borrowAssets, borrowAssetsUsd: it.state?.borrowAssetsUsd ?? it.borrowAssetsUsd, collateral: it.state?.collateral ?? it.collateral, collateralUsd: it.state?.collateralUsd ?? it.collateralUsd }))
       .filter((it) => it.market?.oracleAddress && it.user?.address && Number(it.healthFactor ?? 0) < 1.05 && Number(it.borrowAssets ?? 0) > 0);
     this.liq.morpho.lastApi = Date.now(); this.liq.morpho.apiPositions = items.length;
     // verificación on-chain de las más cercanas a 1
