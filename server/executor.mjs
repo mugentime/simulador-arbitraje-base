@@ -219,6 +219,12 @@ export class Executor {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
       await atBlock;
+      if (rec.reasonAtBlock) { // el modelo se equivocó en el mismo bloque: desglose por salto
+        let a = plan.amount, t = r.startTok.address;
+        const parts = [];
+        for (const p of r.route) { const o = core.swapOut(p, t, a); parts.push(`${p.dex} ${p.kind}${p.kind !== "v2" ? ` ticks=${p.ticks ? p.ticks.length : "sin tabla"} ts=${p.tickSpacing} tick=${p.tick} L=${p.liquidity}` : ""} fee=${p.feePips}pips: ${a} → ${o}`); a = o; t = core.other(p, t).address; }
+        await this.diag(`fase 1 desglose: ${parts.join(" | ")}`);
+      }
       await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : rec.reasonAtBlock} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
       if (Date.now() - (this.lastProbe ?? 0) > 60_000) { this.lastProbe = Date.now(); await this.probe(plan).catch((e) => this.diag(`fase 1: sonda falló: ${e.shortMessage || e.message}`)); }
     }
