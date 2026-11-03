@@ -167,13 +167,16 @@ export class Liquidations {
 
   /** Morpho Blue: posiciones con HF bajo según la API, verificadas on-chain. */
   async scanMorpho({ block, ts, gas, ethUsd }) {
-    const fields = `items { healthFactor user { address } borrowAssets borrowAssetsUsd collateral collateralUsd market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress } }`;
-    // variantes por si el esquema no admite algún filtro/orden: se usa la primera que responda sin error
-    const queries = [
-      `{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { ${fields} } }`,
-      `{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], borrowShares_gte: 1 }) { ${fields} } }`,
-      `{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [8453] }) { ${fields} } }`,
-    ];
+    const mk = `market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress }`;
+    const fieldsA = `items { healthFactor user { address } state { borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
+    const fieldsB = `items { user { address } state { healthFactor borrowAssets borrowAssetsUsd collateral collateralUsd } ${mk} }`;
+    // variantes por si el esquema no admite algún campo/filtro/orden: se usa la primera que responda sin error
+    const queries = [];
+    for (const f of [fieldsA, fieldsB]) {
+      queries.push(`{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { ${f} } }`);
+      queries.push(`{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], borrowShares_gte: 1 }) { ${f} } }`);
+      queries.push(`{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [8453] }) { ${f} } }`);
+    }
     let items = null, lastErr = null;
     for (const query of queries) {
       const r = await fetch(MORPHO_API, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(15_000) });
@@ -182,7 +185,8 @@ export class Liquidations {
       items = j?.data?.marketPositions?.items ?? []; break;
     }
     if (items === null) throw new Error("API Morpho: " + lastErr);
-    items = items.filter((it) => it.market?.oracleAddress && it.user?.address && Number(it.healthFactor ?? 0) < 1.05 && Number(it.borrowAssets ?? 0) > 0);
+    items = items.map((it) => ({ ...it, healthFactor: it.healthFactor ?? it.state?.healthFactor, borrowAssets: it.state?.borrowAssets ?? it.borrowAssets, borrowAssetsUsd: it.state?.borrowAssetsUsd ?? it.borrowAssetsUsd, collateral: it.state?.collateral ?? it.collateral, collateralUsd: it.state?.collateralUsd ?? it.collateralUsd }))
+      .filter((it) => it.market?.oracleAddress && it.user?.address && Number(it.healthFactor ?? 0) < 1.05 && Number(it.borrowAssets ?? 0) > 0);
     this.liq.morpho.lastApi = Date.now(); this.liq.morpho.apiPositions = items.length;
     // verificación on-chain de las más cercanas a 1
     const calls = [];
