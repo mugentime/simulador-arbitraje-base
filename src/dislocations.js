@@ -12,7 +12,7 @@ export const NOTIONAL_USD = 50; // tamaño de la operación con la que se mide e
 export const MAX_DEVIATION_BPS = 2500; // un pool cuyo precio difiere >25% del de referencia no se considera cotizable
 
 export function emptyDisloc() {
-  return { v: 1, pairs: {}, open: {}, prev: {}, blocks: 0, lastBlock: null, moves: 0, episodes: 0, persistent: 0, recent: [] };
+  return { v: 2, pairs: {}, open: {}, prev: {}, blocks: 0, lastBlock: null, moves: 0, episodes: 0, persistent: 0, recent: [] };
 }
 
 /** Precio bruto token1/token0 del pool (sin ajustar decimales: solo se compara dentro del mismo par). */

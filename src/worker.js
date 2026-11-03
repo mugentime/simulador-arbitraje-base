@@ -185,7 +185,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   const managers = new Map(Object.entries((await store.get("managers")) ?? {}).map(([a, m]) => [a, { ...m, callReward: m.callReward === null || m.callReward === undefined ? null : BigInt(m.callReward) }]));
   vstats.hourly ??= []; vstats.last ??= null;
   let dstats = (await store.get("disloc")) ?? emptyDisloc();
-  if (dstats.v !== 1) dstats = emptyDisloc();
+  if (dstats.v !== 2) dstats = emptyDisloc(); // v2: medida ejecutable (los datos de la medida ingenua se descartan)
   if (live) { live.stats = stats; live.vstats = vstats; live.events = () => events; live.disloc = () => summarizeDisloc(dstats); }
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
