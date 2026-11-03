@@ -12,7 +12,7 @@ import * as core from "../src/core.js";
 
 export const AAVE_POOL = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5";
 export const MORPHO = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
-const MORPHO_API = "https://blue-api.morpho.org/graphql";
+const MORPHO_API = process.env.MORPHO_API || "https://api.morpho.org/graphql";
 const ABI = [
   "function getUserAccountData(address) view returns (uint256 totalCollateralBase,uint256 totalDebtBase,uint256 availableBorrowsBase,uint256 currentLiquidationThreshold,uint256 ltv,uint256 healthFactor)",
   "event Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint8 interestRateMode, uint256 borrowRate, uint16 indexed referralCode)",
@@ -167,12 +167,22 @@ export class Liquidations {
 
   /** Morpho Blue: posiciones con HF bajo según la API, verificadas on-chain. */
   async scanMorpho({ block, ts, gas, ethUsd }) {
-    const query = `{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { items { healthFactor user { address } borrowAssets borrowAssetsUsd collateral collateralUsd market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress } } } }`;
-    const r = await fetch(MORPHO_API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(15_000) });
-    if (!r.ok) throw new Error("API Morpho HTTP " + r.status);
-    const j = await r.json();
-    if (j.errors?.length) throw new Error("API Morpho: " + j.errors[0].message.slice(0, 80));
-    const items = j?.data?.marketPositions?.items ?? [];
+    const fields = `items { healthFactor user { address } borrowAssets borrowAssetsUsd collateral collateralUsd market { uniqueKey lltv loanAsset { address symbol decimals } collateralAsset { address symbol decimals } oracleAddress } }`;
+    // variantes por si el esquema no admite algún filtro/orden: se usa la primera que responda sin error
+    const queries = [
+      `{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { ${fields} } }`,
+      `{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], borrowShares_gte: 1 }) { ${fields} } }`,
+      `{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [8453] }) { ${fields} } }`,
+    ];
+    let items = null, lastErr = null;
+    for (const query of queries) {
+      const r = await fetch(MORPHO_API, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ query }), signal: AbortSignal.timeout(15_000) });
+      let j = null; try { j = await r.json(); } catch { /* sin JSON */ }
+      if (!r.ok || j?.errors?.length) { lastErr = `HTTP ${r.status}${j?.errors?.length ? " · " + j.errors[0].message.slice(0, 100) : ""}`; continue; }
+      items = j?.data?.marketPositions?.items ?? []; break;
+    }
+    if (items === null) throw new Error("API Morpho: " + lastErr);
+    items = items.filter((it) => it.market?.oracleAddress && it.user?.address && Number(it.healthFactor ?? 0) < 1.05 && Number(it.borrowAssets ?? 0) > 0);
     this.liq.morpho.lastApi = Date.now(); this.liq.morpho.apiPositions = items.length;
     // verificación on-chain de las más cercanas a 1
     const calls = [];

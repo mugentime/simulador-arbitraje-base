@@ -103,27 +103,39 @@ function blockWaiter(fallbackMs) {
   });
 }
 async function wsLoop() {
-  let i = 0;
+  let i = 0, failures = 0;
   while (!stopping) {
     const url = WS_RPCS[i % WS_RPCS.length];
     try {
+      // JSON-RPC crudo sobre el socket: eth_subscribe newHeads. Sin capas que puedan quedarse colgadas.
       const sock = new WebSocket(url);
-      sock.on("error", () => {}); // los errores se manejan por cierre; sin esto el proceso moriría
+      sock.on("error", () => {});
       await new Promise((res, rej) => { sock.once("open", res); sock.once("close", () => rej(new Error("cerrado al conectar"))); setTimeout(() => rej(new Error("tiempo de conexión")), 8000); });
-      const ws = new ethers.WebSocketProvider(sock, Number(CHAIN_ID));
-      await Promise.race([ws.getBlockNumber(), new Promise((_, rej) => setTimeout(() => rej(new Error("sin respuesta al suscribir")), 10_000))]);
-      wsAlive = true;
-      await diag(`bloques: suscrito por WebSocket a ${new URL(url).host}`);
-      await new Promise((resolve) => {
-        ws.on("block", (n) => { wsBlock = n; const w = wsWaiters; wsWaiters = []; for (const f of w) f(); });
-        sock.on("close", () => resolve());
-        sock.on("error", () => resolve());
-        setTimeout(resolve, 6 * 3600_000); // reconectar cada 6 h de todos modos
+      const subId = await new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error("sin respuesta a eth_subscribe")), 8000);
+        sock.once("message", (m) => { clearTimeout(t); try { const j = JSON.parse(m.toString()); j.result ? res(j.result) : rej(new Error(JSON.stringify(j.error ?? j).slice(0, 80))); } catch (e) { rej(e); } });
+        sock.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_subscribe", params: ["newHeads"] }));
       });
-      try { ws.destroy(); } catch { /* */ }
-    } catch (e) { await diag(`bloques: WebSocket ${new URL(url).host} falló (${(e.shortMessage || e.message).slice(0, 60)}); siguiente`); i++; }
+      wsAlive = true; failures = 0;
+      await diag(`bloques: suscrito por WebSocket a ${new URL(url).host} (${subId.slice(0, 10)})`);
+      await new Promise((resolve) => {
+        let lastMsg = Date.now();
+        sock.on("message", (m) => {
+          lastMsg = Date.now();
+          try { const j = JSON.parse(m.toString()); const h = j?.params?.result; if (h?.number) { wsBlock = Number(h.number); const w = wsWaiters; wsWaiters = []; for (const f of w) f(); } } catch { /* */ }
+        });
+        sock.on("close", resolve); sock.on("error", resolve);
+        const watchdog = setInterval(() => { if (Date.now() - lastMsg > 30_000) { clearInterval(watchdog); try { sock.terminate(); } catch { /* */ } resolve(); } }, 5000); // sin bloques en 30 s: reconectar
+        setTimeout(() => { clearInterval(watchdog); try { sock.close(); } catch { /* */ } resolve(); }, 6 * 3600_000);
+      });
+      await diag(`bloques: WebSocket ${new URL(url).host} cerrado; reconectando`);
+    } catch (e) {
+      failures++;
+      if (failures <= WS_RPCS.length || failures % 20 === 0) await diag(`bloques: WebSocket ${new URL(url).host} falló (${(e.shortMessage || e.message).slice(0, 60)}); ${failures >= WS_RPCS.length ? "sondeo cada 1 s mientras tanto" : "siguiente"}`);
+      i++;
+    }
     wsAlive = false;
-    await new Promise((r) => setTimeout(r, 5000));
+    await new Promise((r) => setTimeout(r, failures >= WS_RPCS.length ? 60_000 : 3000));
   }
 }
 // ---------------------------------------------------------------- bucle infinito
