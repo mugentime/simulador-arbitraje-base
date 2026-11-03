@@ -73,7 +73,7 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
-    if (!this.p1.reconciledLegacy) {
+    if (!this.p1.reconciledLegacy && process.env.RAILWAY_PROJECT_ID) {
       // migración única: los 3 envíos del 2026-11-03 cuyo recibo no quedó registrado (el wait expiró)
       this.p1.pending = (this.p1.pending ?? []).concat([
         { hash: "0xdb84afff00000000000000000000000000000000000000000000000000000000", legacyPrefix: "0xdb84afff", sentAt: Date.now(), route: "envío anterior", startSym: "USDC", startDecimals: 6 },
