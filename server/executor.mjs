@@ -16,6 +16,7 @@ import { ethers } from "ethers";
 import * as core from "../src/core.js";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
+const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", import.meta.url)));
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
@@ -104,6 +105,7 @@ export class Executor {
     }
     await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ETH · contrato ${this.p1.executor ?? "no desplegado"}`);
     await this.save();
+    if (process.env.DEPLOY_QUOTER !== "0") await this.ensureQuoter();
   }
 
   async deploy() {
@@ -223,10 +225,17 @@ export class Executor {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
       await atBlock;
-      if (rec.reasonAtBlock) { // el modelo se equivocó en el mismo bloque: desglose por salto
+      if ((rec.reasonAtBlock || tag) && Date.now() - (this.lastBreakdown ?? 0) > 20_000) { // el modelo se equivocó con el mismo estado: desglose por salto, modelo vs cotizador on-chain
+        this.lastBreakdown = Date.now();
         let a = plan.amount, t = r.startTok.address;
         const parts = [];
-        for (const p of r.route) { const o = core.swapOut(p, t, a); parts.push(`${p.dex} ${p.kind}${p.kind !== "v2" ? ` ticks=${p.ticks ? p.ticks.length : "sin tabla"} ts=${p.tickSpacing} tick=${p.tick} L=${p.liquidity}` : ""} fee=${p.feePips}pips: ${a} → ${o}`); a = o; t = core.other(p, t).address; }
+        for (const p of r.route) {
+          const o = core.swapOut(p, t, a);
+          let chain = "?";
+          try { chain = String(await this.quote(p, t, a, sp, tag)); } catch (e) { chain = "cotizador: " + (e.shortMessage || e.message).slice(0, 40); }
+          parts.push(`${p.dex} ${p.kind}${p.kind !== "v2" ? ` ticks=${p.ticks ? p.ticks.length : "sin tabla"} ts=${p.tickSpacing} tick=${p.tick} L=${p.liquidity}` : ""} fee=${p.feePips}pips: ${a} → modelo ${o} / cadena ${chain}`);
+          a = o; t = core.other(p, t).address;
+        }
         await this.diag(`fase 1 desglose: ${parts.join(" | ")}`);
       }
       await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : rec.reasonAtBlock} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
@@ -313,6 +322,38 @@ export class Executor {
     }
     this.p1.pending = keep;
     await this.save();
+  }
+
+  /** Cotización exacta on-chain de un salto (v2 por reservas; v3/v4 por el contrato Quoter sin tokens). */
+  async quote(p, tokenIn, amountIn, sp = this.provider, tag = undefined) {
+    const tokenOut = core.other(p, tokenIn).address;
+    const zfo = BigInt(tokenIn) < BigInt(tokenOut);
+    if (p.kind === "v2") {
+      const r = new ethers.Interface(["function getReserves() view returns (uint112,uint112,uint32)"]);
+      const raw = await sp.call({ to: p.address, data: r.encodeFunctionData("getReserves"), ...(tag ? { blockTag: tag } : {}) });
+      const [r0, r1] = r.decodeFunctionResult("getReserves", raw);
+      const [ri, ro] = zfo ? [r0, r1] : [r1, r0];
+      return core.amountOut(amountIn, ri, ro, p.feePips);
+    }
+    if (!this.p1.quoter) throw new Error("sin Quoter desplegado");
+    const q = new ethers.Interface(QUOTER.abi);
+    const data = p.kind === "v3" ? q.encodeFunctionData("quoteV3", [p.address, zfo, amountIn])
+      : q.encodeFunctionData("quoteV4", [p.manager, [zfo ? tokenIn : tokenOut, zfo ? tokenOut : tokenIn, Number(p.feePips), p.tickSpacing, ethers.ZeroAddress], zfo, amountIn]);
+    const raw = await sp.call({ to: this.p1.quoter, data, ...(tag ? { blockTag: tag } : {}) });
+    return q.decodeFunctionResult(p.kind === "v3" ? "quoteV3" : "quoteV4", raw)[0];
+  }
+
+  /** Despliega el Quoter una vez (contrato sin estado; ~$0.01 de gas). */
+  async ensureQuoter() {
+    if (this.p1.quoter) { try { if ((await this.provider.getCode(this.p1.quoter)) !== "0x") return; } catch { return; } }
+    if (!this.wallet) return;
+    try {
+      const c = await this.withSender(async (w) => { const f = new ethers.ContractFactory(QUOTER.abi, QUOTER.bytecode, w); return f.deploy(); });
+      await c.deploymentTransaction().wait();
+      this.p1.quoter = await c.getAddress();
+      await this.diag(`fase 1: Quoter desplegado en ${this.p1.quoter}`);
+      await this.save();
+    } catch (e) { await this.diag(`fase 1: no se pudo desplegar el Quoter: ${e.shortMessage || e.message}`); }
   }
 
   async refreshBalance() {
