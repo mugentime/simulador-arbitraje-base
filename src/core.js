@@ -519,7 +519,7 @@ export function poolPrice(p, base = "WETH") {
 
 // ------------------------------------------------------------------ Ciclos
 
-export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3, maxCycles = 40000) {
+export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3, maxCycles = 15000) {
   const byTok = new Map();
   for (const p of pools) for (const t of [p.token0.address, p.token1.address]) {
     if (!byTok.has(t)) byTok.set(t, []);

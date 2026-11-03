@@ -194,7 +194,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 3; // v3: tokens adicionales (pares ampliados)
+  const UNIVERSE_FORMAT = 4; // v4: tokens adicionales, tope de 15k ciclos
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

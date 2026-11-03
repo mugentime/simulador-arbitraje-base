@@ -141,9 +141,19 @@ export class Harvester {
     this.hist = { v: 2, at: Date.now(), head, days: this.cfg_hist() / 43200, strats: out, failedChunks: failed };
     await this.store.set("harvestHist", this.hist);
     const withData = Object.values(out).filter((x) => x.n >= 2);
+    this.h.lastError = failed ? this.h.lastError : null;
+    await this.logHistoryTable();
     await this.diag(`harvest: historial de ${this.hist.days.toFixed(1)} días · ${withData.length}/${this.strats.length} estrategias con ≥2 harvests · intervalo mediano ${median(withData.map((x) => x.intervalMed)) ? (median(withData.map((x) => x.intervalMed)) / 3600).toFixed(1) + " h" : "—"}`);
   }
   cfg_hist() { return this.limits.historyBlocks; }
+  /** Tabla compacta en la bitácora: las estrategias que más se harvestean, con intervalo, comisión y cosechador. */
+  async logHistoryTable() {
+    const rows = Object.values(this.hist?.strats ?? {}).filter((x) => x.n >= 2).sort((a, b) => b.n - a.n);
+    const fmt = (x) => `${x.id}: ${x.n} harvests, cada ${(x.intervalMed / 3600).toFixed(1)} h (mín ${(x.intervalMin / 3600).toFixed(1)} h), comisión mediana ${x.callFeeMedWei !== null ? (x.callFeeMedWei / 1e18).toFixed(6) : "?"} ETH, ${x.harvesters} cosechador(es) (principal ${x.topHarvester?.slice(0, 10)})`;
+    for (let i = 0; i < rows.length; i += 8) await this.diag(`harvest historial ${i / 8 + 1}: ` + rows.slice(i, i + 8).map(fmt).join(" · "));
+    const regular = rows.filter((x) => x.n >= 3 && x.intervalMin > 0.7 * x.intervalMed);
+    await this.diag(`harvest historial: ${regular.length} estrategias con cadencia regular (intervalo mínimo ≥70% de la mediana) → predecibles; ${rows.length - regular.length} irregulares`);
+  }
   ingestLogs(logs, per) {
     for (const lg of logs) {
       const rec = per.get(lg.address.toLowerCase()); if (!rec) continue;
