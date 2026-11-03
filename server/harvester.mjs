@@ -87,13 +87,22 @@ export class Harvester {
     const worker = async () => {
       while (ranges.length) {
         const [from, to] = ranges.shift();
-        let logs;
-        try {
-          logs = await Promise.race([
-            this.logs.getLogs({ address: addrs, fromBlock: from, toBlock: to, topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }),
-            new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 25_000)),
-          ]);
-        } catch (e) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(e.shortMessage || e.message).slice(0, 50)})`; continue; }
+        let logs = null, span = to - from + 1, lastErr = null;
+        // sin filtro de dirección (los nodos públicos rechazan listas largas); se filtra por dirección al ingerir.
+        // Si el nodo rechaza el tramo (400 / demasiados resultados), se parte en dos hasta 250 bloques.
+        while (span >= 250 && logs === null) {
+          try {
+            const parts = [];
+            for (let f = from; f <= to; f += span) {
+              parts.push(await Promise.race([
+                this.logs.getLogs({ fromBlock: f, toBlock: Math.min(to, f + span - 1), topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }),
+                new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 25_000)),
+              ]));
+            }
+            logs = parts.flat();
+          } catch (e) { lastErr = e; span = Math.floor(span / 2); }
+        }
+        if (logs === null) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(lastErr?.shortMessage || lastErr?.message || "").slice(0, 50)})`; continue; }
         done++;
         if (done % 25 === 0) await this.diag(`harvest: historial ${done}/${total} tramos (${failed} fallidos, ${Math.round((Date.now() - t0) / 1000)} s)`);
         this.ingestLogs(logs, per);
