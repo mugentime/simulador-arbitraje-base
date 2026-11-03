@@ -315,7 +315,7 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
 }
 
 const MIN_SQRT_RATIO = 4295128739n;
-const MAX_SQRT_RATIO = 1461446703485210103287273642190157433829878702059n;
+const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n;
 export async function refreshPools(ethers, provider, pools, blockTag = "latest") {
   const iface = makeIface(ethers);
   const calls = [];

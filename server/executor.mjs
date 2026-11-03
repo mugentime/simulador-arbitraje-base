@@ -190,7 +190,7 @@ export class Executor {
       "function slot0() view returns (uint160 sqrtPriceX96,int24 tick)",
       "function swap(address recipient,bool zeroForOne,int256 amountSpecified,uint160 sqrtPriceLimitX96,bytes data) returns (int256,int256)",
     ]);
-    const MINP1 = 4295128740n, MAXM1 = 1461446703485210103287273642190157433829878702058n;
+    const MINP1 = 4295128740n, MAXM1 = 1461446703485210103287273052203988822378723970341n;
     let amount = plan.amount;
     for (const h of plan.hops) {
       const [kind, pool, tokenIn, tokenOut] = h;
