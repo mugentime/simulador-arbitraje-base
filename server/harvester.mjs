@@ -63,6 +63,7 @@ export class Harvester {
     this.h.strategies = this.strats.length;
     await this.save();
     this.hist = (await this.store.get("harvestHist")) ?? null;
+    if (this.hist && this.hist.v !== 2) this.hist = null; // formato anterior (lecturas fallidas): se rehace
     if (!this.hist || Date.now() - (this.hist.at ?? 0) > 6 * 3600_000) this.analyzeHistory().catch((e) => { this.h.lastError = `historial: ${e.shortMessage || e.message}`; });
   }
 
@@ -121,7 +122,7 @@ export class Harvester {
         topHarvester: Object.entries(harvesters).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null, harvesters: Object.keys(harvesters).length,
       };
     }
-    this.hist = { at: Date.now(), head, days: this.cfg_hist() / 43200, strats: out, failedChunks: failed };
+    this.hist = { v: 2, at: Date.now(), head, days: this.cfg_hist() / 43200, strats: out, failedChunks: failed };
     await this.store.set("harvestHist", this.hist);
     const withData = Object.values(out).filter((x) => x.n >= 2);
     await this.diag(`harvest: historial de ${this.hist.days.toFixed(1)} días · ${withData.length}/${this.strats.length} estrategias con ≥2 harvests · intervalo mediano ${median(withData.map((x) => x.intervalMed)) ? (median(withData.map((x) => x.intervalMed)) / 3600).toFixed(1) + " h" : "—"}`);
