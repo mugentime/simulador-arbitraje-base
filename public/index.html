@@ -110,10 +110,28 @@
     <div class="legend"><span><i></i>Neto acumulado de back-runs rentables</span></div>
   </section>
 
+  <!-- ============================ Protocolo 3: liquidaciones ============================ -->
+  <section class="card">
+    <h2>Liquidaciones con flashloan (Aave v3 y Morpho Blue) · detección</h2>
+    <p class="sub">Cuando un préstamo queda por debajo de su umbral (factor de salud &lt; 1), quien lo liquide paga parte de la deuda y recibe el colateral con un bono fijo (≈5% en Aave, 4–15% en Morpho). El flashloan pone el dinero de la deuda; se devuelve con el colateral vendido. Aquí se mide cuántas posiciones liquidables aparecen y cuánto tardan otros en tomarlas.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Posiciones liquidables vistas</div><div class="v" id="l-opps">—</div><div class="s" id="l-opps-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio estimado (techo)</div><div class="v" id="l-est">—</div><div class="s" id="l-est-sub"></div></div>
+      <div class="kpi"><div class="l">Aave v3 · vigilancia</div><div class="v" id="l-aave">—</div><div class="s" id="l-aave-sub"></div></div>
+      <div class="kpi"><div class="l">Liquidaciones de otros</div><div class="v" id="l-seen">—</div><div class="s" id="l-seen-sub"></div></div>
+    </div>
+    <details><summary>Posiciones liquidables ahora y episodios recientes</summary>
+      <div class="scroll"><table><thead><tr><th>Protocolo</th><th>Bloque</th><th>Usuario</th><th class="num">HF</th><th class="num">Deuda</th><th class="num">Colateral</th><th class="num">Beneficio est.</th><th>Mercado</th></tr></thead><tbody id="l-recent"></tbody></table></div>
+    </details>
+    <details><summary>Últimas liquidaciones ejecutadas por otros (competencia)</summary>
+      <div class="scroll"><table><thead><tr><th>Protocolo</th><th>Bloque</th><th>Usuario</th><th>Liquidador</th><th class="num">Bloques tras verla nosotros</th></tr></thead><tbody id="l-seen-rows"></tbody></table></div>
+    </details>
+  </section>
+
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 12:40 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 12:53 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
@@ -221,6 +239,21 @@ async function load() {
     $("vpipe").innerHTML = stages.map((s) => `<div class="st${vchanged ? " flash" : ""}" data-hit="${s.hit ? 1 : 0}"><div class="n">${s.name}</div><div class="t">${esc(s.t)}</div></div>`).join("");
     if (vchanged) setTimeout(() => document.querySelectorAll("#vpipe .st").forEach((e) => e.classList.remove("flash")), 600);
     drawCumulative($("chart-v"), $("tip-v"), vs.hourly || [], (h) => h.netUsd, (h) => `${h.events} eventos, ${h.withOpp} con back-run, ${usd(h.netUsd)}`);
+  }
+  const lq = d.liq;
+  if (lq) {
+    $("l-opps").textContent = num(lq.opportunities);
+    $("l-opps-sub").textContent = `ahora: ${lq.aave.liquidatable} en Aave · ${lq.morpho.liquidatable} en Morpho`;
+    $("l-est").textContent = usd(lq.estProfitUsd);
+    $("l-est-sub").textContent = "bono − gas de cada episodio, si lo hubiéramos tomado al instante";
+    $("l-aave").textContent = num(lq.aave.borrowers);
+    $("l-aave-sub").textContent = lq.aave.lastScan ? `prestatarios · ${lq.aave.watch} con HF < 1.08 · leído ${ago(d.now, lq.aave.lastScan)}${lq.aave.error ? " · " + esc(lq.aave.error) : ""}` : (lq.aave.error ? esc(lq.aave.error) : "descubriendo prestatarios (eventos Borrow)…");
+    $("l-seen").textContent = num(lq.seen.aave + lq.seen.morpho);
+    $("l-seen-sub").textContent = `${lq.seen.aave} Aave · ${lq.seen.morpho} Morpho desde el arranque${lq.morpho.error ? " · Morpho API: " + esc(lq.morpho.error) : ""}`;
+    const nowRows = [...lq.aave.candidates.map((c) => ({ ...c, proto: "aave", block: lq.aave.scanBlock })), ...lq.morpho.candidates.map((c) => ({ ...c, proto: "morpho", block: lq.aave.scanBlock }))];
+    const rows = nowRows.length ? nowRows : lq.recent.slice(0, 15);
+    $("l-recent").innerHTML = rows.map((r) => `<tr><td>${r.proto}</td><td>${num(r.block)}</td><td class="mono">${r.user.slice(0, 10)}…</td><td class="num">${r.hf.toFixed(4)}</td><td class="num">${usd(r.debtUsd)}</td><td class="num">${usd(r.colUsd)}</td><td class="num strong">${usd(r.estProfitUsd)}</td><td>${esc(r.market || "—")}</td></tr>`).join("") || `<tr><td colspan="8" class="muted">Ninguna todavía.</td></tr>`;
+    $("l-seen-rows").innerHTML = lq.seen.recent.slice(0, 15).map((r) => `<tr><td>${r.proto}</td><td>${num(r.block)}</td><td class="mono">${r.user.slice(0, 10)}…</td><td class="mono">${r.liquidator.slice(0, 10)}…</td><td class="num">${r.blocksAfterUs !== undefined ? r.blocksAfterUs : "no la vimos antes"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Ninguna todavía.</td></tr>`;
   }
   const hv = d.harvest;
   if (hv) {

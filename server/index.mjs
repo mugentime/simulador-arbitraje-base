@@ -9,6 +9,7 @@ import WebSocket from "ws";
 import { runWorker, isAlive } from "../src/worker.js";
 import { Executor } from "./executor.mjs";
 import { Harvester } from "./harvester.mjs";
+import { Liquidations } from "./liquidations.mjs";
 
 const RPCS = [process.env.RPC_URL, "https://base-rpc.publicnode.com", "https://base.llamarpc.com", "https://mainnet.base.org", "https://1rpc.io/base", "https://base.drpc.org"].filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/data") ? "/data" : path.resolve("data"));
@@ -133,6 +134,7 @@ wsLoop();
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
 let executor = null;
 let harvester = null;
+let liquidations = null;
 async function loop() {
   while (!stopping) {
     try {
@@ -145,10 +147,14 @@ async function loop() {
       const hv = new Harvester({ provider: p, store, diag, executor: exec, mode: EXECUTE_MODE });
       await hv.init();
       harvester = hv;
+      const lq = new Liquidations({ provider: p, logsProvider: logsProviderFor(p, url), store, diag });
+      await lq.init();
+      liquidations = lq;
       const onBlock = async (ctx) => {
         nb++; if (nb % 300 === 0) await exec.refreshBalance();
         const text = await exec.onBlock(ctx);
         hv.onBlock(ctx).catch((e) => { hv.h.lastError = e.shortMessage || e.message; }); // en paralelo: no retrasa el siguiente bloque
+        lq.onBlock(ctx).catch((e) => { lq.liq.aave.error = e.shortMessage || e.message; });
         return text;
       };
       // tandas de 1 h: el universo se refresca solo (lo guarda 30 min)
@@ -173,13 +179,14 @@ const server = http.createServer(async (req, res) => {
     const vaults = live.vstats ? JSON.parse(J(live.vstats)) : ((await store.get("vaults")) ?? null);
     const phase1 = executor?.p1 ?? (await store.get("phase1")) ?? null;
     const harvest = harvester?.h ?? (await store.get("harvest")) ?? null;
+    const liq = liquidations?.liq ?? (await store.get("liq")) ?? null;
     if (vaults) {
       vaults.topManagers = Object.values(vaults.byManager ?? {}).sort((a, b) => b.events - a.events).slice(0, 12);
       delete vaults.byManager;
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html")) {
@@ -207,5 +214,5 @@ setInterval(async () => {
   const st = await store.get("stats");
   const p1 = executor?.p1;
   const vs = live.vstats;
-  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent} (${p1.confirmed} confirmadas, ${p1.reverted} revertidas, realizado $${p1.realizedUsd.toFixed(4)}, gas pagado $${p1.gasPaidUsd.toFixed(4)})${p1.paused ? " PAUSADA" : ""}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}${vs.lastError ? ` (error: ${vs.lastError})` : ""}` : ""}${harvester ? ` · harvest ${harvester.h.strategies} estrategias, ${harvester.h.worthNow} rentables ahora, ${harvester.h.sent} enviadas (${harvester.h.confirmed} ok, ${harvester.h.reverted} rev), realizado $${harvester.h.realizedUsd.toFixed(4)}${harvester.h.lastError ? ` (error: ${harvester.h.lastError})` : ""}` : ""}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
+  if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent} (${p1.confirmed} confirmadas, ${p1.reverted} revertidas, realizado $${p1.realizedUsd.toFixed(4)}, gas pagado $${p1.gasPaidUsd.toFixed(4)})${p1.paused ? " PAUSADA" : ""}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}${vs.lastError ? ` (error: ${vs.lastError})` : ""}` : ""}${liquidations ? ` · liquidaciones: Aave ${liquidations.liq.aave.borrowers} prestatarios, ${liquidations.liq.aave.liquidatable} liquidables; Morpho ${liquidations.liq.morpho.liquidatable} liquidables (${liquidations.liq.morpho.apiPositions} en API); ${liquidations.liq.opportunities} episodios, est. $${liquidations.liq.estProfitUsd.toFixed(2)}; ajenas ${liquidations.liq.seen.aave}+${liquidations.liq.seen.morpho}${liquidations.liq.aave.error ? ` (Aave: ${liquidations.liq.aave.error})` : ""}${liquidations.liq.morpho.error ? ` (Morpho: ${liquidations.liq.morpho.error})` : ""}` : ""}${harvester ? ` · harvest ${harvester.h.strategies} estrategias, ${harvester.h.worthNow} rentables ahora, ${harvester.h.sent} enviadas (${harvester.h.confirmed} ok, ${harvester.h.reverted} rev), realizado $${harvester.h.realizedUsd.toFixed(4)}${harvester.h.lastError ? ` (error: ${harvester.h.lastError})` : ""}` : ""}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
 }, 60_000);
