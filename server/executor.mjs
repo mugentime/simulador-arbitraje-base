@@ -51,25 +51,35 @@ export class Executor {
   /** Wallet conectada al RPC de envío actual; `rotateSender` pasa al siguiente si uno rechaza el envío. */
   sender() {
     const url = this.sendRpcs[this.sendIdx % this.sendRpcs.length];
-    if (!this.sendProv || this.sendUrl !== url) { this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 }); }
-    return this.wallet.connect(this.sendProv);
-  }
-  rotateSender() { this.sendIdx++; return this.sender(); }
-
-  /** Ejecuta `fn(walletConectada)` probando cada RPC de envío si el anterior rechaza (403/405/-32601…). */
-  async withSender(fn) {
-    let lastErr;
-    for (let i = 0; i < this.sendRpcs.length; i++) {
-      const w = this.sender();
-      try { return await fn(w); } catch (e) {
-        lastErr = e;
-        const m = `${e.shortMessage || e.message}`;
-        if (!/403|405|Forbidden|Method not|not supported|unsupported|-32601|429/i.test(m)) throw e;
-        await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 60)}); probando otro`);
-        this.rotateSender();
-      }
+    if (!this.sendProv || this.sendUrl !== url) {
+      this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 });
+      this.sendSigner = new ethers.NonceManager(this.wallet.connect(this.sendProv)); // nonces consecutivos aunque haya envíos seguidos
     }
-    throw lastErr;
+    return this.sendSigner;
+  }
+  rotateSender() { this.sendIdx++; this.sendProv = null; return this.sender(); }
+
+  /** Ejecuta `fn(firmante)` en serie (un envío a la vez) probando cada RPC de envío si el anterior rechaza. */
+  async withSender(fn) {
+    const run = async () => {
+      let lastErr;
+      for (let i = 0; i < this.sendRpcs.length; i++) {
+        const w = this.sender();
+        try { return await fn(w); } catch (e) {
+          lastErr = e;
+          const m = `${e.shortMessage || e.message}`;
+          if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
+          if (!/403|405|Forbidden|Method not|not supported|unsupported|-32601|429/i.test(m)) throw e;
+          await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 60)}); probando otro`);
+          this.rotateSender();
+        }
+      }
+      throw lastErr;
+    };
+    const prev = this.sendLock ?? Promise.resolve();
+    const p = prev.then(run, run);
+    this.sendLock = p.catch(() => {});
+    return p;
   }
 
   async init() {
