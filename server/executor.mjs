@@ -71,6 +71,7 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
+    if (!this.p1.executor && process.env.EXECUTOR_ADDRESS) this.p1.executor = process.env.EXECUTOR_ADDRESS; // respaldo si se perdiera el volumen
     this.p1.mode = this.wallet ? this.mode : "sin llave";
     this.p1.wallet = this.wallet?.address ?? null;
     if (!this.wallet) { await this.diag("fase 1: sin PRIVATE_KEY; solo observación"); await this.save(); return; }
