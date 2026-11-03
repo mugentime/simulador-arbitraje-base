@@ -41,6 +41,7 @@ export class Executor {
       maxTxPerHour: Number(process.env.MAX_TX_PER_HOUR ?? 20),
       pauseAfterReverts: Number(process.env.PAUSE_AFTER_REVERTS ?? 3),
       minNetUsd: Number(process.env.MIN_NET_USD ?? 0.05),
+      minSendNetUsd: Number(process.env.MIN_SEND_NET_USD ?? 0.01),
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
     this.sendIdx = 0; this.sendRpcs = sendRpcs();
@@ -72,9 +73,15 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
-    if (this.p1.sent > 0 && !this.p1.pending && this.p1.confirmed === 0 && this.p1.reverted === 0) {
-      // migración: envíos anteriores sin recibo registrado
-      this.p1.pending = this.p1.recent.filter((r) => typeof r.sent === "string" && /^0x[0-9a-f]{64}/i.test(r.sent)).map((r) => ({ hash: r.sent.slice(0, 66), sentAt: Date.now(), route: r.route, startSym: r.start, startDecimals: r.start === "USDC" ? 6 : r.start === "cbBTC" ? 8 : 18, netSimUsd: r.netUsd }));
+    if (!this.p1.reconciledLegacy) {
+      // migración única: los 3 envíos del 2026-11-03 cuyo recibo no quedó registrado (el wait expiró)
+      this.p1.pending = (this.p1.pending ?? []).concat([
+        { hash: "0xdb84afff00000000000000000000000000000000000000000000000000000000", legacyPrefix: "0xdb84afff", sentAt: Date.now(), route: "envío anterior", startSym: "USDC", startDecimals: 6 },
+        { hash: "0x7208509781ce93d17f9551af654f30492ae21e1017406fc98e1f0fe0752aa8c3", sentAt: Date.now(), route: "WETH → Aerodrome Slipstream → USDC → Uniswap v3 → WETH", startSym: "WETH", startDecimals: 18 },
+        { hash: "0xd2cdf7f2a9d6fe7cdbb679541597ccc46a8b08b675f7e765938bb401f744f62d", sentAt: Date.now(), route: "USDC → Uniswap v4 → cbBTC → PancakeSwap v3 → USDC", startSym: "USDC", startDecimals: 6 },
+      ].filter((t) => !t.legacyPrefix));
+      this.p1.sent = Math.max(this.p1.sent, 2);
+      this.p1.reconciledLegacy = true;
     }
     if (this.p1.modelVersion !== 2) { // contadores de simulaciones del modelo/contrato anteriores: se reinician, se conserva el contrato
       const keep = { executor: this.p1.executor, artifact: this.p1.artifact, deployedAt: this.p1.deployedAt, deployTx: this.p1.deployTx, previousExecutor: this.p1.previousExecutor };
@@ -249,6 +256,8 @@ export class Executor {
     if (this.sentTimes.length >= this.limits.maxTxPerHour) { rec.sent = "omitida: tope por hora"; return; }
     if (rec.gasUsd > this.limits.maxGasUsd) { rec.sent = `omitida: gas ${rec.gasUsd.toFixed(3)} > tope`; return; }
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
+    // Una tx que revierte cuesta ~1 gas completo; solo compensa enviar si el neto simulado cubre varias fallas.
+    if (rec.netUsd < this.limits.minSendNetUsd) { rec.sent = `omitida: neto simulado $${rec.netUsd.toFixed(4)} < mínimo de envío $${this.limits.minSendNetUsd}`; return; }
     try {
       const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
       const prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
