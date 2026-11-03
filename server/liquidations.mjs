@@ -152,7 +152,8 @@ export class Liquidations {
     this.liq.aave.lastScan = Date.now(); this.liq.aave.scanBlock = block; this.liq.aave.error = null;
     const still = new Set(cands.map((c) => c.user));
     for (const [u, b] of this.open) if (list.includes(u) && !still.has(u)) { this.open.delete(u); }
-    for (const c of cands) { this.episode("aave", c, block, ts); this.onCandidate?.({ ...c, proto: "aave" }, { block, ts, gas, ethUsd }); }
+    for (const c of cands) this.episode("aave", c, block, ts);
+    for (const c of cands.slice(0, 5)) this.onCandidate?.({ ...c, proto: "aave" }, { block, ts, gas, ethUsd });
   }
 
   episode(proto, c, block, ts) {
@@ -200,6 +201,7 @@ export class Liquidations {
       if (!p || !m || !pr) return;
       const pos = this.iface.decodeFunctionResult("position", p), mk = this.iface.decodeFunctionResult("market", m);
       const price = BigInt(pr);
+      if (price === 0n) return; // oráculo sin precio: no se puede valorar ni liquidar
       const borrowed = mk.totalBorrowShares > 0n ? (pos.borrowShares * mk.totalBorrowAssets + mk.totalBorrowShares - 1n) / mk.totalBorrowShares : 0n;
       const lltv = BigInt(it.market.lltv);
       const maxBorrow = (pos.collateral * price / 10n ** 36n) * lltv / 10n ** 18n;
@@ -214,6 +216,7 @@ export class Liquidations {
     });
     cands.sort((x, y) => y.estProfitUsd - x.estProfitUsd);
     this.liq.morpho.candidates = cands.slice(0, 10).map(({ raw, price, collateralRaw, borrowedRaw, ...rest }) => rest); this.liq.morpho.liquidatable = cands.length; this.liq.morpho.error = null;
-    for (const c of cands) { this.episode("morpho", c, block, ts); this.onCandidate?.({ ...c, proto: "morpho" }, { block, ts, gas, ethUsd }); }
+    for (const c of cands) this.episode("morpho", c, block, ts);
+    for (const c of cands.slice(0, 5)) this.onCandidate?.({ ...c, proto: "morpho" }, { block, ts, gas, ethUsd });
   }
 }

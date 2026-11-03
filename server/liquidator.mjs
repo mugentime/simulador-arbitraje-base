@@ -30,7 +30,7 @@ export class Liquidator {
     this.limits = { minNetUsd: Number(process.env.MIN_LIQ_NET_USD ?? 0.05), maxPerHour: Number(process.env.MAX_LIQ_PER_HOUR ?? 10) };
     this.aave = null; // {reserves: Map(asset -> {aToken, vDebt, bonusBps, decimals, symbol}), oracle}
     this.poolCache = new Map(); // "a|b" -> {at, pools}
-    this.sentTimes = []; this.inflight = new Set();
+    this.sentTimes = []; this.inflight = new Set(); this.backoff = new Map();
   }
 
   async init() {
@@ -122,6 +122,9 @@ export class Liquidator {
   async attempt(cand, ctx) {
     const key = cand.proto + ":" + cand.user;
     if (this.inflight.has(key) || !this.executor?.wallet || !this.executor.p1?.executor) return;
+    // tras un revert, la misma posición se reintenta como mucho cada 10 min (las posiciones con deuda mala no cambian)
+    const b = this.backoff.get(key);
+    if (b && Date.now() < b) return;
     this.inflight.add(key);
     try { await this._attempt(cand, ctx); } catch (e) { this.x.lastError = `${key}: ${e.shortMessage || e.message}`; await this.diag(`liquidación: error ${this.x.lastError.slice(0, 120)}`); }
     finally { this.inflight.delete(key); await this.save(); }
@@ -150,6 +153,7 @@ export class Liquidator {
       const lif = cand.lif, price = cand.price; // price ×1e36 (colateral → préstamo)
       const collateral = BigInt(cand.collateralRaw), borrowed = BigInt(cand.borrowedRaw);
       // máximo incautable: todo el colateral o el que cubre toda la deuda·LIF
+      if (price === 0n) return;
       const maxSeizeByDebt = (borrowed * BigInt(Math.floor(lif * 1e6)) / 1_000_000n) * 10n ** 36n / price;
       const seized = (collateral < maxSeizeByDebt ? collateral : maxSeizeByDebt) * 995n / 1000n;
       const repaid = (seized * price / 10n ** 36n) * 1_000_000n / BigInt(Math.floor(lif * 1e6));
@@ -158,6 +162,7 @@ export class Liquidator {
       hop0 = [4, MORPHO, loanTok.address, colTok.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,address,address,uint256)", "address", "uint256"], [mp, cand.user, seized])];
       label = `Morpho · ${colTok.sym}/${loanTok.sym} LLTV ${(Number(m.market.lltv) / 1e16).toFixed(0)}% (LIF ${((lif - 1) * 100).toFixed(1)}%)`;
       expectedCol = seized;
+      if (price === 0n || borrowed === 0n) return;
       valueUsd = (Number(repaid) / 10 ** loanTok.decimals) * (cand.debtUsd / Math.max(1e-9, Number(borrowed) / 10 ** loanTok.decimals));
     }
     if (amount <= 0n) return;
@@ -187,7 +192,8 @@ export class Liquidator {
     } catch (e) {
       rec.reason = decodeRevert(this.executor.iface, e);
       this.x.wouldRevert++; this.x.byReason[rec.reason] = (this.x.byReason[rec.reason] ?? 0) + 1;
-      await this.diag(`liquidación: revertiría (${rec.reason}) · ${label} · ${cand.user.slice(0, 10)}… · paga $${valueUsd.toFixed(2)}`);
+      this.backoff.set(cand.proto + ":" + cand.user, Date.now() + 10 * 60_000);
+      if ((this.x.wouldRevert % 25) === 1) await this.diag(`liquidación: revertiría (${rec.reason}) · ${label} · ${cand.user.slice(0, 10)}… · paga $${valueUsd.toFixed(2)} (se omiten avisos repetidos; ${this.x.wouldRevert} reverts en total)`);
       this.push(rec); return;
     }
     if (this.executor.mode !== "live") { rec.sent = "modo simulación"; this.push(rec); return; }
