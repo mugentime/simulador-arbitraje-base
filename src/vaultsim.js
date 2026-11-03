@@ -17,7 +17,17 @@ export function emptyVaultStats() {
     recent: [], // últimos eventos con el resultado del back-run simulado
     harvest: [], // estrategias Beefy: callReward vs gas
     harvestUpdatedAt: null,
+    hourly: [], // [{h: epochHour, events, withOpp, netUsd}]
+    last: null, // resumen del último bloque con eventos (para el pipeline del punto 6)
   };
+}
+const MAX_VHOURS = 24 * 14;
+export function vaultHour(stats, ts) {
+  stats.hourly ??= [];
+  const hour = Math.floor(ts / 3600);
+  let h = stats.hourly[stats.hourly.length - 1];
+  if (!h || h.h !== hour) { h = { h: hour, events: 0, withOpp: 0, netUsd: 0 }; stats.hourly.push(h); if (stats.hourly.length > MAX_VHOURS) stats.hourly.shift(); }
+  return h;
 }
 
 /** Desvío del precio del pool contra la mediana de su par, en bps (mide cuánto movió el evento). */
@@ -40,6 +50,7 @@ export function poolDeviationBps(pool, pools) {
 export function processVaultBlock(stats, { block, ts, events, results, pools, ethUsd, managers }) {
   stats.blocks++;
   const out = [];
+  const hh = vaultHour(stats, ts);
   for (const ev of events) {
     stats.events[ev.kind] = (stats.events[ev.kind] ?? 0) + 1;
     const touching = results.filter((r) => r.route.some((p) => p.address === ev.pool.address));
@@ -58,9 +69,11 @@ export function processVaultBlock(stats, { block, ts, events, results, pools, et
     out.push(rec);
     const bm = (stats.byManager[ev.actor] ??= { label, kind, events: 0, withOpp: 0, netUsd: 0, lastBlock: 0 });
     bm.events++; bm.lastBlock = block; bm.label = label; bm.kind = kind;
-    if (best?.profitable) { stats.withOpp++; stats.netUsd += best.netUsd; bm.withOpp++; bm.netUsd += best.netUsd; }
+    hh.events++;
+    if (best?.profitable) { stats.withOpp++; stats.netUsd += best.netUsd; bm.withOpp++; bm.netUsd += best.netUsd; hh.withOpp++; hh.netUsd += best.netUsd; }
     stats.recent.unshift(rec);
   }
+  if (out.length) stats.last = { block, ts, n: out.length, kinds: out.map((r) => r.kind), managers: [...new Set(out.map((r) => r.manager))], maxDevBps: Math.max(...out.map((r) => Math.abs(r.deviationBps ?? 0))), best: out.map((r) => r.opp).filter((o) => o?.profitable).sort((a, b) => b.netUsd - a.netUsd)[0] ?? null, soldUsd: out.reduce((s, r) => s + (r.soldUsd ?? 0), 0) };
   if (stats.recent.length > MAX_RECENT) stats.recent.length = MAX_RECENT;
   const keys = Object.keys(stats.byManager);
   if (keys.length > 200) { keys.sort((a, b) => stats.byManager[b].events - stats.byManager[a].events); for (const k of keys.slice(150)) delete stats.byManager[k]; }

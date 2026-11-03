@@ -127,22 +127,29 @@ export class Executor {
 
   /** Llamado por el worker en cada bloque con los resultados ya evaluados. */
   async onBlock({ block, ts, results, lenders, gas, ethUsd }) {
-    if (!this.wallet || !this.p1.executor || this.inflight || block <= this.lastSimBlock) return;
+    if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
+    if (!this.p1.executor) return results.some((r) => r.profitable) ? "Fase 1: contrato no desplegado" : null;
+    if (this.inflight || block <= this.lastSimBlock) return null;
     const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious).slice(0, 3);
-    if (!cands.length) return;
+    if (!cands.length) return results.some((r) => r.profitable) ? `Oportunidad por debajo del mínimo de ${this.limits.minNetUsd} USD; no se simula` : null;
     this.inflight = true; this.lastSimBlock = block;
+    let text = null;
     try {
       for (const r of cands) {
         const plan = this.buildPlan(r, lenders, ethUsd);
-        if (!plan) continue;
+        if (!plan) { text = `${label(r)}: ruta por Uniswap v4; el contrato aún no cubre ese salto`; continue; }
         const rec = await this.simulate(plan, block, ts, gas, ethUsd);
-        if (rec.ok && this.mode === "live" && !this.p1.paused) await this.send(plan, rec, gas, ethUsd);
+        if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
+        else text = `Simulado on-chain: revertiría (${rec.reason})`;
+        if (rec.ok && this.mode === "live" && !this.p1.paused) { await this.send(plan, rec, gas, ethUsd); text += ` · envío: ${rec.sent}`; }
         if (rec.ok) break; // una por bloque
       }
       await this.save();
     } catch (e) {
       this.p1.lastError = `bloque ${block}: ${e.shortMessage || e.message}`;
+      text = `Error en Fase 1: ${this.p1.lastError}`;
     } finally { this.inflight = false; }
+    return text;
   }
 
   async simulate(plan, block, ts, gas, ethUsd) {

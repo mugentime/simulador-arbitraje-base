@@ -24,6 +24,7 @@ const VERSION = {
 
 // ---------------------------------------------------------------- store en disco (JSON por clave, escritura atómica)
 const cache = new Map();
+const J = (v) => JSON.stringify(v, (k, x) => (typeof x === "bigint" ? x.toString() : x)); // BigInt (p. ej. callReward de Beefy) → string
 const file = (k) => path.join(DATA_DIR, `${k}.json`);
 const store = {
   async get(k) {
@@ -33,7 +34,7 @@ const store = {
   async set(k, v) {
     cache.set(k, structuredClone(v));
     const tmp = file(k) + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(v));
+    fs.writeFileSync(tmp, J(v));
     fs.renameSync(tmp, file(k));
   },
 };
@@ -66,6 +67,8 @@ async function provider() {
 
 // ---------------------------------------------------------------- bucle infinito
 let stopping = false;
+const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
+let executor = null;
 async function loop() {
   while (!stopping) {
     try {
@@ -74,9 +77,10 @@ async function loop() {
       const exec = new Executor({ provider: p, store, diag, mode: EXECUTE_MODE, autoDeploy: AUTO_DEPLOY });
       await exec.init();
       let nb = 0;
-      const onBlock = async (ctx) => { nb++; if (nb % 300 === 0) await exec.refreshBalance(); await exec.onBlock(ctx); };
+      executor = exec;
+      const onBlock = async (ctx) => { nb++; if (nb % 300 === 0) await exec.refreshBalance(); return exec.onBlock(ctx); };
       // tandas de 1 h: el universo se refresca solo (lo guarda 30 min)
-      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock });
+      const { stats } = await runWorker({ ethers, provider: p, store, deadlineMs: Date.now() + 3600_000, ltHours: LT_HOURS, log: (m) => diag(`worker: ${m}`), onBlock, live });
       await diag(`servidor: tanda terminada · ${stats.blocksProcessed} bloques · ${stats.totals.episodes} oportunidades`);
     } catch (e) {
       await diag(`servidor: error ${e.shortMessage || e.message}; reintento en 20 s`);
@@ -89,20 +93,20 @@ async function loop() {
 const server = http.createServer(async (req, res) => {
   const headers = { "content-type": "application/json", "cache-control": "no-store", "access-control-allow-origin": "*" };
   if (req.url.startsWith("/api/stats")) {
-    const stats = await store.get("stats");
-    const events = (await store.get("events")) ?? [];
+    const stats = live.stats ?? (await store.get("stats"));
+    const events = live.events ? live.events() : ((await store.get("events")) ?? []);
     const diagLog = ((await store.get("diag")) ?? []).slice(-8).reverse();
     if (!stats) { res.writeHead(200, headers); return res.end(JSON.stringify({ ready: false, diag: diagLog, now: Date.now(), host: "railway", version: VERSION })); }
     const topRoutes = Object.values(stats.byRoute ?? {}).sort((a, b) => b.netUsd - a.netUsd).slice(0, 10);
-    const vaults = (await store.get("vaults")) ?? null;
-    const phase1 = (await store.get("phase1")) ?? null;
+    const vaults = live.vstats ? JSON.parse(J(live.vstats)) : ((await store.get("vaults")) ?? null);
+    const phase1 = executor?.p1 ?? (await store.get("phase1")) ?? null;
     if (vaults) {
       vaults.topManagers = Object.values(vaults.byManager ?? {}).sort((a, b) => b.events - a.events).slice(0, 12);
       delete vaults.byManager;
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(JSON.stringify({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1 }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1 }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html")) {

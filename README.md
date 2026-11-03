@@ -11,7 +11,7 @@ Dos universos: **pares principales** (WETH/USDC/cbBTC) y **long tail** (tokens c
 vía StateView y se marca como "requiere hop v4" porque el contrato aún no lo ejecuta.
 
 - `public/index.html`: página publicada, un solo archivo (incluye ethers v6).
-- `src/`: código fuente legible (`core.js` lógica, `app.js` interfaz, `worker.js` worker 24/7).
+- `src/`: código fuente (`core.js` lógica on-chain, `worker.js` worker 24/7, `vaultsim.js` punto 6). La página de Netlify (`public/index.html`) se genera con `node scripts/build-page.mjs` a partir de `server/dashboard.html` y lee los datos del servidor en Railway.
 - `server/index.mjs`: servicio 24/7 en Railway (worker continuo + `GET /api/stats`).
 
 Contabilidad del acumulado: una ruta rentable en bloques consecutivos cuenta una vez (primer bloque). Es un tope

@@ -3,161 +3,250 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Worker 24/7 · arbitraje con flashloan en Base</title>
+<title>Protocolo de arbitraje con flashloan · Base en vivo</title>
 <style>
-  :root { --bg:#f6f5f1; --card:#fff; --ink:#1d1d1b; --ink2:#5c5b56; --line:#e4e2db; --accent:#2f5bd3; --good:#1d7a46; --good-bg:#e6f4ec; --bad:#b23a2e; --warn:#9a6a00; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --card:#1e1e1c; --ink:#ecebe6; --ink2:#a3a29b; --line:#34332f; --accent:#6d8ee8; --good:#5fc68a; --good-bg:#173324; --bad:#f08a7e; --warn:#e2b54f; } }
+  :root { --bg:#f6f5f1; --card:#fff; --ink:#1d1d1b; --ink2:#5c5b56; --line:#e4e2db; --accent:#2f5bd3; --c2:#c46a1b; --good:#1d7a46; --good-bg:#e6f4ec; --bad:#b23a2e; --warn:#9a6a00; --run:#eef2fc; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --card:#1e1e1c; --ink:#ecebe6; --ink2:#a3a29b; --line:#34332f; --accent:#6d8ee8; --c2:#c97f35; --good:#5fc68a; --good-bg:#173324; --bad:#f08a7e; --warn:#e2b54f; --run:#20273a; } }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
-  main { max-width:960px; margin:0 auto; padding:20px 16px 48px; }
-  h1 { font-size:20px; margin:0 0 6px; } h2 { font-size:15px; margin:0 0 6px; }
+  main { max-width:960px; margin:0 auto; padding:18px 14px 48px; }
+  h1 { font-size:20px; margin:0 0 6px; } h2 { font-size:16px; margin:0 0 4px; } h3 { font-size:13px; margin:14px 0 6px; color:var(--ink2); text-transform:uppercase; letter-spacing:.04em; }
   .sub { color:var(--ink2); font-size:13px; margin:0 0 8px; }
-  .badge { display:inline-block; font:600 13px system-ui; padding:6px 12px; border-radius:999px; margin:6px 0 12px; border:1px solid var(--line); }
+  .badge { display:inline-block; font:600 13px system-ui; padding:6px 12px; border-radius:999px; margin:6px 0 8px; border:1px solid var(--line); }
   .badge[data-kind="ok"] { background:var(--good-bg); color:var(--good); border-color:var(--good); }
   .badge[data-kind="bad"] { color:var(--bad); border-color:var(--bad); }
   .badge[data-kind="wait"] { color:var(--warn); border-color:var(--warn); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-top:14px; }
   .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
   .kpi { border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
   .kpi .l { font-size:12px; color:var(--ink2); } .kpi .v { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; } .kpi .s { font-size:12px; color:var(--ink2); }
-  table { width:100%; border-collapse:collapse; font-size:13px; } th,td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
-  th { font-size:12px; color:var(--ink2); } td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; } td.strong { font-weight:650; }
-  .scroll { overflow-x:auto; }
-  svg { width:100%; height:170px; display:block; } .grid { stroke:var(--line); } .line { fill:none; stroke:var(--accent); stroke-width:2; } .axis { fill:var(--ink2); font-size:11px; }
-  ul { margin:0; padding-left:18px; font-size:12.5px; color:var(--ink2); } li { margin:3px 0; }
-  a { color:var(--accent); }
+  .kpi .v[data-sign="pos"] { color:var(--good); }
+  .blockline { font-size:13px; color:var(--ink2); margin:0 0 8px; font-variant-numeric:tabular-nums; }
+  .blockline b { color:var(--ink); }
+  .pipe { display:flex; flex-direction:column; gap:6px; }
+  .st { display:grid; grid-template-columns:118px 1fr; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; font-size:13px; transition:background .3s; }
+  .st .n { font-weight:650; color:var(--ink2); font-size:12.5px; } .st .t { color:var(--ink); }
+  .st[data-hit="1"] { background:var(--good-bg); border-color:var(--good); } .st[data-hit="1"] .n { color:var(--good); }
+  .st.flash { background:var(--run); }
+  @media (max-width:520px) { .st { grid-template-columns:1fr; gap:2px; } }
+  svg.chart { width:100%; height:180px; display:block; } .grid { stroke:var(--line); } .line { fill:none; stroke:var(--accent); stroke-width:2; } .line2 { fill:none; stroke:var(--c2); stroke-width:2; } .axis { fill:var(--ink2); font-size:11px; } .dot { fill:var(--accent); stroke:var(--card); stroke-width:2; }
+  .chartwrap { position:relative; } .tip { position:absolute; top:6px; left:0; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:12px; pointer-events:none; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--ink2); margin:4px 0 0; } .legend i { display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; background:var(--accent); } .legend i.c2 { background:var(--c2); }
+  details { margin-top:10px; } summary { cursor:pointer; font-size:13px; color:var(--ink2); }
+  ul { margin:6px 0 0; padding-left:18px; font-size:12.5px; color:var(--ink2); } li { margin:3px 0; }
+  a { color:var(--accent); } .muted { color:var(--ink2); }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Worker 24/7 · protocolo de arbitraje con flashloan en Base</h1>
-  <p class="sub">Corre en este servidor aunque nadie tenga la página abierta. Solo observa y contabiliza; <b>no envía transacciones</b>. Esta página se actualiza sola cada 15 s.</p>
+  <h1>Protocolo de arbitraje con flashloan · Base en vivo</h1>
+  <p class="sub">Todo lo que ves lo calcula el servidor 24/7 con datos reales de la cadena, bloque a bloque (un bloque cada 2 s). Esta página se actualiza sola cada 5 s.</p>
   <div id="badge" class="badge" data-kind="wait">Consultando…</div>
-  <p class="sub" id="status"></p>
+  <p class="blockline" id="blockline"></p>
 
+  <!-- ============================ Protocolo 1: arbitraje ============================ -->
   <section class="card">
+    <h2>Arbitraje cíclico con flashloan (puntos 1–3)</h2>
+    <p class="sub">Préstamo sin colateral → 2–3 intercambios que vuelven al token prestado → devolver → quedarse con la diferencia. Se registra una oportunidad cuando el valor esperado (bruto − gas − comisión del préstamo) es positivo.</p>
+
+    <h3>Acumulado</h3>
     <div class="kpis">
       <div class="kpi"><div class="l">Beneficio neto acumulado</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
-      <div class="kpi"><div class="l">Oportunidades</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
-      <div class="kpi"><div class="l">De $1 o más</div><div class="v" id="over1">—</div><div class="s" id="over1-sub"></div></div>
+      <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
       <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="best">—</div><div class="s" id="best-sub"></div></div>
       <div class="kpi"><div class="l">Bloques procesados</div><div class="v" id="blocks">—</div><div class="s" id="blocks-sub"></div></div>
     </div>
-  </section>
 
-  <section class="card"><h2>Fase 1 · ejecución con el contrato real</h2>
-    <p class="sub" id="p1-status">—</p>
-    <div class="kpis">
-      <div class="kpi"><div class="l">Simulaciones (eth_call)</div><div class="v" id="p1-sim">—</div><div class="s" id="p1-sim-sub"></div></div>
-      <div class="kpi"><div class="l">Habrían tenido éxito</div><div class="v" id="p1-ok">—</div><div class="s" id="p1-ok-sub"></div></div>
-      <div class="kpi"><div class="l">Neto proyectado (simulado)</div><div class="v" id="p1-net">—</div><div class="s" id="p1-net-sub"></div></div>
-      <div class="kpi"><div class="l">Enviadas reales</div><div class="v" id="p1-sent">—</div><div class="s" id="p1-sent-sub"></div></div>
+    <h3>Estado actual · las 8 etapas en el último bloque</h3>
+    <div class="pipe" id="pipe"><div class="st"><div class="n">—</div><div class="t">Esperando el primer bloque…</div></div></div>
+
+    <h3>Fase 1 · contrato real en Base</h3>
+    <div class="kpis" id="p1">
+      <div class="kpi"><div class="l">Contrato y modo</div><div class="v" id="p1-mode" style="font-size:16px">—</div><div class="s" id="p1-mode-sub"></div></div>
+      <div class="kpi"><div class="l">Simulaciones on-chain</div><div class="v" id="p1-sim">—</div><div class="s" id="p1-sim-sub"></div></div>
+      <div class="kpi"><div class="l">Neto simulado acumulado</div><div class="v" id="p1-net">—</div><div class="s" id="p1-net-sub"></div></div>
+      <div class="kpi"><div class="l">Enviadas y realizado</div><div class="v" id="p1-real">—</div><div class="s" id="p1-real-sub"></div></div>
     </div>
-    <h2 style="margin-top:12px">Últimas simulaciones</h2>
-    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Modelo</th><th class="num">On-chain</th><th class="num">Gas</th><th>Resultado</th></tr></thead><tbody id="p1-recent"></tbody></table></div>
-    <p class="sub" style="margin-top:6px">Cada fila es el Plan real enviado al contrato con <code>eth_call</code> desde la wallet, en el bloque en que apareció la oportunidad. "Modelo" es lo que calculó el bot; "On-chain" es lo que devolvió el contrato. Si difieren, el modelo está mal; si revierte, la razón dice por qué.</p>
+
+    <h3>Acumulado por hora</h3>
+    <div class="chartwrap"><svg class="chart" id="chart-arb"></svg><div class="tip" id="tip-arb" hidden></div></div>
+    <div class="legend"><span><i></i>Neto acumulado del protocolo (modelo)</span><span><i class="c2"></i>Neto simulado on-chain (Fase 1)</span></div>
   </section>
 
-  <section class="card"><h2>Acumulado por hora (USD)</h2><svg id="chart" role="img" aria-label="Beneficio neto acumulado por hora"></svg></section>
+  <!-- ============================ Protocolo 2: vaults ============================ -->
+  <section class="card">
+    <h2>Vaults y LP tokens (punto 6)</h2>
+    <p class="sub">Vigila en los mismos pools las transacciones de managers de vaults (Beefy, Gamma, etc.): rebalanceos, zaps y salidas. Cada una mueve el precio del pool; el protocolo mide el desfase y calcula el back-run con flashloan que lo corregiría.</p>
 
-  <section class="card"><h2>Rutas que más han aportado</h2>
-    <div class="scroll"><table><thead><tr><th>Ruta</th><th class="num">Veces</th><th class="num">Neto</th></tr></thead><tbody id="routes"></tbody></table></div></section>
-
-  <section class="card"><h2>Últimas oportunidades</h2>
-    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Hora</th><th>Ruta</th><th class="num">Préstamo</th><th class="num">Neto</th><th>Proveedor</th></tr></thead><tbody id="recent"></tbody></table></div></section>
-
-  <section class="card"><h2>Vaults, rebalanceos y zaps (punto 6)</h2>
-    <p class="sub">Transacciones de managers de liquidez (Beefy CLM, Gamma, ICHI, Steer) y zaps en los pools vigilados, y qué habría hecho el protocolo con el desfase que dejaron. Detección on-chain.</p>
+    <h3>Acumulado</h3>
     <div class="kpis">
-      <div class="kpi"><div class="l">Eventos</div><div class="v" id="v-ev">—</div><div class="s" id="v-ev-sub"></div></div>
-      <div class="kpi"><div class="l">Con oportunidad</div><div class="v" id="v-opp">—</div><div class="s" id="v-opp-sub"></div></div>
-      <div class="kpi"><div class="l">Neto tras eventos</div><div class="v" id="v-net">—</div><div class="s">tope superior</div></div>
+      <div class="kpi"><div class="l">Eventos de vault detectados</div><div class="v" id="v-ev">—</div><div class="s" id="v-ev-sub"></div></div>
+      <div class="kpi"><div class="l">Con back-run rentable</div><div class="v" id="v-opp">—</div><div class="s" id="v-opp-sub"></div></div>
+      <div class="kpi"><div class="l">Neto acumulado (tope)</div><div class="v" id="v-net">—</div><div class="s" id="v-net-sub"></div></div>
+      <div class="kpi"><div class="l">Bloques vigilados</div><div class="v" id="v-blocks">—</div><div class="s" id="v-blocks-sub"></div></div>
     </div>
-    <h2 style="margin-top:12px">Últimos eventos</h2>
-    <div class="scroll"><table><thead><tr><th>Bloque</th><th>Tipo</th><th>Manager</th><th>Pool</th><th class="num">Vendido</th><th class="num">Desfase bps</th><th>Back-run simulado</th></tr></thead><tbody id="v-recent"></tbody></table></div>
-    <h2 style="margin-top:12px">Managers vistos</h2>
-    <div class="scroll"><table><thead><tr><th>Manager</th><th>Tipo</th><th class="num">Eventos</th><th class="num">Con opp.</th><th class="num">Neto</th></tr></thead><tbody id="v-managers"></tbody></table></div>
-    <h2 style="margin-top:12px">Keeper de harvest (Beefy)</h2>
-    <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">Recompensa</th><th class="num">Gas</th><th class="num">Neto</th><th>Último harvest</th></tr></thead><tbody id="v-harvest"></tbody></table></div>
+
+    <h3>Estado actual · las 4 etapas</h3>
+    <div class="pipe" id="vpipe"><div class="st"><div class="n">—</div><div class="t">Esperando…</div></div></div>
+
+    <h3>Acumulado por hora</h3>
+    <div class="chartwrap"><svg class="chart" id="chart-v"></svg><div class="tip" id="tip-v" hidden></div></div>
+    <div class="legend"><span><i></i>Neto acumulado de back-runs rentables</span></div>
   </section>
 
-  <section class="card"><h2>Bitácora</h2><ul id="diag"></ul></section>
-  <p class="sub">Cómo se cuenta: una ruta rentable durante varios bloques seguidos cuenta una sola vez, con el beneficio de su primer bloque. Es un tope superior: supone que el protocolo gana todas, sin competencia de otros bots. Simulador completo: <a href="https://simulador-arbitraje-base.netlify.app">simulador-arbitraje-base.netlify.app</a>.</p>
+  <section class="card">
+    <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
+  </section>
 </main>
 <script>
+const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
 const $ = (id) => document.getElementById(id);
-const usd = (v, d = 2) => !isFinite(v) ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d });
-const num = (v, d = 0) => v.toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d });
-const when = (t) => new Date(t).toLocaleString("es-MX", { timeZone: "America/Mexico_City", dateStyle: "short", timeStyle: "short" });
+const usd = (v, d = 2) => (!isFinite(v) || v === null ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d }));
+const num = (v) => (v ?? 0).toLocaleString("es-MX");
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+let lastPipeBlock = 0, lastVBlock = 0, lastData = null;
+
 async function load() {
   let d;
-  try { d = await (await fetch("/api/stats", { cache: "no-store" })).json(); }
-  catch (e) { $("badge").dataset.kind = "bad"; $("badge").textContent = "✕ Sin respuesta del servidor"; return; }
+  try {
+    const r = await fetch(STATS_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    d = await r.json();
+  } catch (e) {
+    $("badge").dataset.kind = "bad"; $("badge").textContent = "✕ Sin conexión con el servidor (" + e.message + ")";
+    return;
+  }
+  lastData = d; lastData.fetchedAt = Date.now();
   const v = d.version || {};
-  const up = v.startedAt ? Math.round((d.now - v.startedAt) / 60000) : null;
-  $("badge").dataset.kind = d.alive ? "ok" : "wait";
-  $("badge").textContent = `${d.alive ? "● En vivo" : "○ En pausa"} en Railway · versión ${v.commit || "?"} · arrancó hace ${up === null ? "?" : up < 60 ? up + " min" : (up / 60).toFixed(1) + " h"}${d.phase ? " · " + d.phase : ""}`;
-  $("diag").innerHTML = (d.diag || []).map((x) => `<li>${when(x.t)} · ${x.m}</li>`).join("") || "<li>Sin registros.</li>";
-  if (!d.ready) { $("status").textContent = "Todavía no hay datos: el worker está arrancando."; return; }
+  const upMin = v.startedAt ? Math.round((d.now - v.startedAt) / 60000) : null;
+  $("badge").dataset.kind = d.ready && d.alive ? "ok" : "wait";
+  $("badge").textContent = `${d.ready && d.alive ? "● En vivo" : "○ En pausa"} en Railway${v.commit ? ` · versión ${v.commit}` : ""}${upMin !== null ? ` · arrancó hace ${upMin < 60 ? upMin + " min" : (upMin / 60).toFixed(1) + " h"}` : ""}${d.phase ? ` · ${d.phase}` : ""}`;
+  $("diag").innerHTML = (d.diag || []).map((x) => `<li>${ago(d.now, x.t)} · ${esc(x.m)}</li>`).join("") || "<li>Sin registros todavía.</li>";
+  if (!d.ready) { $("blockline").textContent = "El servidor está arrancando; en un minuto empieza a procesar bloques."; return; }
+
   const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
-  const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
-  const days = d.startedAt ? Math.max(1 / 24, (d.now - new Date(d.startedAt).getTime()) / 86400000) : 1;
-  $("status").textContent = `Último bloque ${num(d.lastBlock)}${agoS !== null ? ` (hace ${agoS} s)` : ""} · ${d.universe.pools} pools, ${num(d.universe.cycles)} rutas vigiladas · observando desde ${when(d.startedAt)}${d.lastError ? " · último error: " + d.lastError : ""}`;
+  $("blockline").innerHTML = `Último bloque <b>${num(d.lastBlock)}</b>${agoS !== null ? ` (hace ${agoS} s)` : ""} · <b>${num(d.universe?.pools)}</b> pools y <b>${num(d.universe?.cycles)}</b> rutas vigiladas · observando desde ${d.startedAt ? new Date(d.startedAt).toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · <span class="muted">último error: ${esc(d.lastError)}</span>` : ""}`;
+
+  // ---- arbitraje: acumulado
   const t = d.totals;
-  $("net").textContent = usd(t.netUsd); const hNow = Math.floor(d.now / 3600000); const recentH = (d.hourly || []).filter((h) => h.h >= hNow - 2);
-  const recentNet = recentH.reduce((s, h) => s + h.netUsd, 0), recentEps = recentH.reduce((s, h) => s + h.episodes, 0);
-  $("net-sub").textContent = `últimas 3 h: ${recentEps} oportunidades, ${usd(recentNet)} · gas ${usd(t.gasUsd)}`;
-  $("eps").textContent = num(t.episodes); $("eps-sub").textContent = `${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren hop v4` : ""}`;
-  $("over1").textContent = num(t.over1Usd); $("over1-sub").textContent = `suman ${usd(t.over1NetUsd)}`;
-  $("best").textContent = d.best ? usd(d.best.netUsd) : "—"; $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)}` : "";
-  $("blocks").textContent = num(d.blocksProcessed); $("blocks-sub").textContent = `cobertura ${num(covered * 100, 1)}% · ${d.blocksWithOpp} con oportunidad`;
-  $("routes").innerHTML = d.topRoutes.map((r) => `<tr><td>${r.label}</td><td class="num">${r.episodes}</td><td class="num strong">${usd(r.netUsd)}</td></tr>`).join("") || `<tr><td colspan="3">Sin oportunidades todavía.</td></tr>`;
-  $("recent").innerHTML = d.recent.map((e) => `<tr><td>${num(e.block)}</td><td>${when(e.ts * 1000)}</td><td>${e.route}${e.needsV4 ? " · requiere hop v4" : ""}</td><td class="num">${usd(e.amountUsd, 0)}</td><td class="num strong">${usd(e.netUsd, 4)}</td><td>${e.lender}</td></tr>`).join("") || `<tr><td colspan="6">Sin oportunidades todavía.</td></tr>`;
-  chart(d.hourly || []);
-  vaults(d.vaults);
-  phase1(d.phase1);
+  const hNow = Math.floor(d.now / 3600000);
+  const rec = (d.hourly || []).filter((h) => h.h >= hNow - 2);
+  const recNet = rec.reduce((s, h) => s + h.netUsd, 0), recEps = rec.reduce((s, h) => s + h.episodes, 0);
+  $("net").textContent = usd(t.netUsd); $("net").dataset.sign = t.netUsd > 0 ? "pos" : "";
+  $("net-sub").textContent = `últimas 3 h: ${recEps} oportunidades, ${usd(recNet)} · gas descontado ${usd(t.gasUsd)}`;
+  $("eps").textContent = num(t.episodes);
+  $("eps-sub").textContent = `${t.over1Usd} de $1 o más (suman ${usd(t.over1NetUsd)}) · ${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren salto v4` : ""}`;
+  $("best").textContent = d.best ? usd(d.best.netUsd) : "—";
+  $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)} · ${d.best.route}` : "";
+  const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
+  $("blocks").textContent = num(d.blocksProcessed);
+  $("blocks-sub").textContent = `cobertura ${(covered * 100).toFixed(1)}% desde el arranque · ${num(d.blocksWithOpp)} con oportunidad`;
+
+  // ---- arbitraje: pipeline del último bloque
+  if (d.pipeline) {
+    const p = d.pipeline;
+    const changed = p.block !== lastPipeBlock; lastPipeBlock = p.block;
+    $("pipe").innerHTML = p.stages.map((s) => `<div class="st${changed ? " flash" : ""}" data-hit="${s.hit ? 1 : 0}"><div class="n">${esc(s.name)}</div><div class="t">${esc(s.t)}</div></div>`).join("");
+    if (changed) setTimeout(() => document.querySelectorAll("#pipe .st").forEach((e) => e.classList.remove("flash")), 600);
+  }
+
+  // ---- fase 1
+  const p1 = d.phase1;
+  if (p1) {
+    const addr = p1.executor;
+    $("p1-mode").innerHTML = addr ? `<a class="mono" href="https://basescan.org/address/${addr}" target="_blank" rel="noopener">${addr.slice(0, 8)}…${addr.slice(-4)}</a>` : "sin contrato";
+    $("p1-mode-sub").textContent = `modo ${p1.mode ?? "—"}${p1.paused ? " · PAUSADA (" + p1.pausedReason + ")" : ""}${p1.wallet ? ` · cartera ${p1.wallet.slice(0, 6)}…${p1.wallet.slice(-4)}` : ""}${p1.balanceEth !== null ? ` · ${p1.balanceEth.toFixed(4)} ETH` : ""}`;
+    $("p1-sim").textContent = num(p1.simulated);
+    const reasons = Object.entries(p1.byReason || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => `${k} ×${n}`).join(", ");
+    $("p1-sim-sub").textContent = `${p1.wouldSucceed} tendrían éxito · ${p1.wouldRevert} revertirían${reasons ? ` (${reasons})` : ""}`;
+    $("p1-net").textContent = usd(p1.projectedNetUsd, 4); $("p1-net").dataset.sign = p1.projectedNetUsd > 0 ? "pos" : "";
+    $("p1-net-sub").textContent = `beneficio devuelto por el contrato − gas estimado · gas simulado ${usd(p1.gasUsdSimulated, 4)}`;
+    $("p1-real").textContent = p1.sent ? usd(p1.realizedUsd, 4) : "0 enviadas";
+    $("p1-real-sub").textContent = p1.sent ? `${p1.sent} enviadas · ${p1.confirmed} confirmadas · ${p1.reverted} revertidas · gas pagado ${usd(p1.gasPaidUsd, 4)}` : (p1.mode === "simulate" ? "modo simulación: no se envía nada" : p1.mode === "sin llave" ? "sin llave privada: solo observación" : "");
+  }
+
+  // ---- arbitraje: gráfica
+  const p1Hourly = {};
+  for (const r of (p1?.recent || [])) if (r.ok) { const h = Math.floor(r.ts / 3600); p1Hourly[h] = (p1Hourly[h] ?? 0) + r.netUsd; }
+  drawCumulative($("chart-arb"), $("tip-arb"), d.hourly || [], (h) => h.netUsd, (h) => `${h.episodes} oportunidades, ${usd(h.netUsd)}`, p1Hourly);
+
+  // ---- vaults
+  const vs = d.vaults;
+  if (vs) {
+    const ev = vs.events || {};
+    const total = (ev.rebalanceo ?? 0) + (ev.zap ?? 0) + (ev.salida ?? 0);
+    $("v-ev").textContent = num(total);
+    $("v-ev-sub").textContent = `${ev.rebalanceo ?? 0} rebalanceos · ${ev.zap ?? 0} zaps · ${ev.salida ?? 0} salidas`;
+    $("v-opp").textContent = num(vs.withOpp);
+    $("v-opp-sub").textContent = total ? `${((vs.withOpp / total) * 100).toFixed(0)}% de los eventos dejaron una ruta con EV > 0` : "";
+    $("v-net").textContent = usd(vs.netUsd); $("v-net").dataset.sign = vs.netUsd > 0 ? "pos" : "";
+    const vrec = (vs.hourly || []).filter((h) => h.h >= hNow - 2);
+    $("v-net-sub").textContent = `últimas 3 h: ${vrec.reduce((s, h) => s + h.events, 0)} eventos, ${usd(vrec.reduce((s, h) => s + h.netUsd, 0))}`;
+    $("v-blocks").textContent = num(vs.blocks);
+    const top = (vs.topManagers || [])[0];
+    $("v-blocks-sub").textContent = top ? `manager más activo: ${top.label} (${top.events} eventos)` : "";
+    const sc = vs.scanned, L = vs.last;
+    const sameBlock = sc && L && L.block === sc.block;
+    const stages = [
+      { name: "1 · Escaneo", t: sc ? `Bloque ${num(sc.block)}: se revisaron los eventos Mint/Burn/Swap de los ${sc.pools} pools vigilados · ${sc.found ? sc.found + " transacción(es) de vault" : "ninguna transacción de vault"}` : "Esperando…" },
+      { name: "2 · Clasificación", t: L ? `${sameBlock ? "En este bloque" : "Último evento (bloque " + num(L.block) + ")"}: ${L.kinds.join(", ")} · manager ${L.managers.join(", ")}` : "Aún no hay eventos clasificados (rebalanceo = Burn+Mint del mismo dueño, zap = Swap+Mint, salida = Burn+Swap)" },
+      { name: "3 · Desfase", t: L ? `El evento movió el pool ${L.maxDevBps.toFixed(2)} bps respecto a la mediana de su par${L.soldUsd ? ` · vendió ≈ ${usd(L.soldUsd, 0)}` : ""}` : "—" },
+      { name: "4 · Back-run", hit: !!L?.best, t: L ? (L.best ? `Ruta con EV > 0: ${L.best.start} · ${L.best.hops} saltos · préstamo ${usd(L.best.amountInUsd, 0)} de ${L.best.lender} · neto ${usd(L.best.netUsd, 4)}${L.best.needsV4 ? " · requiere salto v4" : ""}` : "El desfase no alcanza para cubrir comisiones y gas: sin back-run rentable") : "—" },
+    ];
+    const vchanged = sc && sc.block !== lastVBlock; if (sc) lastVBlock = sc.block;
+    $("vpipe").innerHTML = stages.map((s) => `<div class="st${vchanged ? " flash" : ""}" data-hit="${s.hit ? 1 : 0}"><div class="n">${s.name}</div><div class="t">${esc(s.t)}</div></div>`).join("");
+    if (vchanged) setTimeout(() => document.querySelectorAll("#vpipe .st").forEach((e) => e.classList.remove("flash")), 600);
+    drawCumulative($("chart-v"), $("tip-v"), vs.hourly || [], (h) => h.netUsd, (h) => `${h.events} eventos, ${h.withOpp} con back-run, ${usd(h.netUsd)}`);
+  }
 }
-function phase1(p) {
-  if (!p) { $("p1-status").textContent = "Fase 1 no iniciada."; return; }
-  const exec = p.executor ? `contrato <a href="https://basescan.org/address/${p.executor}" target="_blank" rel="noopener">${p.executor.slice(0, 10)}…</a>` : "contrato no desplegado";
-  const wal = p.wallet ? `wallet <a href="https://basescan.org/address/${p.wallet}" target="_blank" rel="noopener">${p.wallet.slice(0, 10)}…</a> (${p.balanceEth?.toFixed(5) ?? "?"} ETH)` : "sin wallet";
-  $("p1-status").innerHTML = `Modo <b>${p.mode}</b> · ${wal} · ${exec}${p.paused ? ` · <b>PAUSADA</b>: ${p.pausedReason}` : ""}${p.lastError ? ` · último error: ${p.lastError}` : ""}`;
-  $("p1-sim").textContent = num(p.simulated); $("p1-sim-sub").textContent = `${num(p.wouldRevert)} revertirían`;
-  $("p1-ok").textContent = num(p.wouldSucceed); $("p1-ok-sub").textContent = p.simulated ? `${num((p.wouldSucceed / p.simulated) * 100, 1)}%` : "";
-  $("p1-net").textContent = usd(p.projectedNetUsd); $("p1-net-sub").textContent = `gas simulado ${usd(p.gasUsdSimulated)}`;
-  $("p1-sent").textContent = num(p.sent); $("p1-sent-sub").textContent = `${p.confirmed} confirmadas · ${p.reverted} revertidas · realizado ${usd(p.realizedUsd)}`;
-  const reasons = Object.entries(p.byReason || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(" · ");
-  $("p1-recent").innerHTML = (p.recent || []).slice(0, 20).map((r) => `<tr><td>${num(r.block)}</td><td>${r.route}</td><td class="num">${usd(r.amountUsd, 0)} ${r.start}</td><td class="num">${usd(r.modelNetUsd + (r.gasUsd ?? 0), 4)}</td><td class="num">${r.ok ? usd(r.profitUsd, 4) : "—"}</td><td class="num">${r.ok ? usd(r.gasUsd, 4) : "—"}</td><td>${r.ok ? `<b>éxito</b> · neto ${usd(r.netUsd, 4)}${r.sent ? " · " + r.sent : ""}` : `revierte: ${r.reason}`}</td></tr>`).join("") || `<tr><td colspan="7">Sin simulaciones todavía${reasons ? " · " + reasons : ""}.</td></tr>`;
-}
-function oppText(o) {
-  if (!o) return "sin ruta que toque el pool";
-  if (o.profitable) return `<b>ejecutaría</b>: pide ${usd(o.amountInUsd, 0)} ${o.start} a ${o.lender}, neto <b>${usd(o.netUsd, 4)}</b>${o.needsV4 ? " · requiere hop v4" : ""}`;
-  return `no ejecuta: ${o.marginalBps > 0 ? "no cubre gas" : "desfase menor a comisiones"} (neto ${usd(o.netUsd, 4)})`;
-}
-function vaults(v) {
-  if (!v) { $("v-ev").textContent = "—"; return; }
-  const tot = v.events.rebalanceo + v.events.zap + v.events.salida;
-  $("v-ev").textContent = num(tot); $("v-ev-sub").textContent = `${v.events.rebalanceo} rebalanceos · ${v.events.zap} zaps · ${v.events.salida} salidas · ${num(v.blocks)} bloques`;
-  $("v-opp").textContent = num(v.withOpp); $("v-opp-sub").textContent = tot ? `${num((v.withOpp / tot) * 100, 1)}% de los eventos` : "";
-  $("v-net").textContent = usd(v.netUsd);
-  $("v-recent").innerHTML = (v.recent || []).slice(0, 25).map((r) => `<tr><td>${num(r.block)}</td><td>${r.kind}</td><td>${r.manager} (${r.managerKind})</td><td>${r.pool}</td><td class="num">${r.soldUsd === null ? "—" : usd(r.soldUsd, 0)}</td><td class="num">${r.deviationBps === null ? "—" : num(r.deviationBps, 1)}</td><td>${oppText(r.opp)}</td></tr>`).join("") || `<tr><td colspan="7">Todavía no se ha visto ningún rebalanceo, zap ni salida en los pools vigilados.</td></tr>`;
-  $("v-managers").innerHTML = (v.topManagers || []).map((m) => `<tr><td>${m.label}</td><td>${m.kind}</td><td class="num">${m.events}</td><td class="num">${m.withOpp}</td><td class="num strong">${usd(m.netUsd)}</td></tr>`).join("") || `<tr><td colspan="5">Ninguno todavía.</td></tr>`;
-  $("v-harvest").innerHTML = (v.harvest || []).map((h) => `<tr><td>${h.label}</td><td class="num">${usd(h.rewardUsd, 4)}</td><td class="num">${usd(h.gasUsd, 4)}</td><td class="num strong">${usd(h.netUsd, 4)}</td><td>${h.sinceMin === null ? "—" : `hace ${h.sinceMin} min`}</td></tr>`).join("") || `<tr><td colspan="5">Ninguna estrategia de Beefy detectada todavía.</td></tr>`;
-}
-function chart(h) {
-  const svg = $("chart");
-  if (h.length < 2) { svg.innerHTML = `<text x="8" y="20" class="axis">La gráfica aparece tras la segunda hora de datos.</text>`; return; }
-  let acc = 0; const pts = h.map((x) => ({ h: x.h, v: (acc += x.netUsd) }));
-  const W = svg.clientWidth || 640, H = 170, L = 58, R = 12, T = 12, B = 24;
-  const lo = Math.min(0, ...pts.map((p) => p.v)), hi = Math.max(1e-6, ...pts.map((p) => p.v));
-  const X = (i) => L + (i / (pts.length - 1)) * (W - L - R), Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
-  const lbl = (x) => new Date(x * 3600e3).toLocaleString("es-MX", { timeZone: "America/Mexico_City", day: "2-digit", month: "short", hour: "2-digit" });
+
+function ago(now, t) { const m = Math.round((now - t) / 60000); return m < 1 ? "hace <1 min" : `hace ${m} min`; }
+
+/** Línea acumulada por hora (una serie; opcionalmente una segunda, indexada por hora epoch). */
+function drawCumulative(svg, tip, hourly, val, label, second) {
+  if (!hourly || hourly.length < 2) { svg.innerHTML = `<text x="8" y="20" class="axis">La gráfica aparece tras la segunda hora de datos.</text>`; return; }
+  let acc = 0, acc2 = 0;
+  const pts = hourly.map((h) => ({ h: h.h, v: (acc += val(h)), v2: second ? (acc2 += second[h.h] ?? 0) : null, raw: h }));
+  const W = svg.clientWidth || 640, H = 180, padL = 60, padR = 12, padT = 12, padB = 24;
+  const all = pts.map((p) => p.v).concat(second ? pts.map((p) => p.v2) : []);
+  const lo = Math.min(0, ...all), hi = Math.max(1e-6, ...all);
+  const X = (i) => padL + (i / (pts.length - 1)) * (W - padL - padR);
+  const Y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const lbl = (h) => new Date(h * 3600 * 1000).toLocaleString("es-MX", { day: "2-digit", month: "short", hour: "2-digit" });
+  const fmtAxis = (v) => Math.abs(v) >= 1000 ? "$" + (v / 1000).toFixed(1) + "k" : "$" + v.toFixed(Math.abs(v) < 10 ? 2 : 0);
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.innerHTML = [lo, (lo + hi) / 2, hi].map((t) => `<line x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${L - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${usd(t)}</text>`).join("")
-    + `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" class="line"/>`
-    + `<text x="${L}" y="${H - 6}" class="axis">${lbl(pts[0].h)}</text><text x="${W - R}" y="${H - 6}" class="axis" text-anchor="end">${lbl(pts.at(-1).h)}</text>`;
+  svg.innerHTML = `
+    ${[lo, (lo + hi) / 2, hi].map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}" class="grid"/><text x="${padL - 6}" y="${Y(t) + 4}" class="axis" text-anchor="end">${fmtAxis(t)}</text>`).join("")}
+    <path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" class="line"/>
+    ${second ? `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.v2).toFixed(1)}`).join("")}" class="line2"/>` : ""}
+    <text x="${padL}" y="${H - 6}" class="axis">${lbl(pts[0].h)}</text>
+    <text x="${W - padR}" y="${H - 6}" class="axis" text-anchor="end">${lbl(pts[pts.length - 1].h)}</text>
+    <circle class="dot" r="4" cx="-10" cy="-10"/>
+    <rect x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent" class="hit"/>`;
+  const hit = svg.querySelector(".hit"), dot = svg.querySelector(".dot");
+  const show = (ev) => {
+    const r = svg.getBoundingClientRect();
+    const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round((((cx / r.width) * W - padL) / (W - padL - padR)) * (pts.length - 1))));
+    const p = pts[i];
+    dot.setAttribute("cx", X(i)); dot.setAttribute("cy", Y(p.v));
+    tip.hidden = false;
+    tip.style.left = Math.min(r.width - 220, Math.max(0, (X(i) / r.width) * r.width - 60)) + "px";
+    tip.innerHTML = `<b>${lbl(p.h)} h</b><br>Acumulado ${usd(p.v)}${second ? `<br>Fase 1 acumulado ${usd(p.v2, 4)}` : ""}<br>Esa hora: ${label(p.raw)}`;
+  };
+  hit.onmousemove = show; hit.ontouchstart = show; hit.ontouchmove = show;
+  hit.onmouseleave = () => { tip.hidden = true; };
 }
-load(); setInterval(load, 15000);
+
+load();
+setInterval(load, 5000);
+setInterval(() => { // la edad del último bloque corre entre consultas
+  if (!lastData?.lastBlockTs) return;
+  const el = $("blockline"); const s = Math.max(0, Math.round(lastData.now / 1000 - lastData.lastBlockTs + (Date.now() - lastData.fetchedAt) / 1000));
+  el.innerHTML = el.innerHTML.replace(/\(hace \d+ s\)/, `(hace ${s} s)`);
+}, 1000);
+window.addEventListener("resize", () => lastData && load());
 </script>
 </body>
 </html>

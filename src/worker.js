@@ -54,6 +54,31 @@ function routeLabel(r) {
  * con el beneficio de su primer bloque (si el protocolo la hubiera ejecutado, el arbitraje
  * habría cerrado la diferencia). Es un tope superior: asume que nadie más la toma antes.
  */
+const usd = (v, d = 2) => (isFinite(v) ? (v < 0 ? "−$" : "$") + Math.abs(v).toFixed(d) : "—");
+/** Las 8 etapas del protocolo (punto 1) explicadas con los números de este bloque. */
+export function describeBlock({ block, gas, ethUsd, pools, cycles, results, newEvents, open, totals, execText }) {
+  const live = pools.filter((p) => p.reserve0 > 0n && p.reserve1 > 0n).length;
+  const spread = results.filter((r) => r.amountIn > 0n);
+  const winners = results.filter((r) => r.profitable);
+  const best = results[0];
+  const sized = spread[0];
+  const gwei = (w) => (Number(w) / 1e9).toFixed(4);
+  const twoHop = results.find((r) => r.hops === 2);
+  return {
+    block, ts: gas.timestamp,
+    stages: [
+      { k: "ingesta", name: "1 · Ingesta", t: `Bloque ${block.toLocaleString("es-MX")} leído · base fee ${gwei(gas.baseFee)} gwei · ETH ${usd(ethUsd)} (mediana on-chain de los pools WETH/USDC)` },
+      { k: "estado", name: "2 · Estado", t: `${live} de ${pools.length} pools con liquidez, reservas leídas en este mismo bloque (una sola llamada multicall)` },
+      { k: "deteccion", name: "3 · Detección", t: spread.length ? `${spread.length} de ${cycles.toLocaleString("es-MX")} rutas tienen spread marginal mayor que sus comisiones` : `Ninguna de las ${cycles.toLocaleString("es-MX")} rutas tiene spread mayor que sus comisiones` + (best ? ` (la mejor: ${best.marginalBps.toFixed(2)} bps vs ${best.feesBps.toFixed(2)} bps)` : "") },
+      { k: "tamano", name: "4 · Tamaño óptimo", t: sized ? `Mejor ruta ${sized.start} · ${sized.hops} saltos · préstamo óptimo ${usd(sized.amountInUsd, 0)} de ${sized.lender} (donde el beneficio bruto deja de crecer)` : "Sin tamaño que rinda: con cualquier monto las comisiones superan el spread" },
+      { k: "simulacion", name: "5 · Simulación", t: `${results.length.toLocaleString("es-MX")} rutas simuladas con la fórmula exacta de cada pool (x·y=k / liquidez concentrada)` + (sized ? ` · bruto de la mejor ${usd(sized.grossUsd, 4)}` : "") },
+      { k: "filtro", name: "6 · Filtro EV", hit: winners.length > 0, t: winners.length ? `${winners.length} ruta(s) con valor esperado positivo · mejor neto ${usd(winners[0].netUsd, 4)} = bruto ${usd(winners[0].grossUsd, 4)} − gas ${usd(winners[0].gasUsd, 4)} − comisión flash ${usd(winners[0].flashFeeUsd, 4)}` : `0 pasan: el gas de un arbitraje cuesta ${twoHop ? usd(twoHop.gasUsd, 4) : "—"}` + (sized ? ` y el mejor bruto es ${usd(sized.grossUsd, 4)}` : "") },
+      { k: "ejecucion", name: "7 · Ejecución", hit: !!execText && /éxito|confirmada/.test(execText), t: execText ?? (winners.length ? (winners[0].needsV4 ? "La mejor ruta pasa por Uniswap v4; el contrato aún no cubre ese salto" : "Fase 1 inactiva en este bloque") : "Nada que ejecutar") },
+      { k: "registro", name: "8 · Registro", t: `${newEvents.length ? newEvents.length + " oportunidad(es) nueva(s) registrada(s)" : "Sin oportunidades nuevas"} · ${open} abierta(s) de bloques anteriores · acumulado ${usd(totals.netUsd)} en ${totals.episodes} episodios` },
+    ],
+  };
+}
+
 export function accountBlock(stats, block, ts, results) {
   const winners = results.filter((r) => r.profitable);
   const nowKeys = new Set(winners.map((r) => r.key));
@@ -136,14 +161,16 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
  * Corre hasta `deadlineMs` (epoch ms). Guarda stats y eventos en el store cada `flushEvery` bloques.
  * Devuelve las stats finales. No envía transacciones.
  */
-export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null }) {
+export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null, live = null }) {
   const runId = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
   const stats = (await store.get("stats")) ?? emptyStats();
   let events = (await store.get("events")) ?? [];
   sanitize(stats, events);
   const vstats = (await store.get("vaults")) ?? emptyVaultStats();
-  const managers = new Map(Object.entries((await store.get("managers")) ?? {}));
+  const managers = new Map(Object.entries((await store.get("managers")) ?? {}).map(([a, m]) => [a, { ...m, callReward: m.callReward === null || m.callReward === undefined ? null : BigInt(m.callReward) }]));
+  vstats.hourly ??= []; vstats.last ??= null;
+  if (live) { live.stats = stats; live.vstats = vstats; live.events = () => events; }
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
   const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); log(phase); };
@@ -194,11 +221,15 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       const ethUsd = core.referenceEthUsd(uni.pools);
       if (n % 60 === 0) lenders = await core.readLenders(ethers, provider);
       const results = core.evaluateAll({ pools: uni.pools, cycles: uni.cycles, lenders, gas, ethUsd });
-      events.push(...accountBlock(stats, b, gas.timestamp, results));
-      if (onBlock) { try { await onBlock({ block: b, ts: gas.timestamp, results, lenders, gas, ethUsd, pools: uni.pools }); } catch (e) { stats.lastError = `onBlock ${b}: ${e.shortMessage || e.message}`; } }
+      const newEvents = accountBlock(stats, b, gas.timestamp, results);
+      events.push(...newEvents);
+      let execText = null;
+      if (onBlock) { try { execText = await onBlock({ block: b, ts: gas.timestamp, results, lenders, gas, ethUsd, pools: uni.pools }); } catch (e) { stats.lastError = `onBlock ${b}: ${e.shortMessage || e.message}`; } }
+      stats.pipeline = describeBlock({ block: b, gas, ethUsd, pools: uni.pools, cycles: uni.cycles.length, results, newEvents, open: Object.keys(stats.open).length, totals: stats.totals, execText });
       // punto 6: rebalanceos, zaps y salidas de vaults en este bloque, y qué habría hecho el protocolo
       try {
         const vev = await core.scanVaultEvents(ethers, provider, uni.pools, b);
+        vstats.scanned = { block: b, ts: gas.timestamp, pools: uni.pools.length, found: vev.length };
         if (vev.length) {
           await core.describeManagers(ethers, provider, [...new Set(vev.map((e) => e.actor))], managers);
           const recs = processVaultBlock(vstats, { block: b, ts: gas.timestamp, events: vev, results, pools: uni.pools, ethUsd, managers });
