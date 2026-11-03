@@ -1,0 +1,173 @@
+// Protocolo 2 · ejecución: harvest de estrategias Beefy en Base.
+//
+// Cualquiera puede llamar harvest() en una estrategia de Beefy; la estrategia cobra las recompensas acumuladas,
+// las reinvierte y paga al que llamó una comisión (callReward, en WETH). No hay préstamo, no hay carrera por
+// un desfase de precio: solo hay que llamar cuando callReward > gas y antes que el bot de Beefy.
+// Descubrimiento: lista pública de vaults de Beefy (api.beefy.finance) filtrada por chain=base.
+
+import { ethers } from "ethers";
+import * as core from "../src/core.js";
+
+const BEEFY_API = "https://api.beefy.finance/vaults";
+const ABI = [
+  "function callReward() view returns (uint256)",
+  "function lastHarvest() view returns (uint256)",
+  "function paused() view returns (bool)",
+  "function harvest(address callFeeRecipient)",
+  "function harvest()",
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+];
+const MAX_RECENT = 60;
+
+export function emptyHarvest() {
+  return {
+    version: 1, strategies: 0, lastDiscovery: null, lastScan: null, scanBlock: null,
+    candidates: [], // [{address, id, rewardUsd, gasUsd, netUsd, sinceMin}] los mejores de la última lectura
+    worthNow: 0, // cuántas estrategias pagan más que el gas ahora mismo
+    simulated: 0, wouldSucceed: 0, wouldRevert: 0, sent: 0, confirmed: 0, reverted: 0, dropped: 0,
+    rewardUsd: 0, gasPaidUsd: 0, realizedUsd: 0, pending: [], recent: [], lastError: null, updatedAt: null,
+  };
+}
+
+export class Harvester {
+  constructor({ provider, store, diag, executor, mode = "simulate" }) {
+    this.provider = provider; this.store = store; this.diag = diag; this.executor = executor; this.mode = mode;
+    this.iface = new ethers.Interface(ABI);
+    this.limits = {
+      minNetUsd: Number(process.env.MIN_HARVEST_NET_USD ?? 0.005),
+      rewardOverGas: Number(process.env.HARVEST_REWARD_OVER_GAS ?? 2.5), // callReward debe ser ≥ 2.5× el gas (si Beefy se adelanta, perdemos solo gas)
+      maxPerHour: Number(process.env.MAX_HARVEST_PER_HOUR ?? 10),
+      scanEvery: Number(process.env.HARVEST_SCAN_BLOCKS ?? 30),
+    };
+    this.strats = []; this.sentTimes = []; this.busy = false;
+  }
+
+  async init() {
+    this.h = (await this.store.get("harvest")) ?? emptyHarvest();
+    this.h.pending ??= [];
+    const cached = await this.store.get("beefy");
+    if (cached && Date.now() - cached.at < 6 * 3600_000) this.strats = cached.strats;
+    else await this.discover();
+    this.h.strategies = this.strats.length;
+    await this.save();
+  }
+
+  async save() { this.h.updatedAt = Date.now(); await this.store.set("harvest", this.h); }
+
+  /** Lista de estrategias activas de Beefy en Base desde su API pública. */
+  async discover() {
+    try {
+      const r = await fetch(BEEFY_API, { signal: AbortSignal.timeout(20_000) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const all = await r.json();
+      const base = all.filter((v) => v.chain === "base" && v.status === "active" && v.strategy && /^0x[0-9a-fA-F]{40}$/.test(v.strategy));
+      this.strats = base.map((v) => ({ address: ethers.getAddress(v.strategy), id: v.id, name: v.name, platform: v.platformId, token: v.token }));
+      await this.store.set("beefy", { at: Date.now(), strats: this.strats });
+      this.h.lastDiscovery = Date.now(); this.h.strategies = this.strats.length;
+      await this.diag(`harvest: ${this.strats.length} estrategias activas de Beefy en Base (api.beefy.finance)`);
+    } catch (e) {
+      this.h.lastError = `descubrimiento: ${e.shortMessage || e.message}`;
+      await this.diag(`harvest: no se pudo leer la lista de Beefy (${this.h.lastError}); ${this.strats.length} estrategias en caché`);
+    }
+  }
+
+  /** Llamado en cada bloque; escanea callReward cada `scanEvery` bloques y ejecuta si conviene. */
+  async onBlock({ block, ts, gas, ethUsd }) {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      if (this.h.pending.length) await this.reconcile(ethUsd);
+      if (Date.now() - (this.h.lastDiscovery ?? 0) > 6 * 3600_000) await this.discover();
+      if (!this.strats.length || block % this.limits.scanEvery !== 0) return;
+      await this.scan({ block, ts, gas, ethUsd });
+    } catch (e) {
+      this.h.lastError = `bloque ${block}: ${e.shortMessage || e.message}`;
+    } finally { this.busy = false; }
+  }
+
+  async scan({ block, ts, gas, ethUsd }) {
+    const calls = this.strats.flatMap((s) => [[s.address, this.iface.encodeFunctionData("callReward")], [s.address, this.iface.encodeFunctionData("lastHarvest")]]);
+    const res = await core.multicall(ethers, this.provider, calls);
+    const gasPrice = gas.baseFee + gas.priority;
+    const rows = [];
+    this.strats.forEach((s, i) => {
+      const cr = res[2 * i], lh = res[2 * i + 1];
+      if (!cr) return; // la estrategia no expone callReward(): no se puede estimar
+      const reward = BigInt(cr);
+      const rewardUsd = (Number(reward) / 1e18) * ethUsd; // WETH
+      const lastHarvest = lh ? Number(BigInt(lh)) : null;
+      const gasUsd = (Number(core.HARVEST_GAS * gasPrice + gas.l1Fee) / 1e18) * ethUsd;
+      rows.push({ address: s.address, id: s.id, platform: s.platform, rewardUsd, gasUsd, netUsd: rewardUsd - gasUsd, sinceMin: lastHarvest ? Math.round((ts - lastHarvest) / 60) : null, worth: rewardUsd >= gasUsd * this.limits.rewardOverGas && rewardUsd - gasUsd >= this.limits.minNetUsd });
+    });
+    rows.sort((a, b) => b.netUsd - a.netUsd);
+    this.h.candidates = rows.slice(0, 12); this.h.worthNow = rows.filter((r) => r.worth).length;
+    this.h.lastScan = Date.now(); this.h.scanBlock = block;
+    const wallet = this.executor?.wallet;
+    for (const r of rows.filter((x) => x.worth).slice(0, 3)) {
+      if (!wallet) break;
+      await this.attempt(r, { block, ts, gas, ethUsd });
+    }
+    await this.save();
+  }
+
+  async attempt(r, { block, ts, gas, ethUsd }) {
+    const wallet = this.executor.wallet;
+    const rec = { block, ts, strategy: r.address, id: r.id, rewardUsd: r.rewardUsd, ok: false, reason: null, gasUsd: null, netUsd: null, sent: null };
+    let data = this.iface.encodeFunctionData("harvest(address)", [wallet.address]);
+    let tx = { to: r.address, from: wallet.address, data };
+    let gasEst;
+    try { gasEst = await this.provider.estimateGas(tx); }
+    catch (e1) {
+      try { data = this.iface.encodeFunctionData("harvest()", []); tx = { to: r.address, from: wallet.address, data }; gasEst = await this.provider.estimateGas(tx); }
+      catch (e2) { rec.reason = (e2.shortMessage || e2.message).slice(0, 80); this.h.simulated++; this.h.wouldRevert++; this.push(rec); return; }
+    }
+    rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
+    rec.netUsd = r.rewardUsd - rec.gasUsd; rec.ok = true; rec.gasEst = Number(gasEst);
+    this.h.simulated++; this.h.wouldSucceed++;
+    if (this.mode !== "live" || rec.netUsd < this.limits.minNetUsd) { rec.sent = this.mode !== "live" ? "modo simulación" : "omitida: neto < mínimo"; this.push(rec); return; }
+    const now = Date.now();
+    this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
+    if (this.sentTimes.length >= this.limits.maxPerHour) { rec.sent = "omitida: tope por hora"; this.push(rec); return; }
+    try {
+      const prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
+      const sent = await this.executor.withSender((w) => w.sendTransaction({ to: r.address, data, gasLimit: (gasEst * 13n) / 10n, maxFeePerGas: gas.baseFee * 3n + prio, maxPriorityFeePerGas: prio }));
+      this.sentTimes.push(now); this.h.sent++; rec.sent = sent.hash;
+      this.h.pending.push({ hash: sent.hash, sentAt: now, id: r.id, strategy: r.address, rewardUsd: r.rewardUsd });
+      await this.diag(`harvest: enviada ${sent.hash} · ${r.id} · callReward $${r.rewardUsd.toFixed(4)} vs gas $${rec.gasUsd.toFixed(4)}`);
+    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.h.lastError = rec.sent; await this.diag(`harvest: ${rec.sent}`); }
+    this.push(rec);
+  }
+
+  push(rec) { this.h.recent.unshift(rec); if (this.h.recent.length > MAX_RECENT) this.h.recent.length = MAX_RECENT; }
+
+  async reconcile(ethUsd) {
+    const keep = [];
+    const WETH = core.TOKENS.WETH.address.toLowerCase();
+    const wallet = this.executor?.wallet?.address?.toLowerCase();
+    for (const t of this.h.pending) {
+      let rcpt = null;
+      try { rcpt = await this.provider.getTransactionReceipt(t.hash); } catch { /* red */ }
+      if (!rcpt) { if (Date.now() - t.sentAt > 15 * 60_000) { this.h.dropped++; await this.diag(`harvest: ${t.hash} no minada en 15 min`); } else keep.push(t); continue; }
+      const paid = (Number(rcpt.gasUsed * (rcpt.gasPrice ?? 0n)) / 1e18) * ethUsd;
+      this.h.gasPaidUsd += paid;
+      const rec = this.h.recent.find((x) => x.sent === t.hash);
+      if (rcpt.status === 1) {
+        let got = 0n;
+        for (const l of rcpt.logs) {
+          if (l.address.toLowerCase() !== WETH) continue;
+          try { const ev = this.iface.parseLog(l); if (ev && ev.name === "Transfer" && ev.args.to.toLowerCase() === wallet) got += ev.args.value; } catch { /* otro evento */ }
+        }
+        const gotUsd = (Number(got) / 1e18) * ethUsd;
+        this.h.confirmed++; this.h.rewardUsd += gotUsd; this.h.realizedUsd += gotUsd - paid;
+        if (rec) rec.sent = `${t.hash} · confirmada · +$${(gotUsd - paid).toFixed(4)}`;
+        await this.diag(`harvest: confirmada ${t.hash} · ${t.id} · recompensa $${gotUsd.toFixed(4)} − gas $${paid.toFixed(4)} = ${gotUsd - paid >= 0 ? "+" : ""}$${(gotUsd - paid).toFixed(4)}`);
+      } else {
+        this.h.reverted++; this.h.realizedUsd -= paid;
+        if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
+        await this.diag(`harvest: revertida ${t.hash} · ${t.id} · gas perdido $${paid.toFixed(4)}`);
+      }
+    }
+    this.h.pending = keep;
+    await this.save();
+  }
+}

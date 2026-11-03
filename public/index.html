@@ -33,6 +33,7 @@
   svg.chart { width:100%; height:180px; display:block; } .grid { stroke:var(--line); } .line { fill:none; stroke:var(--accent); stroke-width:2; } .line2 { fill:none; stroke:var(--c2); stroke-width:2; } .axis { fill:var(--ink2); font-size:11px; } .dot { fill:var(--accent); stroke:var(--card); stroke-width:2; }
   .chartwrap { position:relative; } .tip { position:absolute; top:6px; left:0; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:12px; pointer-events:none; box-shadow:0 2px 8px rgba(0,0,0,.12); }
   .legend { display:flex; gap:14px; font-size:12px; color:var(--ink2); margin:4px 0 0; } .legend i { display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:5px; background:var(--accent); } .legend i.c2 { background:var(--c2); }
+  table { width:100%; border-collapse:collapse; font-size:13px; } th,td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; } th { font-size:12px; color:var(--ink2); } td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; } .scroll { overflow-x:auto; }
   details { margin-top:10px; } summary { cursor:pointer; font-size:13px; color:var(--ink2); }
   ul { margin:6px 0 0; padding-left:18px; font-size:12.5px; color:var(--ink2); } li { margin:3px 0; }
   a { color:var(--accent); } .muted { color:var(--ink2); }
@@ -92,6 +93,18 @@
     <h3>Estado actual · las 4 etapas</h3>
     <div class="pipe" id="vpipe"><div class="st"><div class="n">—</div><div class="t">Esperando…</div></div></div>
 
+    <h3>Ejecución · harvest de vaults Beefy (sin préstamo)</h3>
+    <p class="sub">Cualquiera puede llamar <code>harvest()</code> en una estrategia de Beefy; la estrategia cobra sus recompensas, las reinvierte y paga una comisión en WETH a quien llamó. Se llama cuando esa comisión supera el gas con margen.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Beneficio REAL (harvests en Base)</div><div class="v" id="h-real">—</div><div class="s" id="h-real-sub"></div></div>
+      <div class="kpi"><div class="l">Estrategias vigiladas</div><div class="v" id="h-strats">—</div><div class="s" id="h-strats-sub"></div></div>
+      <div class="kpi"><div class="l">Rentables ahora</div><div class="v" id="h-worth">—</div><div class="s" id="h-worth-sub"></div></div>
+      <div class="kpi"><div class="l">Simulaciones</div><div class="v" id="h-sim">—</div><div class="s" id="h-sim-sub"></div></div>
+    </div>
+    <details><summary>Mejores candidatas en la última lectura</summary>
+      <div class="scroll"><table><thead><tr><th>Estrategia</th><th class="num">callReward</th><th class="num">gas</th><th class="num">neto</th><th class="num">último harvest</th></tr></thead><tbody id="h-cands"></tbody></table></div>
+    </details>
+
     <h3>Acumulado por hora</h3>
     <div class="chartwrap"><svg class="chart" id="chart-v"></svg><div class="tip" id="tip-v" hidden></div></div>
     <div class="legend"><span><i></i>Neto acumulado de back-runs rentables</span></div>
@@ -100,7 +113,7 @@
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 11:38 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 12:30 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 const STATS_URL = document.querySelector('meta[name="stats-url"]')?.content || "/api/stats";
@@ -208,6 +221,18 @@ async function load() {
     $("vpipe").innerHTML = stages.map((s) => `<div class="st${vchanged ? " flash" : ""}" data-hit="${s.hit ? 1 : 0}"><div class="n">${s.name}</div><div class="t">${esc(s.t)}</div></div>`).join("");
     if (vchanged) setTimeout(() => document.querySelectorAll("#vpipe .st").forEach((e) => e.classList.remove("flash")), 600);
     drawCumulative($("chart-v"), $("tip-v"), vs.hourly || [], (h) => h.netUsd, (h) => `${h.events} eventos, ${h.withOpp} con back-run, ${usd(h.netUsd)}`);
+  }
+  const hv = d.harvest;
+  if (hv) {
+    $("h-real").textContent = hv.sent ? usd(hv.realizedUsd, 4) : "$0.00"; $("h-real").dataset.sign = hv.realizedUsd > 0 ? "pos" : "";
+    $("h-real-sub").textContent = hv.sent ? `${hv.sent} enviadas · ${hv.confirmed} confirmadas · ${hv.reverted} revertidas · recompensas ${usd(hv.rewardUsd, 4)} · gas ${usd(hv.gasPaidUsd, 4)}` : (d.phase1?.mode === "live" ? "modo live: aún sin harvests enviados" : "modo simulación");
+    $("h-strats").textContent = num(hv.strategies);
+    $("h-strats-sub").textContent = hv.lastScan ? `última lectura ${ago(d.now, hv.lastScan)} (bloque ${num(hv.scanBlock)})` : "esperando la primera lectura";
+    $("h-worth").textContent = num(hv.worthNow);
+    $("h-worth-sub").textContent = "callReward ≥ 2.5× gas y neto ≥ $0.005";
+    $("h-sim").textContent = num(hv.simulated);
+    $("h-sim-sub").textContent = `${hv.wouldSucceed} ejecutables · ${hv.wouldRevert} revertirían${hv.lastError ? ` · ${hv.lastError}` : ""}`;
+    $("h-cands").innerHTML = (hv.candidates || []).map((c) => `<tr><td>${esc(c.id)}</td><td class="num">${usd(c.rewardUsd, 4)}</td><td class="num">${usd(c.gasUsd, 4)}</td><td class="num${c.worth ? " strong" : ""}">${usd(c.netUsd, 4)}</td><td class="num">${c.sinceMin !== null ? "hace " + (c.sinceMin >= 60 ? (c.sinceMin / 60).toFixed(1) + " h" : c.sinceMin + " min") : "—"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Sin lectura todavía.</td></tr>`;
   }
 }
 
