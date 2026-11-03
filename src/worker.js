@@ -247,7 +247,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       try {
         const attempted = new Set(results.filter((r) => r.profitable).flatMap((r) => r.route.map((p) => p.address)));
         for (const ep of trackBlock(dstats, { block: b, ts: gas.timestamp, pools: uni.pools, ethUsd, attempted })) {
-          if (ep.blocks >= 3) log(`desajuste ${ep.pair}: ${ep.blocks} bloques, exceso pico ${ep.peakExcess} bps sobre comisiones (${ep.low} → ${ep.high}) · ${ep.trigger}${ep.captured ? " · con ruta rentable detectada" : " · sin ruta rentable (profundidad/gas)"}`);
+          if (ep.blocks >= 3 && ep.peakExcess >= 5) log(`desajuste ${ep.pair}: ${ep.blocks} bloques, exceso pico ${ep.peakExcess} bps sobre comisiones (${ep.low} → ${ep.high}) · ${ep.trigger}${ep.captured ? " · con ruta rentable detectada" : " · sin ruta rentable (profundidad/gas)"}`);
         }
       } catch (e) { stats.lastError = `desajustes ${b}: ${e.shortMessage || e.message}`; }
       let execText = null;

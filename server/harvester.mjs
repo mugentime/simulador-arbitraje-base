@@ -165,7 +165,7 @@ export class Harvester {
       const lh = this.lastHarvestOf?.get(addr);
       const base = lh && lh > x.lastTs ? lh : x.lastTs;
       const next = base + x.intervalMed;
-      if (nowTs >= next - this.cfg.leadSec && nowTs <= next + x.intervalMed) out.push({ addr, id: x.id, next, inSec: next - nowTs, callFeeMedWei: x.callFeeMedWei });
+      if (nowTs >= next - this.limits.leadSec && nowTs <= next + x.intervalMed) out.push({ addr, id: x.id, next, inSec: next - nowTs, callFeeMedWei: x.callFeeMedWei });
     }
     return out;
   }

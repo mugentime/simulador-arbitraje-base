@@ -1,3 +1,4 @@
+import { swapOut } from "./core.js";
 // Rastreador de desajustes de precio entre pools del mismo par.
 // Mide, bloque a bloque, cuánto difiere el precio entre los pools de un par y durante cuántos bloques
 // el desajuste supera las comisiones (es decir, cuánto tarda el mercado en igualarlo). También detecta
@@ -7,6 +8,7 @@ export const MIN_DEPTH_USD = 2000; // pools con menos profundidad no cuentan (su
 export const MOVE_BPS = 50; // salto de precio de un pool entre bloques que se considera "movimiento repentino"
 export const MAX_DUR_HIST = 60; // duraciones de episodios recordadas por par (para la mediana)
 export const MAX_PAIRS = 400;
+export const NOTIONAL_USD = 50; // tamaño de la operación con la que se mide el desajuste ejecutable (ida y vuelta)
 export const MAX_DEVIATION_BPS = 2500; // un pool cuyo precio difiere >25% del de referencia no se considera cotizable
 
 export function emptyDisloc() {
@@ -105,11 +107,28 @@ export function trackBlock(d, { block, ts, pools, ethUsd, attempted = null }) {
     }
     if (list.length < 2) continue;
     seen.add(k);
-    let lo = list[0], hi = list[0];
-    for (const x of list) { if (x.px < lo.px) lo = x; if (x.px > hi.px) hi = x; }
+    // Desajuste EJECUTABLE: con $NOTIONAL_USD se vende token0 en el pool que más token1 devuelve y se recompra
+    // token0 en el que más token0 devuelve por ese token1 (modelo exacto por ticks, comisiones incluidas).
+    // excess > 0 => la ida y vuelta deja ganancia bruta antes de gas.
+    const t0 = list[0].p.token0, t1 = list[0].p.token1;
+    const px0 = prices.get(t0.sym), px1 = prices.get(t1.sym);
+    const in0 = BigInt(Math.round((NOTIONAL_USD / px0) * 10 ** t0.decimals));
+    let lo = null, hi = null, bestOut1 = 0n, bestRate0 = 0;
+    for (const x of list) {
+      const out1 = swapOut(x.p, t0.address, in0); // token1 por vender in0 token0
+      if (out1 > bestOut1) { bestOut1 = out1; hi = x; }
+    }
+    if (!hi || bestOut1 === 0n) continue;
+    for (const x of list) {
+      if (x === hi) continue;
+      const out0 = swapOut(x.p, t1.address, bestOut1); // token0 por recomprar con ese token1
+      const rate = Number(out0) / Number(in0);
+      if (rate > bestRate0) { bestRate0 = rate; lo = x; }
+    }
+    if (!lo) continue;
+    const excess = (bestRate0 - 1) * 1e4; // bps netos de comisiones sobre el nocional
     const spreadBps = (hi.px / lo.px - 1) * 1e4;
-    const feesBps = (lo.p.feeBps ?? 30) + (hi.p.feeBps ?? 30);
-    const excess = spreadBps - feesBps; // >0: comprar en lo y vender en hi deja margen bruto tras comisiones
+    void px1;
     const label = `${list[0].p.token0.sym}/${list[0].p.token1.sym}`;
     const st = (d.pairs[k] ??= { label, pools: 0, blocks: 0, episodes: 0, dislocBlocks: 0, durations: [], maxDur: 0, peakExcess: 0, moves: 0, movesFollowed: 0, captured: 0, lastExcess: 0, lastSpread: 0, lastBlock: 0 });
     st.pools = list.length; st.blocks++; st.lastExcess = excess; st.lastSpread = spreadBps; st.lastBlock = block;
