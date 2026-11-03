@@ -63,7 +63,7 @@ export class Harvester {
     this.h.strategies = this.strats.length;
     await this.save();
     this.hist = (await this.store.get("harvestHist")) ?? null;
-    if (this.hist && this.hist.v !== 2) this.hist = null; // formato anterior (lecturas fallidas): se rehace
+    if (this.hist && (this.hist.v !== 2 || (this.hist.failedChunks ?? 0) > 0 && !Object.values(this.hist.strats ?? {}).some((x) => x.n >= 2))) this.hist = null; // formato anterior o lectura fallida: se rehace
     if (!this.hist || Date.now() - (this.hist.at ?? 0) > 6 * 3600_000) this.analyzeHistory().catch((e) => { this.h.lastError = `historial: ${e.shortMessage || e.message}`; });
   }
 

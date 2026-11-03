@@ -60,6 +60,7 @@ export class Liquidations {
     this.liq = (await this.store.get("liq")) ?? emptyLiq();
     if (this.liq.version !== 2) { this.liq.version = 2; this.liq.estProfitUsd = 0; this.liq.opportunities = 0; } // techo recalculado: solo posiciones ejecutables
     this.badUsers = new Set((await this.store.get("liqBad")) ?? []);
+    for (const [u, b] of Object.entries(this.liq.openUsers ?? {})) this.open.set(u, b); // episodios abiertos sobreviven al reinicio
     const saved = await this.store.get("aaveBorrowers");
     if (saved?.list) { for (const a of saved.list) this.borrowers.set(a, {}); this.liq.aave.lastDiscoveryBlock = saved.block; }
     await this.save();
@@ -123,7 +124,7 @@ export class Liquidations {
     if (this.liq.seen.recent.length > MAX_RECENT) this.liq.seen.recent.length = MAX_RECENT;
     // ¿la habíamos visto nosotros como liquidable? medir cuántos bloques tardó alguien en tomarla
     const o = this.open.get(ev.user);
-    if (o) { ev.blocksAfterUs = ev.block - o; this.open.delete(ev.user); }
+    if (o) { ev.blocksAfterUs = ev.block - o; this.open.delete(ev.user); this.liq.openUsers = Object.fromEntries(this.open); }
   }
 
   async scanAave({ block, ts, gas, ethUsd }) {
@@ -154,6 +155,7 @@ export class Liquidations {
     this.liq.aave.lastScan = Date.now(); this.liq.aave.scanBlock = block; this.liq.aave.error = null;
     const still = new Set(cands.map((c) => c.user));
     for (const [u, b] of this.open) if (list.includes(u) && !still.has(u)) { this.open.delete(u); }
+    this.liq.openUsers = Object.fromEntries(this.open);
     for (const c of cands) this.episode("aave", c, block, ts);
     for (const c of cands.slice(0, 5)) this.onCandidate?.({ ...c, proto: "aave" }, { block, ts, gas, ethUsd });
   }
@@ -161,6 +163,7 @@ export class Liquidations {
   episode(proto, c, block, ts) {
     if (this.open.has(c.user)) return;
     this.open.set(c.user, block);
+    this.liq.openUsers = Object.fromEntries(this.open);
     this.liq.opportunities++;
     // el techo solo suma posiciones cuya ejecución no haya revertido en simulación (deuda mala fuera)
     if (c.estProfitUsd > 0 && !(this.badUsers?.has(c.user))) this.liq.estProfitUsd += c.estProfitUsd;
