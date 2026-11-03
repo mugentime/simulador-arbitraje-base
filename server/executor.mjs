@@ -251,9 +251,11 @@ export class Executor {
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
     try {
       const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
-      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: (gas.baseFee + gas.priority) * 2n, maxPriorityFeePerGas: gas.priority }));
+      const prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
+      const maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
+      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: maxFee, maxPriorityFeePerGas: prio }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
-      await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)})`);
+      await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${new URL(this.sendUrl).host})`);
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
       await this.save();
     } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }

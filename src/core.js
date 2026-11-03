@@ -578,6 +578,7 @@ export function pickLender(lenders, sym, amount) {
 
 // ------------------------------------------------------------------ Gas real de Base
 
+export const MIN_PRIORITY_WEI = 1_000_000n; // 0.001 gwei
 export async function readGas(ethers, provider) {
   const iface = makeIface(ethers);
   const [block, prio] = await Promise.all([
@@ -594,7 +595,7 @@ export async function readGas(ethers, provider) {
     number: block.number,
     timestamp: block.timestamp,
     baseFee: block.baseFeePerGas ?? 0n,
-    priority: BigInt(prio),
+    priority: BigInt(prio) > MIN_PRIORITY_WEI ? BigInt(prio) : MIN_PRIORITY_WEI, // piso: el secuenciador no incluye tx con propina 0
     l1Fee,
   };
 }
