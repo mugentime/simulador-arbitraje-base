@@ -68,7 +68,7 @@ export function describeBlock({ block, gas, ethUsd, pools, cycles, results, newE
     block, ts: gas.timestamp,
     stages: [
       { k: "ingesta", name: "1 · Ingesta", t: `Bloque ${block.toLocaleString("es-MX")} leído · base fee ${gwei(gas.baseFee)} gwei · ETH ${usd(ethUsd)} (mediana on-chain de los pools WETH/USDC)` },
-      { k: "estado", name: "2 · Estado", t: `${live} de ${pools.length} pools con liquidez, reservas leídas en este mismo bloque (una sola llamada multicall)` },
+      { k: "estado", name: "2 · Estado", t: `${live} de ${pools.length} pools con liquidez, reservas leídas en este mismo bloque · ${pools.filter((p) => p.ticks && p.ticks.length).length} pools v3/v4 con tabla de ticks (${pools.reduce((s, p) => s + (p.ticks?.length ?? 0), 0)} ticks)` },
       { k: "deteccion", name: "3 · Detección", t: spread.length ? `${spread.length} de ${cycles.toLocaleString("es-MX")} rutas tienen spread marginal mayor que sus comisiones` : `Ninguna de las ${cycles.toLocaleString("es-MX")} rutas tiene spread mayor que sus comisiones` + (best ? ` (la mejor: ${best.marginalBps.toFixed(2)} bps vs ${best.feesBps.toFixed(2)} bps)` : "") },
       { k: "tamano", name: "4 · Tamaño óptimo", t: sized ? `Mejor ruta ${sized.start} · ${sized.hops} saltos · préstamo óptimo ${usd(sized.amountInUsd, 0)} de ${sized.lender} (donde el beneficio bruto deja de crecer)` : "Sin tamaño que rinda: con cualquier monto las comisiones superan el spread" },
       { k: "simulacion", name: "5 · Simulación", t: `${results.length.toLocaleString("es-MX")} rutas simuladas con la fórmula exacta de cada pool (x·y=k / liquidez concentrada)` + (sized ? ` · bruto de la mejor ${usd(sized.grossUsd, 4)}` : "") },
@@ -164,10 +164,18 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
 export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null, live = null, logsProvider = null }) {
   const runId = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
-  const stats = (await store.get("stats")) ?? emptyStats();
+  const MODEL_VERSION = 2; // 2 = liquidez concentrada con cruce de ticks. Al cambiar, el acumulado anterior deja de ser comparable: se reinicia.
+  let stats = (await store.get("stats")) ?? emptyStats();
   let events = (await store.get("events")) ?? [];
+  let vstats = (await store.get("vaults")) ?? emptyVaultStats();
+  if (stats.modelVersion !== MODEL_VERSION) {
+    log(`acumulado reiniciado: modelo v${stats.modelVersion ?? 1} → v${MODEL_VERSION} (ticks exactos)`);
+    const prevRuns = stats.runs ?? 0;
+    stats = emptyStats(); stats.runs = prevRuns; stats.modelVersion = MODEL_VERSION; stats.resetAt = new Date(now()).toISOString();
+    events = []; vstats = emptyVaultStats();
+    await store.set("stats", stats); await store.set("events", events); await store.set("vaults", vstats);
+  }
   sanitize(stats, events);
-  const vstats = (await store.get("vaults")) ?? emptyVaultStats();
   const managers = new Map(Object.entries((await store.get("managers")) ?? {}).map(([a, m]) => [a, { ...m, callReward: m.callReward === null || m.callReward === undefined ? null : BigInt(m.callReward) }]));
   vstats.hourly ??= []; vstats.last ??= null;
   if (live) { live.stats = stats; live.vstats = vstats; live.events = () => events; }
@@ -219,6 +227,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
     const b = head - last > 5 ? head : last + 1;
     try {
       const [gas] = await Promise.all([core.readGas(ethers, provider), core.refreshPools(ethers, provider, uni.pools, b)]);
+      if (n % 15 === 0) { try { stats.tickPools = await core.refreshTicks(ethers, provider, uni.pools, { blockTag: b }); } catch (e) { stats.tickError = `bloque ${b}: ${e.shortMessage || e.message}`; } }
       const ethUsd = core.referenceEthUsd(uni.pools);
       if (n % 60 === 0) lenders = await core.readLenders(ethers, provider);
       const results = core.evaluateAll({ pools: uni.pools, cycles: uni.cycles, lenders, gas, ethUsd });

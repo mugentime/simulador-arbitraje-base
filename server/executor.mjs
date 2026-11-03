@@ -72,6 +72,11 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
+    if (this.p1.modelVersion !== 2) { // contadores de simulaciones del modelo/contrato anteriores: se reinician, se conserva el contrato
+      const keep = { executor: this.p1.executor, artifact: this.p1.artifact, deployedAt: this.p1.deployedAt, deployTx: this.p1.deployTx, previousExecutor: this.p1.previousExecutor };
+      this.p1 = { ...emptyPhase1(), ...keep, modelVersion: 2, resetAt: Date.now() };
+      await this.diag("fase 1: contadores reiniciados (modelo v2, ticks exactos)");
+    }
     if (!this.p1.executor && process.env.EXECUTOR_ADDRESS) this.p1.executor = process.env.EXECUTOR_ADDRESS; // respaldo si se perdiera el volumen
     this.p1.mode = this.wallet ? this.mode : "sin llave";
     this.p1.wallet = this.wallet?.address ?? null;

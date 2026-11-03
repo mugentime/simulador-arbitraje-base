@@ -1,3 +1,4 @@
+import * as CL from "./clmath.js";
 // Núcleo del simulador: lectura on-chain de Base + pipeline del protocolo (puntos 1-3).
 // Funciona en el navegador (ethers global) y en Node (ethers importado). Todo con BigInt.
 
@@ -57,6 +58,11 @@ const ABI = [
   "function decimals() view returns (uint8)",
   "function getSlot0(bytes32) view returns (uint160,int24,uint24,uint24)",
   "function getLiquidity(bytes32) view returns (uint128)",
+  "function tickSpacing() view returns (int24)",
+  "function tickBitmap(int16) view returns (uint256)",
+  "function ticks(int24) view returns (uint128,int128)",
+  "function getTickBitmap(bytes32,int16) view returns (uint256)",
+  "function getTickLiquidity(bytes32,int24) view returns (uint128,int128)",
   "event PairCreated(address indexed token0, address indexed token1, address pair, uint256)",
   "event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)",
   "event AeroPoolCreated(address indexed token0, address indexed token1, bool indexed stable, address pool, uint256)",
@@ -279,12 +285,13 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
   const calls = [];
   for (const [a, m] of evm) {
     calls.push([a, enc(iface, "token0")], [a, enc(iface, "token1")], [a, "0x3850c7bd"] /* slot0() */, [a, enc(iface, "fee")],
-      [a, enc(iface, "getReserves")], m.aeroFactory ? [m.aeroFactory, enc(iface, "getFee", [a, false])] : [MULTICALL3, "0x"]);
+      [a, enc(iface, "getReserves")], m.aeroFactory ? [m.aeroFactory, enc(iface, "getFee", [a, false])] : [MULTICALL3, "0x"],
+      [a, enc(iface, "tickSpacing")]);
   }
   const r = await multicall(ethers, provider, calls);
   const pools = [];
   evm.forEach(([a, m], i) => {
-    const [t0, t1, s0, fee, res, aeroFee] = r.slice(6 * i, 6 * i + 6);
+    const [t0, t1, s0, fee, res, aeroFee, ts] = r.slice(7 * i, 7 * i + 7);
     if (!t0 || !t1) return;
     const tok0 = byAddr.get(ethers.getAddress("0x" + t0.slice(-40)).toLowerCase());
     const tok1 = byAddr.get(ethers.getAddress("0x" + t1.slice(-40)).toLowerCase());
@@ -294,6 +301,8 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
       if (!s0 || !fee) return;
       p.feePips = word(fee, 0);
       p.feeBps = Number(p.feePips) / 100;
+      p.tickSpacing = ts ? Number(BigInt.asIntN(24, word(ts, 0))) : 0;
+      p.ticks = null; // tabla de ticks cercanos (refreshTicks)
     } else {
       if (!res) return;
       let bps = m.feeBps ?? m.feeHint ?? 30;
@@ -331,6 +340,7 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
       const s0 = r[k++], liq = r[k++];
       if (!s0 || !liq) { p.reserve0 = p.reserve1 = 0n; continue; }
       p.sqrtPriceX96 = word(s0, 0);
+      p.tick = Number(BigInt.asIntN(24, word(s0, 1)));
       p.liquidity = word(liq, 0);
       // Pool en el extremo del rango de precios (tick mínimo/máximo): el swap on-chain revierte con SPL y
       // la liquidez virtual no significa nada. Se trata como sin liquidez.
@@ -343,6 +353,46 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
       p.reserve1 = word(res, 1);
     }
   }
+}
+
+/**
+ * Tabla de ticks inicializados alrededor del precio para pools v3/v4 (bitmap ± `words` palabras, hasta `maxTicks`
+ * por lado). Con ella `swapOut` simula el cruce de ticks exactamente como el contrato del pool.
+ */
+export async function refreshTicks(ethers, provider, pools, { words = 2, maxTicks = 40, blockTag = "latest" } = {}) {
+  const iface = makeIface(ethers);
+  const cl = pools.filter((p) => (p.kind === "v3" || p.kind === "v4") && p.tickSpacing > 0 && p.tick !== undefined && p.reserve0 > 0n);
+  if (!cl.length) return 0;
+  const calls = [];
+  for (const p of cl) {
+    const w0 = CL.wordPosOf(p.tick, p.tickSpacing);
+    for (let w = w0 - words; w <= w0 + words; w++) {
+      calls.push(p.kind === "v4" ? [p.stateView, enc(iface, "getTickBitmap", [p.address, w])] : [p.address, enc(iface, "tickBitmap", [w])]);
+    }
+  }
+  const bm = await multicall(ethers, provider, calls, blockTag);
+  const n = 2 * words + 1;
+  const wanted = []; // [pool, tick]
+  cl.forEach((p, i) => {
+    const w0 = CL.wordPosOf(p.tick, p.tickSpacing);
+    let ticks = [];
+    for (let j = 0; j < n; j++) { const raw = bm[i * n + j]; if (raw) ticks.push(...CL.ticksFromBitmapWord(w0 - words + j, word(raw, 0), p.tickSpacing)); }
+    ticks.sort((a, b) => a - b);
+    const below = ticks.filter((t) => t <= p.tick).slice(-maxTicks), above = ticks.filter((t) => t > p.tick).slice(0, maxTicks);
+    p._tickList = below.concat(above);
+    for (const t of p._tickList) wanted.push([p, t]);
+  });
+  const calls2 = wanted.map(([p, t]) => (p.kind === "v4" ? [p.stateView, enc(iface, "getTickLiquidity", [p.address, t])] : [p.address, enc(iface, "ticks", [t])]));
+  const tl = calls2.length ? await multicall(ethers, provider, calls2, blockTag) : [];
+  const byPool = new Map();
+  wanted.forEach(([p, t], k) => {
+    const raw = tl[k];
+    if (!raw) return;
+    const net = BigInt.asIntN(128, word(raw, 1));
+    (byPool.get(p) ?? byPool.set(p, []).get(p)).push({ tick: t, liquidityNet: net });
+  });
+  for (const p of cl) { p.ticks = (byPool.get(p) ?? []).sort((a, b) => a.tick - b.tick); p.ticksRange = p._tickList.length ? [p._tickList[0], p._tickList[p._tickList.length - 1]] : null; delete p._tickList; }
+  return cl.length;
 }
 
 /** Filtro del punto 1: liquidez mínima del token base en el pool; pools token-token solo si ambos tokens ya tienen un pool base aceptable. */
@@ -387,11 +437,22 @@ export function other(p, tokenAddr) {
   return tokenAddr === p.token0.address ? p.token1 : p.token0;
 }
 
+/** Salida de un pool para `amountIn` de `tokenIn`: exacta con cruce de ticks si el pool tiene tabla de ticks. */
+export function swapOut(p, tokenIn, amountIn) {
+  if (amountIn <= 0n) return 0n;
+  if ((p.kind === "v3" || p.kind === "v4") && p.ticks && p.liquidity !== undefined) {
+    if (p.liquidity === 0n && !p.ticks.length) return 0n;
+    const r = CL.swapExactIn({ sqrtPriceX96: p.sqrtPriceX96, tick: p.tick, liquidity: p.liquidity, feePips: p.feePips, tickSpacing: p.tickSpacing, ticks: p.ticks }, tokenIn === p.token0.address, amountIn);
+    return r.amountOut; // si se agotó la tabla, es un piso (conservador)
+  }
+  const [ri, ro] = reservesFor(p, tokenIn);
+  return amountOut(amountIn, ri, ro, p.feePips);
+}
+
 export function routeOut(x, start, route) {
   let t = start, a = x;
   for (const p of route) {
-    const [ri, ro] = reservesFor(p, t);
-    a = amountOut(a, ri, ro, p.feePips);
+    a = swapOut(p, t, a);
     t = other(p, t).address;
     if (a === 0n) return 0n;
   }
@@ -544,7 +605,16 @@ export async function readGas(ethers, provider) {
 
 function ternaryMax(f, lo, hi) {
   if (hi < lo) return [0n, 0n];
-  for (let i = 0; i < 400 && hi - lo > 2n; i++) {
+  // 1) barrido geométrico (la curva es cóncava en log-monto): 24 puntos entre lo y hi
+  if (hi > lo * 16n) {
+    const N = 16, ratio = Number(hi) / Number(lo);
+    let bi = 0, bv = -(1n << 255n);
+    const xs = [];
+    for (let i = 0; i <= N; i++) { const x = BigInt(Math.max(1, Math.floor(Number(lo) * Math.pow(ratio, i / N)))); xs.push(x); const v = f(x); if (v > bv) { bv = v; bi = i; } }
+    lo = xs[Math.max(0, bi - 1)]; hi = xs[Math.min(N, bi + 1)];
+  }
+  // 2) ternaria en el tramo acotado
+  for (let i = 0; i < 40 && hi - lo > 2n; i++) {
     const m1 = lo + (hi - lo) / 3n, m2 = hi - (hi - lo) / 3n;
     if (f(m1) < f(m2)) lo = m1; else hi = m2;
   }
@@ -621,7 +691,8 @@ export function withSwap(pools, poolAddr, tokenAddr, amountIn) {
   const p = copy.find((q) => q.address === poolAddr);
   if (!p || amountIn <= 0n) return copy;
   const [ri, ro] = reservesFor(p, tokenAddr);
-  const out = amountOut(amountIn, ri, ro, p.feePips);
+  const out = swapOut(p, tokenAddr, amountIn);
+  p.ticks = null; // tras un swap hipotético el estado de ticks ya no es válido: vuelve a reservas virtuales
   if (tokenAddr === p.token0.address) { p.reserve0 = ri + amountIn; p.reserve1 = ro - out; }
   else { p.reserve1 = ri + amountIn; p.reserve0 = ro - out; }
   return copy;
@@ -629,23 +700,28 @@ export function withSwap(pools, poolAddr, tokenAddr, amountIn) {
 
 // ------------------------------------------------------------------ Evaluación (pipeline completo)
 
-export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0 }) {
+export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0, maxOptimize = 400 }) {
   const results = [];
   const gasWeiFor = (hops) => (GAS_BASE + GAS_PER_HOP * BigInt(hops)) * (gas.baseFee + gas.priority) + gas.l1Fee;
+  // 1) sondeo marginal de todos los ciclos (barato); 2) optimización solo de los positivos, los mejores primero
+  const pre = [];
   for (const c of cycles) {
     const startTok = c.route[0].token0.address === c.start ? c.route[0].token0 : c.route[0].token1;
     if (c.route.some((p) => p.reserve0 === 0n || p.reserve1 === 0n)) continue;
     const firstRes = reservesFor(c.route[0], c.start)[0];
-    const cap = firstRes / 2n; // tope de búsqueda; el óptimo real queda muy por debajo por el deslizamiento
-    const segs = lenderSegments(lenders, startTok.sym);
-
     const probe = firstRes / 1000000n || 1n;
     const marginalBps = Number(((routeOut(probe, c.start, c.route) - probe) * 1000000n) / probe) / 100;
-
+    pre.push({ c, startTok, firstRes, marginalBps });
+  }
+  const order = pre.filter((x) => x.marginalBps > 0).sort((a, b) => b.marginalBps - a.marginalBps);
+  const toOptimize = new Set(order.slice(0, maxOptimize).map((x) => x.c));
+  for (const { c, startTok, firstRes, marginalBps } of pre) {
+    const cap = firstRes / 2n; // tope de búsqueda; el óptimo real queda muy por debajo por el deslizamiento
+    const segs = lenderSegments(lenders, startTok.sym);
     const toUsd = tokenToUsd(startTok, ethUsd);
     const gasUsd = (Number(gasWeiFor(c.route.length)) / 1e18) * ethUsd;
     // si una operación mínima ya pierde, ningún monto gana (la curva es cóncava): no hace falta optimizar
-    let o = marginalBps > 0 ? optimize(c.start, c.route, segs, cap) : { x: 0n, gross: 0n, fee: 0n, lender: null };
+    let o = toOptimize.has(c) ? optimize(c.start, c.route, segs, cap) : { x: 0n, gross: 0n, fee: 0n, lender: null };
     // Filtro de cordura: un ciclo real entre pools públicos no devuelve más de un 10% del monto.
     // Más que eso = pool con liquidez virtual absurda, token trampa o reservas falsas -> se descarta.
     let suspicious = false;
