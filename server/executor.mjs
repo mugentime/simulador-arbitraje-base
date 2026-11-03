@@ -18,6 +18,8 @@ import * as core from "../src/core.js";
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const MAX_RECENT = 80;
+// RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
+const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]);
 
 export function emptyPhase1() {
   return {
@@ -40,6 +42,31 @@ export class Executor {
       minNetUsd: Number(process.env.MIN_NET_USD ?? 0.05),
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
+    this.sendIdx = 0; this.sendRpcs = sendRpcs();
+  }
+
+  /** Wallet conectada al RPC de envío actual; `rotateSender` pasa al siguiente si uno rechaza el envío. */
+  sender() {
+    const url = this.sendRpcs[this.sendIdx % this.sendRpcs.length];
+    if (!this.sendProv || this.sendUrl !== url) { this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 }); }
+    return this.wallet.connect(this.sendProv);
+  }
+  rotateSender() { this.sendIdx++; return this.sender(); }
+
+  /** Ejecuta `fn(walletConectada)` probando cada RPC de envío si el anterior rechaza (403/405/-32601…). */
+  async withSender(fn) {
+    let lastErr;
+    for (let i = 0; i < this.sendRpcs.length; i++) {
+      const w = this.sender();
+      try { return await fn(w); } catch (e) {
+        lastErr = e;
+        const m = `${e.shortMessage || e.message}`;
+        if (!/403|405|Forbidden|Method not|not supported|unsupported|-32601|429/i.test(m)) throw e;
+        await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 60)}); probando otro`);
+        this.rotateSender();
+      }
+    }
+    throw lastErr;
   }
 
   async init() {
@@ -60,8 +87,12 @@ export class Executor {
   async deploy() {
     try {
       await this.diag("fase 1: desplegando ArbExecutor…");
-      const f = new ethers.ContractFactory(ART.abi, ART.bytecode, this.wallet);
-      const c = await f.deploy(this.wallet.address);
+      const deployData = ART.bytecode + this.iface.encodeDeploy([this.wallet.address]).slice(2);
+      const gasLimit = await this.provider.estimateGas({ from: this.wallet.address, data: deployData });
+      const c = await this.withSender(async (w) => {
+        const f = new ethers.ContractFactory(ART.abi, ART.bytecode, w);
+        return f.deploy(this.wallet.address, { gasLimit: (gasLimit * 12n) / 10n });
+      });
       const rc = await c.deploymentTransaction().wait();
       this.p1.executor = await c.getAddress();
       this.p1.deployTx = rc.hash; this.p1.deployedAt = Date.now();
@@ -143,7 +174,7 @@ export class Executor {
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
     try {
       const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
-      const tx = await this.wallet.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: (gas.baseFee + gas.priority) * 2n, maxPriorityFeePerGas: gas.priority });
+      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: (gas.baseFee + gas.priority) * 2n, maxPriorityFeePerGas: gas.priority }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)})`);
       const rcpt = await tx.wait(1, 60_000);
