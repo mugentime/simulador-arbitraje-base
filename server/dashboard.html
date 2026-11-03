@@ -132,6 +132,24 @@
     </details>
   </section>
 
+  <!-- ============================ Desajustes de mercado por par ============================ -->
+  <section class="card">
+    <h2>Desajustes de precio entre pools (eficiencia del mercado por par)</h2>
+    <p class="sub">Para cada par con dos o más pools cotizables, se mide bloque a bloque la diferencia de precio entre el pool más barato y el más caro, descontando las comisiones de ambos. Un «episodio» empieza cuando esa diferencia supera las comisiones y termina cuando el mercado la iguala. Cuanto más dura, menos eficiente es el par: ahí es donde una ruta rentable tiene tiempo de ejecutarse.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Pares vigilados</div><div class="v" id="x-pairs">—</div><div class="s" id="x-pairs-sub"></div></div>
+      <div class="kpi"><div class="l">Episodios de desajuste</div><div class="v" id="x-eps">—</div><div class="s" id="x-eps-sub"></div></div>
+      <div class="kpi"><div class="l">Pares con desajustes persistentes</div><div class="v" id="x-pers">—</div><div class="s" id="x-pers-sub"></div></div>
+      <div class="kpi"><div class="l">Movimientos repentinos</div><div class="v" id="x-moves">—</div><div class="s" id="x-moves-sub"></div></div>
+    </div>
+    <details open><summary>Pares menos eficientes (ordenados por tiempo que tarda el mercado en igualarlos)</summary>
+      <div class="scroll"><table><thead><tr><th>Par</th><th class="num">pools</th><th class="num">episodios</th><th class="num">% bloques desajustado</th><th class="num">dura (mediana, bloques)</th><th class="num">máx</th><th class="num">exceso pico (bps)</th><th class="num">saltos</th><th class="num">con ruta rentable</th><th class="num">ahora (bps)</th></tr></thead><tbody id="x-top"></tbody></table></div>
+    </details>
+    <details><summary>Episodios abiertos y recientes</summary>
+      <div class="scroll"><table><thead><tr><th>Par</th><th>Bloques</th><th class="num">duración</th><th class="num">exceso pico (bps)</th><th>barato → caro</th><th>origen</th><th>ruta rentable</th></tr></thead><tbody id="x-recent"></tbody></table></div>
+    </details>
+  </section>
+
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
@@ -262,6 +280,16 @@ async function load() {
     const rows = nowRows.length ? nowRows : lq.recent.slice(0, 15);
     $("l-recent").innerHTML = rows.map((r) => `<tr><td>${r.proto}</td><td>${num(r.block)}</td><td class="mono">${r.user.slice(0, 10)}…</td><td class="num">${r.hf.toFixed(4)}</td><td class="num">${usd(r.debtUsd)}</td><td class="num">${usd(r.colUsd)}</td><td class="num strong">${usd(r.estProfitUsd)}</td><td>${esc(r.market || "—")}</td></tr>`).join("") || `<tr><td colspan="8" class="muted">Ninguna todavía.</td></tr>`;
     $("l-seen-rows").innerHTML = lq.seen.recent.slice(0, 15).map((r) => `<tr><td>${r.proto}</td><td>${num(r.block)}</td><td class="mono">${r.user.slice(0, 10)}…</td><td class="mono">${r.liquidator.slice(0, 10)}…</td><td class="num">${r.blocksAfterUs !== undefined ? r.blocksAfterUs : "no la vimos antes"}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Ninguna todavía.</td></tr>`;
+  }
+  const dx = d.disloc;
+  if (dx) {
+    $("x-pairs").textContent = num(dx.pairsTracked); $("x-pairs-sub").textContent = `${num(dx.blocks)} bloques medidos`;
+    $("x-eps").textContent = num(dx.episodes); $("x-eps-sub").textContent = `${dx.open.length} abiertos ahora`;
+    $("x-pers").textContent = num(dx.persistent); $("x-pers-sub").textContent = "mediana ≥ 3 bloques (≥ 6 s sin igualarse)";
+    $("x-moves").textContent = num(dx.moves); $("x-moves-sub").textContent = "saltos ≥ 50 bps de un pool entre bloques";
+    $("x-top").innerHTML = dx.top.map((r) => `<tr><td class="strong">${esc(r.pair)}</td><td class="num">${r.pools}</td><td class="num">${num(r.episodes)}</td><td class="num">${(r.share * 100).toFixed(1)}%</td><td class="num">${r.medianDur}</td><td class="num">${r.maxDur}</td><td class="num">${r.peakExcess}</td><td class="num">${num(r.moves)}</td><td class="num">${num(r.captured)}</td><td class="num${r.nowExcess > 0 ? " strong" : ""}">${r.nowExcess > 0 ? "+" + r.nowExcess : r.nowExcess}</td></tr>`).join("") || `<tr><td colspan="10" class="muted">Sin episodios todavía.</td></tr>`;
+    const rec = dx.open.map((o) => ({ ...o, range: "abierto", blocks: o.blocks })).concat(dx.recent.map((r) => ({ ...r, range: `${num(r.startBlock)}–${num(r.endBlock)}` })));
+    $("x-recent").innerHTML = rec.slice(0, 25).map((r) => `<tr><td class="strong">${esc(r.pair)}</td><td>${r.range}</td><td class="num">${r.blocks}</td><td class="num">${r.peakExcess}</td><td>${esc(r.low)} → ${esc(r.high)}</td><td>${esc(r.trigger)}</td><td>${r.captured ? "sí" : "no"}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">Ninguno todavía.</td></tr>`;
   }
   const hv = d.harvest;
   if (hv) {

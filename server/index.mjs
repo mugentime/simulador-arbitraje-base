@@ -217,7 +217,7 @@ const server = http.createServer(async (req, res) => {
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html")) {

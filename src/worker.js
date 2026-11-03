@@ -3,6 +3,7 @@
 // En Netlify el store es Netlify Blobs; en las pruebas, un Map en memoria.
 
 import * as core from "./core.js";
+import { emptyDisloc, trackBlock, summarize as summarizeDisloc } from "./dislocations.js";
 import { emptyVaultStats, harvestTable, processVaultBlock } from "./vaultsim.js";
 
 export const MIN_LIQ = {
@@ -129,15 +130,20 @@ export function accountBlock(stats, block, ts, results) {
 }
 
 /** Construye el universo: pares principales + long tail de las últimas `ltHours` horas, filtrado por liquidez. */
-export async function buildUniverse(ethers, provider, { ltHours = 2, head, progress = async () => {} } = {}) {
+export async function buildUniverse(ethers, provider, { ltHours = 2, head, progress = async () => {}, extraTokens = null } = {}) {
   head = head ?? (await provider.getBlockNumber());
   if (ltHours <= 0) {
     const found = await core.existingPools(ethers, provider, Object.values(core.TOKENS).map((t) => t.address));
     const metaList = Object.entries(core.TOKENS).map(([sym, t]) => ({ sym, ...t }));
     return fromSpecs(ethers, provider, [...found.entries()], metaList);
   }
+  let extra = extraTokens;
+  if (extra === null) {
+    try { extra = await core.verifiedExtraTokens(ethers, provider); await progress(`tokens adicionales verificados: ${extra.map((t) => t.sym).join(", ") || "ninguno"}`); }
+    catch (e) { extra = []; await progress(`tokens adicionales: no se pudieron verificar (${e.shortMessage || e.message})`); }
+  }
   const { foundEntries, metaList } = await core.longTailUniverse(ethers, provider, {
-    lookback: Math.round((ltHours * 3600) / 2), head, minLiq: MIN_LIQ, progress,
+    lookback: Math.round((ltHours * 3600) / 2), head, minLiq: MIN_LIQ, progress, extraTokens: extra,
   });
   await progress(`cargando ${foundEntries.length} pools`);
   return fromSpecs(ethers, provider, foundEntries, metaList);
@@ -178,7 +184,9 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
   sanitize(stats, events);
   const managers = new Map(Object.entries((await store.get("managers")) ?? {}).map(([a, m]) => [a, { ...m, callReward: m.callReward === null || m.callReward === undefined ? null : BigInt(m.callReward) }]));
   vstats.hourly ??= []; vstats.last ??= null;
-  if (live) { live.stats = stats; live.vstats = vstats; live.events = () => events; }
+  let dstats = (await store.get("disloc")) ?? emptyDisloc();
+  if (dstats.v !== 1) dstats = emptyDisloc();
+  if (live) { live.stats = stats; live.vstats = vstats; live.events = () => events; live.disloc = () => summarizeDisloc(dstats); }
   stats.runs++;
   stats.startedAt ??= new Date(now()).toISOString();
   const setPhase = async (phase) => { stats.phase = phase; stats.heartbeat = now(); await store.set("stats", stats); log(phase); };
@@ -186,7 +194,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 2; // v2: pools v4 con tickSpacing
+  const UNIVERSE_FORMAT = 3; // v3: tokens adicionales (pares ampliados)
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);
@@ -211,6 +219,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
     await store.set("stats", stats);
     await store.set("events", events);
     await store.set("vaults", vstats);
+    await store.set("disloc", dstats);
     await store.set("managers", Object.fromEntries(managers));
     sinceFlush = 0;
   };
@@ -234,6 +243,13 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
       const results = core.evaluateAll({ pools: uni.pools, cycles: uni.cycles, lenders, gas, ethUsd });
       const newEvents = accountBlock(stats, b, gas.timestamp, results);
       events.push(...newEvents);
+      // desajustes entre pools del mismo par: cuánto duran y si el mercado los iguala
+      try {
+        const attempted = new Set(results.filter((r) => r.profitable).flatMap((r) => r.route.map((p) => p.address)));
+        for (const ep of trackBlock(dstats, { block: b, ts: gas.timestamp, pools: uni.pools, ethUsd, attempted })) {
+          if (ep.blocks >= 3) log(`desajuste ${ep.pair}: ${ep.blocks} bloques, exceso pico ${ep.peakExcess} bps sobre comisiones (${ep.low} → ${ep.high}) · ${ep.trigger}${ep.captured ? " · con ruta rentable detectada" : " · sin ruta rentable (profundidad/gas)"}`);
+        }
+      } catch (e) { stats.lastError = `desajustes ${b}: ${e.shortMessage || e.message}`; }
       let execText = null;
       if (onBlock) { try { execText = await onBlock({ block: b, ts: gas.timestamp, results, lenders, gas, ethUsd, pools: uni.pools }); } catch (e) { stats.lastError = `onBlock ${b}: ${e.shortMessage || e.message}`; } }
       stats.pipeline = describeBlock({ block: b, gas, ethUsd, pools: uni.pools, cycles: uni.cycles.length, results, newEvents, open: Object.keys(stats.open).length, totals: stats.totals, execText });

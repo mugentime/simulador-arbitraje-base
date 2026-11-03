@@ -10,6 +10,37 @@ export const TOKENS = {
   cbBTC: { address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", decimals: 8 },
 };
 
+/** Tokens adicionales de Base para ampliar los pares (se verifican on-chain por símbolo al arrancar; los que no coinciden se descartan). */
+export const EXTRA_TOKENS = [
+  { sym: "USDbC", address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA" },
+  { sym: "DAI", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb" },
+  { sym: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" },
+  { sym: "EURC", address: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42" },
+  { sym: "wstETH", address: "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452" },
+  { sym: "cbETH", address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22" },
+  { sym: "weETH", address: "0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A" },
+  { sym: "rETH", address: "0xB6fe221Fe9EeF5aBa221c348bA20A1Bf5e73624c" },
+  { sym: "AERO", address: "0x940181a94A35A4569E4529A3CDfB74e38FD98631" },
+  { sym: "VIRTUAL", address: "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b" },
+  { sym: "DEGEN", address: "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed" },
+  { sym: "BRETT", address: "0x532f27101965dd16442E59d40670FaF5eBB142E4" },
+  { sym: "MORPHO", address: "0xBAa5CC21fd487B8Fcc2F632f3F4E8D37262a0842" },
+  { sym: "WELL", address: "0xA88594D404727625A9437C3f886C7643872296AE" },
+  { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
+];
+
+/** Verifica EXTRA_TOKENS on-chain (symbol/decimals) y devuelve solo los que coinciden. */
+export async function verifiedExtraTokens(ethers, provider, list = EXTRA_TOKENS) {
+  if (!list.length) return [];
+  const meta = await tokenMeta(ethers, provider, list.map((t) => t.address));
+  const ok = [];
+  for (const t of list) {
+    const m = meta.get(t.address.toLowerCase());
+    if (m && m.sym.toLowerCase() === t.sym.toLowerCase()) ok.push({ sym: t.sym, address: ethers.getAddress(t.address), decimals: m.decimals });
+  }
+  return ok;
+}
+
 export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 export const GAS_ORACLE = "0x420000000000000000000000000000000000000F"; // OP Stack: fee L1
 
@@ -238,10 +269,10 @@ export async function poolTokens(ethers, provider, addrs) {
  *     (la mayoría son polvo y se descartan aquí);
  *  3) solo para los tokens que sobreviven: sus pools existentes contra WETH/USDC/cbBTC en todos los DEX.
  */
-export async function longTailUniverse(ethers, provider, { lookback, head, minLiq, progress = () => {} }) {
-  const base = Object.values(TOKENS).map((t) => t.address);
-  const baseMeta = () => new Map(Object.entries(TOKENS).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]));
-  progress("pares principales");
+export async function longTailUniverse(ethers, provider, { lookback, head, minLiq, progress = () => {}, extraTokens = [] }) {
+  const base = Object.values(TOKENS).map((t) => t.address).concat(extraTokens.map((t) => t.address));
+  const baseMeta = () => new Map([...Object.entries(TOKENS).map(([sym, t]) => [t.address.toLowerCase(), { sym, ...t }]), ...extraTokens.map((t) => [t.address.toLowerCase(), { ...t }])]);
+  progress(`pares principales (${base.length} tokens)`);
   const found = await existingPools(ethers, provider, base);
   let lastP = 0;
   const specs = await scanNewPools(ethers, provider, {
@@ -488,7 +519,7 @@ export function poolPrice(p, base = "WETH") {
 
 // ------------------------------------------------------------------ Ciclos
 
-export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3) {
+export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3, maxCycles = 40000) {
   const byTok = new Map();
   for (const p of pools) for (const t of [p.token0.address, p.token1.address]) {
     if (!byTok.has(t)) byTok.set(t, []);
@@ -500,6 +531,8 @@ export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3
     const k = start + ":" + route.map((p) => p.address).join(">");
     if (!seen.has(k)) { seen.add(k); out.push({ start, route, key: k }); }
   };
+  // liquidez aproximada de un ciclo: la menor reserva del token de inicio (en sus unidades) entre sus pools de entrada/salida
+  const liqOf = (c) => { const a = reservesFor(c.route[0], c.start)[0], b = reservesFor(c.route[c.route.length - 1], c.start)[0]; return a < b ? a : b; };
   const addrOf = new Map();
   for (const p of pools) for (const t of [p.token0, p.token1]) addrOf.set(t.sym, t.address);
   for (const sym of startSyms) {
@@ -519,6 +552,12 @@ export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3
         }
       }
     }
+  }
+  if (out.length > maxCycles) {
+    // demasiados ciclos: se conservan todos los de 2 saltos y los de 3 saltos con más liquidez
+    const two = out.filter((c) => c.route.length === 2), three = out.filter((c) => c.route.length === 3);
+    three.sort((x, y) => (liqOf(y) > liqOf(x) ? 1 : liqOf(y) < liqOf(x) ? -1 : 0));
+    return two.concat(three.slice(0, Math.max(0, maxCycles - two.length)));
   }
   return out;
 }
