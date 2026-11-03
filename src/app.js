@@ -21,6 +21,7 @@ const state = {
   blocksSeen: 0, blocksWithOpp: 0, log: [], busy: false, lastBlockTs: 0, chainId: null,
   session: emptyStats(),
   vsession: emptyVaultStats(), managers: new Map(),
+  ready: false, starting: false, errStreak: 0, rpcRotations: 0,
 };
 
 // ------------------------------------------------------------------ pipeline UI
@@ -33,6 +34,12 @@ function stage(name, text, mode = "done") {
   if (text !== undefined) el.querySelector(".st-val").textContent = text;
 }
 const tick = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 60)));
+function pipeNote(text, kind = "ok") {
+  const el = $("pipe-note");
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.kind = kind;
+}
 
 // ------------------------------------------------------------------ conexión
 
@@ -41,7 +48,10 @@ async function connect(preferred) {
   for (const url of list) {
     try {
       setStatus(`Conectando a ${url}…`, "wait");
-      const p = new ethers.JsonRpcProvider(url, undefined, { staticNetwork: true, batchMaxCount: 1 });
+      const req = new ethers.FetchRequest(url);
+      req.timeout = 10000;
+      req.retryFunc = async () => false; // sin reintentos internos ante 429: preferimos cambiar de RPC
+      const p = new ethers.JsonRpcProvider(req, undefined, { staticNetwork: true, batchMaxCount: 1 });
       const net = await withTimeout(p.send("eth_chainId", []), 6000);
       if (BigInt(net) !== core.CHAIN_ID) throw new Error("no es Base (chainId " + BigInt(net) + ")");
       state.provider = p; state.rpc = url; state.chainId = BigInt(net);
@@ -53,7 +63,17 @@ async function connect(preferred) {
     }
   }
   setStatus("No se pudo conectar a ningún RPC público de Base. Prueba con tu propio RPC.", "bad");
+  pipeNote("Sin RPC: ningún nodo público de Base respondió. Escribe tu propio RPC arriba.", "bad");
   return false;
+}
+
+/** El RPC actual dejó de responder bien: pasa al siguiente de la lista sin perder el universo ya cargado. */
+async function rotateRpc(reason) {
+  const next = RPCS[(RPCS.indexOf(state.rpc) + 1) % RPCS.length];
+  state.rpcRotations++;
+  pipeNote(`${reason} · cambiando de RPC a ${new URL(next).host}…`, "bad");
+  state.errStreak = 0;
+  return connect(next);
 }
 
 function withTimeout(p, ms) {
@@ -90,6 +110,7 @@ async function bootstrap() {
     stage("estado", `${found.size} pools encontrados`, "run");
     pools = await core.loadPools(ethers, state.provider, found);
   }
+  if (!pools.length) throw new Error("el RPC no devolvió ningún pool con liquidez (suele ser un nodo público saturado)");
   state.pools = pools;
   state.cycles = core.enumerateCycles(state.pools);
   state.lenders = await core.readLenders(ethers, state.provider);
@@ -101,7 +122,7 @@ async function bootstrap() {
 // ------------------------------------------------------------------ bucle por bloque
 
 async function onBlock() {
-  if (state.busy) return;
+  if (state.busy || !state.ready) return;
   state.busy = true;
   try {
     const n = await withTimeout(state.provider.getBlockNumber(), 8000);
@@ -109,16 +130,17 @@ async function onBlock() {
     for (const s of STAGES) stage(s, undefined, "idle");
 
     stage("ingesta", `bloque ${n.toLocaleString("es-MX")}`, "run"); await tick();
-    const [gas] = await Promise.all([core.readGas(ethers, state.provider), core.refreshPools(ethers, state.provider, state.pools, n)]);
+    const [gas] = await withTimeout(Promise.all([core.readGas(ethers, state.provider), core.refreshPools(ethers, state.provider, state.pools, n)]), 12000);
     stage("ingesta", `bloque ${n.toLocaleString("es-MX")}`);
     state.lastBlockTs = gas.timestamp;
 
     const live = state.pools.filter((p) => p.reserve0 > 0n && p.reserve1 > 0n).length;
+    if (live === 0) throw new Error("el RPC devolvió reservas vacías para todos los pools");
     stage("estado", `${live}/${state.pools.length} pools con liquidez`, "run"); await tick();
     const ethUsd = core.referenceEthUsd(state.pools);
     stage("estado", `${live}/${state.pools.length} pools con liquidez`);
 
-    if (state.blocksSeen % 15 === 0) state.lenders = await core.readLenders(ethers, state.provider);
+    if (state.blocksSeen % 15 === 0) state.lenders = await withTimeout(core.readLenders(ethers, state.provider), 12000);
 
     stage("deteccion", `${state.cycles.length} ciclos`, "run"); await tick();
     const results = core.evaluateAll({ pools: state.pools, cycles: state.cycles, lenders: state.lenders, gas, ethUsd });
@@ -147,7 +169,7 @@ async function onBlock() {
     accountBlock(state.session, n, gas.timestamp, results);
     renderSession();
     try {
-      const vev = await core.scanVaultEvents(ethers, state.provider, state.pools, n);
+      const vev = await withTimeout(core.scanVaultEvents(ethers, state.provider, state.pools, n), 12000);
       if (vev.length) {
         await core.describeManagers(ethers, state.provider, [...new Set(vev.map((e) => e.actor))], state.managers);
         processVaultBlock(state.vsession, { block: n, ts: gas.timestamp, events: vev, results, pools: state.pools, ethUsd, managers: state.managers });
@@ -161,9 +183,16 @@ async function onBlock() {
     renderSim();
     renderChart();
     if (state.blocksSeen % 15 === 1) renderLenders();
+    state.errStreak = 0;
+    pipeNote(`Leyendo Base vía ${new URL(state.rpc).host} · ${state.pools.length} pools · ${state.cycles.length} ciclos`, "ok");
   } catch (e) {
     console.error(e);
-    setStatus("Error leyendo la cadena: " + (e.shortMessage || e.message) + " · reintentando…", "bad");
+    state.errStreak++;
+    const msg = e.shortMessage || e.message || String(e);
+    setStatus("Error leyendo la cadena: " + msg + " · reintentando…", "bad");
+    stage("estado", "error: " + msg.slice(0, 60), "bad");
+    pipeNote(`Error leyendo la cadena (${state.errStreak}/2): ${msg}`, "bad");
+    if (state.errStreak >= 2) await rotateRpc("2 errores seguidos");
   } finally {
     state.busy = false;
   }
@@ -457,7 +486,9 @@ async function loadServerStats() {
   $("acc-status").innerHTML = `${d.host === "railway" ? "Railway · " : "Netlify · "}${d.alive ? "● Servidor activo" : "○ Servidor en pausa"}${d.alive && d.phase ? ` (${d.phase})` : ""} · último bloque ${d.lastBlock?.toLocaleString("es-MX") ?? "—"}${agoS !== null ? ` hace ${agoS} s` : ""} · ${d.blocksProcessed.toLocaleString("es-MX")} bloques procesados (cobertura ${fmtNum(covered * 100, 1)}%) · ${d.universe.pools} pools, ${d.universe.cycles} ciclos · desde ${since ? since.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · último error: ${d.lastError}` : ""}`;
   const t = d.totals;
   $("acc-net").textContent = fmtUsd(t.netUsd, 2);
-  $("acc-net-sub").textContent = `≈ ${fmtUsd(t.netUsd / days, 2)} por día · gas pagado ${fmtUsd(t.gasUsd, 2)}`;
+  const hNow = Math.floor(d.now / 3600000); const recentH = (d.hourly || []).filter((h) => h.h >= hNow - 2);
+  const recentNet = recentH.reduce((s, h) => s + h.netUsd, 0), recentEps = recentH.reduce((s, h) => s + h.episodes, 0);
+  $("acc-net-sub").textContent = `últimas 3 h: ${recentEps} oportunidades, ${fmtUsd(recentNet, 2)} · gas pagado ${fmtUsd(t.gasUsd, 2)}`;
   $("acc-eps").textContent = t.episodes.toLocaleString("es-MX");
   $("acc-eps-sub").textContent = `${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren hop v4` : ""}`;
   $("acc-over1").textContent = t.over1Usd.toLocaleString("es-MX");
@@ -507,14 +538,25 @@ setInterval(loadServerStats, 15000);
 // ------------------------------------------------------------------ inicio
 
 async function start(url) {
-  state.lastBlock = 0;
-  if (!(await connect(url))) return;
+  if (state.starting) return;
+  state.starting = true; state.ready = false; state.lastBlock = 0;
   try {
-    await bootstrap();
-  } catch (e) {
-    console.error(e);
-    setStatus("Falló el descubrimiento de pools: " + (e.shortMessage || e.message), "bad");
-    return;
+    if (!(await connect(url))) return;
+    for (let attempt = 0; attempt < RPCS.length; attempt++) {
+      try {
+        pipeNote(`Descubriendo pools vía ${new URL(state.rpc).host}…`, "wait");
+        await bootstrap();
+        state.ready = true;
+        break;
+      } catch (e) {
+        console.error(e);
+        const msg = e.shortMessage || e.message;
+        setStatus("Falló el descubrimiento de pools: " + msg, "bad");
+        if (attempt === RPCS.length - 1 || !(await rotateRpc("falló el descubrimiento: " + msg))) { pipeNote("No se pudo cargar el universo de pools con ningún RPC. Prueba con tu propio RPC.", "bad"); return; }
+      }
+    }
+  } finally {
+    state.starting = false;
   }
   await onBlock();
 }

@@ -43,6 +43,10 @@
   .st[data-mode="run"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .st[data-mode="idle"] { opacity: .55; }
   .st[data-mode="hit"] { background: var(--good-bg); border-color: var(--good); }
+  .st[data-mode="bad"] { border-color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); }
+  #pipe-note { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  #pipe-note[data-kind="bad"] { color: var(--bad); }
+  #pipe-note[data-kind="wait"] { color: var(--accent); }
 
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
   .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
@@ -188,6 +192,7 @@
       <div class="st" id="st-ejecucion"><div class="st-name">7 · Ejecución</div><div class="st-val">—</div></div>
       <div class="st" id="st-registro"><div class="st-name">8 · Registro</div><div class="st-val">—</div></div>
     </div>
+    <div id="pipe-note" data-kind="wait">Conectando a un RPC público de Base…</div>
   </section>
 
   <section class="kpis" style="margin-top:14px">

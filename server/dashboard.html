@@ -104,7 +104,9 @@ async function load() {
   const days = d.startedAt ? Math.max(1 / 24, (d.now - new Date(d.startedAt).getTime()) / 86400000) : 1;
   $("status").textContent = `Último bloque ${num(d.lastBlock)}${agoS !== null ? ` (hace ${agoS} s)` : ""} · ${d.universe.pools} pools, ${num(d.universe.cycles)} rutas vigiladas · observando desde ${when(d.startedAt)}${d.lastError ? " · último error: " + d.lastError : ""}`;
   const t = d.totals;
-  $("net").textContent = usd(t.netUsd); $("net-sub").textContent = `≈ ${usd(t.netUsd / days)} por día · gas ${usd(t.gasUsd)}`;
+  $("net").textContent = usd(t.netUsd); const hNow = Math.floor(d.now / 3600000); const recentH = (d.hourly || []).filter((h) => h.h >= hNow - 2);
+  const recentNet = recentH.reduce((s, h) => s + h.netUsd, 0), recentEps = recentH.reduce((s, h) => s + h.episodes, 0);
+  $("net-sub").textContent = `últimas 3 h: ${recentEps} oportunidades, ${usd(recentNet)} · gas ${usd(t.gasUsd)}`;
   $("eps").textContent = num(t.episodes); $("eps-sub").textContent = `${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren hop v4` : ""}`;
   $("over1").textContent = num(t.over1Usd); $("over1-sub").textContent = `suman ${usd(t.over1NetUsd)}`;
   $("best").textContent = d.best ? usd(d.best.netUsd) : "—"; $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)}` : "";
