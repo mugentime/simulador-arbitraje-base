@@ -95,14 +95,18 @@ export class Harvester {
             const parts = [];
             for (let f = from; f <= to; f += span) {
               parts.push(await Promise.race([
-                this.logs.getLogs({ fromBlock: f, toBlock: Math.min(to, f + span - 1), topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }),
-                new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 25_000)),
+                this.logs.getLogs({ fromBlock: f, toBlock: Math.min(to, f + span - 1), topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }, { timeoutMs: 20_000 }),
+                new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 120_000)),
               ]));
             }
             logs = parts.flat();
           } catch (e) { lastErr = e; span = Math.floor(span / 2); }
         }
-        if (logs === null) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(lastErr?.shortMessage || lastErr?.message || "").slice(0, 50)})`; continue; }
+        if (logs === null) {
+          failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(lastErr?.shortMessage || lastErr?.message || "").slice(0, 50)})`;
+          if (failed === 1) await this.diag(`harvest: historial, primer tramo ${from}-${to} sin leer: ${(lastErr?.shortMessage || lastErr?.message || "").slice(0, 600)}`);
+          continue;
+        }
         done++;
         if (done % 25 === 0) await this.diag(`harvest: historial ${done}/${total} tramos (${failed} fallidos, ${Math.round((Date.now() - t0) / 1000)} s)`);
         this.ingestLogs(logs, per);

@@ -78,17 +78,20 @@ function logsProviderFor(main, mainUrl) {
   let idx = 0;
   const get = (u) => { if (!provs.has(u)) provs.set(u, new ethers.JsonRpcProvider(u, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 })); return provs.get(u); };
   return {
-    async getLogs(filter) {
-      let lastErr;
+    async getLogs(filter, { timeoutMs = 6000 } = {}) {
+      const errs = [];
       for (let i = 0; i < urls.length; i++) {
         const u = urls[(idx + i) % urls.length];
         try {
-          const r = await Promise.race([get(u).getLogs(filter), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout 6 s")), 6000))]);
+          const r = await Promise.race([get(u).getLogs(filter), new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${Math.round(timeoutMs / 1000)} s`)), timeoutMs))]);
           if (i) { idx = (idx + i) % urls.length; await diag(`vaults: eth_getLogs ahora vía ${new URL(u).host}`); }
           return r;
-        } catch (e) { lastErr = e; }
+        } catch (e) {
+          const body = e.info?.responseBody ?? e.error?.message ?? "";
+          errs.push(`${new URL(u).host}: ${(e.shortMessage || e.message).slice(0, 40)}${body ? ` [${String(body).replace(/\s+/g, " ").slice(0, 90)}]` : ""}`);
+        }
       }
-      throw lastErr;
+      const err = new Error(errs.join(" · ")); err.shortMessage = errs.join(" · "); throw err;
     },
   };
 }
