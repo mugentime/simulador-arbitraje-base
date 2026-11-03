@@ -47,7 +47,7 @@ export class Harvester {
       rewardOverGas: Number(process.env.HARVEST_REWARD_OVER_GAS ?? 2.5), // callReward debe ser ≥ 2.5× el gas (si Beefy se adelanta, perdemos solo gas)
       maxPerHour: Number(process.env.MAX_HARVEST_PER_HOUR ?? 10),
       scanEvery: Number(process.env.HARVEST_SCAN_BLOCKS ?? 30),
-      historyBlocks: Number(process.env.HARVEST_HISTORY_BLOCKS ?? 302_400), // 7 días
+      historyBlocks: Number(process.env.HARVEST_HISTORY_BLOCKS ?? 129_600), // 3 días
       leadSec: Number(process.env.HARVEST_LEAD_SEC ?? 90), // anticipación al harvest previsto
     };
     this.hist = null; // por estrategia: {events:[{block,ts,harvester,callFee}], intervalMed, callFeeMed, nextAt, ...}
@@ -78,21 +78,28 @@ export class Harvester {
     const addrs = this.strats.map((s) => s.address);
     const per = new Map(addrs.map((a) => [a.toLowerCase(), { events: [], fees: [] }]));
     const chunk = Number(process.env.HARVEST_HISTORY_CHUNK ?? 2000);
-    let failed = 0;
-    for (let from = from0; from <= head; from += chunk) {
-      const to = Math.min(head, from + chunk - 1);
-      let logs;
-      try { logs = await this.logs.getLogs({ address: addrs, fromBlock: from, toBlock: to, topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }); }
-      catch (e) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(e.shortMessage || e.message).slice(0, 50)})`; continue; }
-      for (const lg of logs) {
-        const rec = per.get(lg.address.toLowerCase()); if (!rec) continue;
-        if (lg.topics[0] === TOPICS.stratHarvest || lg.topics[0] === TOPICS.harvest) {
-          rec.events.push({ block: lg.blockNumber, harvester: "0x" + lg.topics[1].slice(-40), tx: lg.transactionHash });
-        } else {
-          rec.fees.push({ block: lg.blockNumber, tx: lg.transactionHash, callFee: BigInt("0x" + lg.data.slice(2, 66)) });
-        }
+    let failed = 0, done = 0;
+    const ranges = []; for (let from = from0; from <= head; from += chunk) ranges.push([from, Math.min(head, from + chunk - 1)]);
+    const total = ranges.length;
+    const t0 = Date.now();
+    await this.diag(`harvest: leyendo historial de ${(this.cfg_hist() / 43200).toFixed(1)} días en ${total} tramos…`);
+    const worker = async () => {
+      while (ranges.length) {
+        const [from, to] = ranges.shift();
+        let logs;
+        try {
+          logs = await Promise.race([
+            this.logs.getLogs({ address: addrs, fromBlock: from, toBlock: to, topics: [[TOPICS.stratHarvest, TOPICS.harvest, TOPICS.charged3, TOPICS.charged4]] }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo agotado")), 25_000)),
+          ]);
+        } catch (e) { failed++; this.h.lastError = `historial: ${failed} tramos sin leer (${(e.shortMessage || e.message).slice(0, 50)})`; continue; }
+        done++;
+        if (done % 25 === 0) await this.diag(`harvest: historial ${done}/${total} tramos (${failed} fallidos, ${Math.round((Date.now() - t0) / 1000)} s)`);
+        this.ingestLogs(logs, per);
       }
-    }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    this.h.lastError = failed ? `historial: ${failed}/${total} tramos sin leer` : null;
     // marca de tiempo por bloque (2 s por bloque en Base, suficiente para intervalos)
     const nowTs = Math.floor(Date.now() / 1000);
     const tsOf = (b) => nowTs - (head - b) * 2;
@@ -120,6 +127,16 @@ export class Harvester {
     await this.diag(`harvest: historial de ${this.hist.days.toFixed(1)} días · ${withData.length}/${this.strats.length} estrategias con ≥2 harvests · intervalo mediano ${median(withData.map((x) => x.intervalMed)) ? (median(withData.map((x) => x.intervalMed)) / 3600).toFixed(1) + " h" : "—"}`);
   }
   cfg_hist() { return this.limits.historyBlocks; }
+  ingestLogs(logs, per) {
+    for (const lg of logs) {
+      const rec = per.get(lg.address.toLowerCase()); if (!rec) continue;
+      if (lg.topics[0] === TOPICS.stratHarvest || lg.topics[0] === TOPICS.harvest) {
+        rec.events.push({ block: lg.blockNumber, harvester: "0x" + lg.topics[1].slice(-40), tx: lg.transactionHash });
+      } else {
+        rec.fees.push({ block: lg.blockNumber, tx: lg.transactionHash, callFee: BigInt("0x" + lg.data.slice(2, 66)) });
+      }
+    }
+  }
 
   /** Estrategias cuya ventana de harvest previsto está cerca (según el historial). */
   dueSoon(nowTs) {
