@@ -55,7 +55,7 @@
     <h3>Acumulado</h3>
     <div class="kpis">
       <div class="kpi"><div class="l">Beneficio REAL (transacciones en <span class="chainname">Base</span>)</div><div class="v" id="real">—</div><div class="s" id="real-sub"></div></div>
-      <div class="kpi"><div class="l">Detectado por el modelo (techo teórico)</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
+      <div class="kpi"><div class="l">Verificado por la cadena (simulaciones que pasarían)</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
       <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
       <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="best">—</div><div class="s" id="best-sub"></div></div>
       <div class="kpi"><div class="l">Bloques procesados</div><div class="v" id="blocks">—</div><div class="s" id="blocks-sub"></div></div>
@@ -201,8 +201,11 @@ async function load() {
   const hNow = Math.floor(d.now / 3600000);
   const rec = (d.hourly || []).filter((h) => h.h >= hNow - 2);
   const recNet = rec.reduce((s, h) => s + h.netUsd, 0), recEps = rec.reduce((s, h) => s + h.episodes, 0);
-  $("net").textContent = usd(t.netUsd);
-  $("net-sub").textContent = `lo que el modelo calcula que habría dejado ejecutar cada oportunidad al instante · últimas 3 h: ${recEps} oportunidades, ${usd(recNet)}`;
+  {
+    const p = d.phase1;
+    $("net").textContent = p ? usd(Math.max(0, p.projectedNetUsd), 2) : "—";
+    $("net-sub").textContent = p ? `${num(p.wouldSucceed)} de ${num(p.simulated)} simulaciones pasan en la cadena (neto tras gas) · el modelo solo cuenta rutas que la cadena no ha rechazado siempre` : "";
+  }
   {
     const p = d.phase1;
     const real = p ? p.realizedUsd : 0;

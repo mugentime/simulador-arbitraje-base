@@ -67,7 +67,7 @@ const usd = (v, d = 2) => (isFinite(v) ? (v < 0 ? "−$" : "$") + Math.abs(v).to
 export function describeBlock({ block, gas, ethUsd, pools, cycles, results, newEvents, open, totals, execText }) {
   const live = pools.filter((p) => p.reserve0 > 0n && p.reserve1 > 0n).length;
   const spread = results.filter((r) => r.amountIn > 0n);
-  const winners = results.filter((r) => r.profitable);
+  const winners = results.filter((r) => r.profitable && !core.PHANTOM_ROUTES.has(core.routeId(r.route)));
   const best = results[0];
   const sized = spread[0];
   const gwei = (w) => (Number(w) / 1e9).toFixed(4);
@@ -177,12 +177,12 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
 export async function runWorker({ ethers, provider, store, deadlineMs, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), ltHours = 2, pollMs = 1000, flushEvery = 5, log = () => {}, onBlock = null, live = null, logsProvider = null, waitBlock = null }) {
   const runId = `${now()}-${Math.random().toString(36).slice(2, 8)}`;
   await store.set("owner", { id: runId, since: now() }); // el último en arrancar es el dueño
-  const MODEL_VERSION = 2; // 2 = liquidez concentrada con cruce de ticks. Al cambiar, el acumulado anterior deja de ser comparable: se reinicia.
+  const MODEL_VERSION = 3; // 3 = sin rutas fantasma (las que la cadena rechaza siempre) ni Stock Tokens; 2 = liquidez concentrada con cruce de ticks. Al cambiar, el acumulado anterior deja de ser comparable: se reinicia.
   let stats = (await store.get("stats")) ?? emptyStats();
   let events = (await store.get("events")) ?? [];
   let vstats = (await store.get("vaults")) ?? emptyVaultStats();
   if (stats.modelVersion !== MODEL_VERSION) {
-    log(`acumulado reiniciado: modelo v${stats.modelVersion ?? 1} → v${MODEL_VERSION} (ticks exactos)`);
+    log(`acumulado reiniciado: modelo v${stats.modelVersion ?? 1} → v${MODEL_VERSION} (sin fantasmas)`);
     const prevRuns = stats.runs ?? 0;
     stats = emptyStats(); stats.runs = prevRuns; stats.modelVersion = MODEL_VERSION; stats.resetAt = new Date(now()).toISOString();
     events = []; vstats = emptyVaultStats();

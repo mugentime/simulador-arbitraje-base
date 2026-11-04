@@ -76,6 +76,10 @@ export let LENDERS = [
  * Los importadores que usan `core.X` ven el cambio al instante (enlaces vivos de ESM).
  */
 export let EXCLUDED_PAIRS = new Set(); // pares excluidos (ver src/pairs.js y excludedPairs en chains.js)
+/** Rutas fantasma: el modelo las ve rentables pero la cadena las rechaza siempre en simulación (≥5 reverts, 0 ok).
+ *  Las alimenta el executor; el acumulado del modelo y el bucle rápido las ignoran. */
+export const PHANTOM_ROUTES = new Set();
+export const routeId = (route) => route.map((p) => String(p.address).toLowerCase()).join(">");
 export let BLOCKED_TOKENS = new Set(); // tokens que el contrato no puede mover (p. ej. Stock Tokens con lista de wallets aprobadas)
 export function applyChain(cfg) {
   EXCLUDED_PAIRS = excludedSet(cfg.excludedPairs ?? []);

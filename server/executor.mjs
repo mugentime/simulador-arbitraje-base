@@ -196,8 +196,21 @@ export class Executor {
     return p;
   }
 
+  /** Historial de simulación por ruta: ≥5 reverts y 0 ok → fantasma (sale del acumulado y del bucle rápido). */
+  markRoute(route, ok) {
+    if (!route?.length) return;
+    const id = core.routeId(route);
+    const m = (this.p1.routeSim ??= {});
+    const e = (m[id] ??= { ok: 0, rev: 0 });
+    if (ok) { e.ok++; core.PHANTOM_ROUTES.delete(id); }
+    else { e.rev++; if (e.ok === 0 && e.rev >= Number(process.env.PHANTOM_AFTER ?? 5)) core.PHANTOM_ROUTES.add(id); }
+    const keys = Object.keys(m);
+    if (keys.length > 5000) for (const k of keys.slice(0, 1000)) delete m[k];
+  }
+
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
+    for (const [id, e] of Object.entries(this.p1.routeSim ?? {})) if (e.ok === 0 && e.rev >= Number(process.env.PHANTOM_AFTER ?? 5)) core.PHANTOM_ROUTES.add(id);
     if (!this.p1.reconciledLegacy && process.env.RAILWAY_PROJECT_ID) {
       // migración única: los 3 envíos del 2026-11-03 cuyo recibo no quedó registrado (el wait expiró)
       if (core.CHAIN.key === "base") this.p1.pending = (this.p1.pending ?? []).concat([
@@ -383,8 +396,10 @@ export class Executor {
       rec.netUsd = rec.profitUsd - rec.gasUsd;
       this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd;
       bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
+      this.markRoute(r.route, true);
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
+      this.markRoute(r.route, false);
       this.p1.wouldRevert++; { const k = reasonKey(rec.reason); this.p1.byReason[k] = (this.p1.byReason[k] ?? 0) + 1; }
       bumpPairs((this.p1.byPair ??= {}), rec.route, "rev");
       await atBlock;

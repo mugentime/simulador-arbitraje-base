@@ -63,7 +63,7 @@ export class FastLoop {
           this.f.evaluated += subset.length;
           const { gas, ethUsd, lenders } = this.ctx;
           const results = core.evaluateAll({ pools: this.pools, cycles: subset, lenders, gas, ethUsd, maxOptimize: 60 });
-          const winners = results.filter((r) => r.profitable && !r.suspicious);
+          const winners = results.filter((r) => r.profitable && !r.suspicious && !core.PHANTOM_ROUTES.has(core.routeId(r.route)));
           if (winners.length) {
             this.f.profitable += winners.length;
             // Fase 1 contra el estado pending: simula y envía en el mismo sub-bloque
