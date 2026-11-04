@@ -86,7 +86,7 @@ export const CHAINS = {
   bsc: {
     key: "bsc", id: 56, name: "BNB Chain", native: "BNB", beefy: "bsc", morphoApiChainId: null,
     rpcs: ["https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org", "https://1rpc.io/bnb", "https://bsc.drpc.org", "https://binance.llamarpc.com"],
-    ws: ["wss://bsc-rpc.publicnode.com", "wss://bsc.drpc.org"],
+    ws: ["wss://bsc-rpc.publicnode.com", "wss://bsc.drpc.org", "wss://bsc.publicnode.com", "wss://bsc-ws-node.nariox.org:443"],
     fastRpc: "https://bsc-rpc.publicnode.com", fastMs: 300,
     publicMempool: true, l1GasOracle: null, blockMs: 750,
     tokens: {

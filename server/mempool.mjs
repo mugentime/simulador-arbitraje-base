@@ -138,16 +138,28 @@ export class MempoolWatcher {
   start() {
     if (!this.m.enabled || this.started) return;
     this.started = true;
-    this.connect();
+    // todos los nodos a la vez: cada uno ve el mempool con distinto retraso; gana el primero que avisa
+    this.dedup = new Set(); this.dedupQ = [];
+    this.conns = {};
+    this.wsUrls.forEach((u) => this.connect(u));
+    this.m.ws = this.wsUrls.map((u) => new URL(u).host).join(", ");
   }
 
-  connect() {
-    const url = this.wsUrls[this.wsIdx % this.wsUrls.length];
-    this.m.ws = new URL(url).host;
+  firstSeen(h) {
+    if (!h) return true;
+    const k = String(h).toLowerCase();
+    if (this.dedup.has(k)) return false;
+    this.dedup.add(k); this.dedupQ.push(k);
+    if (this.dedupQ.length > 20000) this.dedup.delete(this.dedupQ.shift());
+    return true;
+  }
+
+  connect(url) {
+    const host = new URL(url).host;
     let ws;
-    try { ws = new WebSocket(url); } catch (e) { this.m.lastError = e.message; return this.retry(); }
+    try { ws = new WebSocket(url); } catch (e) { this.m.lastError = e.message; return this.retry(url); }
     let fullTx = true;
-    ws.on("open", () => { this.m.connected = true; ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_subscribe", params: ["newPendingTransactions", true] })); });
+    ws.on("open", () => { if (this.fails) this.fails[url] = 0; this.conns[host] = true; this.m.connected = Object.values(this.conns).some(Boolean); this.m.connections = Object.entries(this.conns).filter(([, v]) => v).map(([k]) => k); ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_subscribe", params: ["newPendingTransactions", true] })); });
     ws.on("message", (buf) => {
       let j; try { j = JSON.parse(buf.toString()); } catch { return; }
       if (j.id === 1 && j.error) {
@@ -156,17 +168,20 @@ export class MempoolWatcher {
         ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_subscribe", params: ["newPendingTransactions"] }));
         return;
       }
-      if (j.id === 2 && j.error) { this.m.lastError = `suscripción rechazada: ${j.error.message}`; ws.close(); return; }
+      if (j.id === 2 && j.error) { this.m.lastError = `${host}: suscripción rechazada: ${j.error.message}`; ws.close(); return; }
       const r = j.params?.result;
       if (!r) return;
+      const h = typeof r === "string" ? r : r.hash;
+      if (!this.firstSeen(h)) return;
       this.m.seen++;
+      (this.m.firstBy ??= {})[host] = (this.m.firstBy[host] ?? 0) + 1;
       if (typeof r === "string") { if (!fullTx) this.onHash(r).catch(() => {}); return; }
       this.onTx(r).catch((e) => { this.m.lastError = (e.message || String(e)).slice(0, 120); });
     });
-    ws.on("error", (e) => { this.m.lastError = (e.message || String(e)).slice(0, 120); });
-    ws.on("close", () => { this.m.connected = false; this.retry(); });
+    ws.on("error", (e) => { this.m.lastError = `${host}: ${(e.message || String(e)).slice(0, 100)}`; });
+    ws.on("close", () => { this.conns[host] = false; this.m.connected = Object.values(this.conns).some(Boolean); this.retry(url); });
   }
-  retry() { this.wsIdx++; setTimeout(() => this.connect(), 5000); }
+  retry(url) { this.fails = this.fails ?? {}; const n = (this.fails[url] = (this.fails[url] ?? 0) + 1); setTimeout(() => this.connect(url), Math.min(120_000, 5000 * n)); }
 
   async onHash(h) {
     // sin tx completas habría que pedir cada una; solo se piden las que van a routers sería imposible saberlo antes,

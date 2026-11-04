@@ -275,7 +275,7 @@ setInterval(async () => {
   const p1 = executor?.p1;
   const vs = live.vstats;
   let dxText = "";
-  if (mempool) { const m = mempool.m; dxText += ` · mempool ${m.connected ? "conectado" : "desconectado"} (${m.ws}): ${m.seen} vistas, ${m.routerTxs} a routers, ${m.decoded} decodificadas, ${m.modeled} modeladas, ${m.profitable} con back-run rentable, ${m.bundles} bundles${m.lastError ? ` (error: ${m.lastError})` : ""}`; }
+  if (mempool) { const m = mempool.m; dxText += ` · mempool ${m.connected ? "conectado" : "desconectado"} (${m.ws}): ${m.seen} vistas, ${m.routerTxs} a routers, ${m.decoded} decodificadas, ${m.modeled} modeladas, ${m.profitable} con back-run rentable, ${m.bundles} bundles${m.firstBy ? `; primero en avisar: ${Object.entries(m.firstBy).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}${m.lastError ? ` (error: ${m.lastError})` : ""}`; }
   if (live.disloc) {
     const x = live.disloc();
     const top = x.top.slice(0, 4).map((r) => r.pair + " " + r.episodes + "ep/" + (r.share * 100).toFixed(0) + "%/med " + r.medianDur + "b/pico " + r.peakExcess + "bps/rentables " + r.captured).join(", ");
