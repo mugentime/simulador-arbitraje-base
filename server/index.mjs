@@ -88,7 +88,7 @@ async function provider() {
       // el long tail necesita eth_getLogs: se descarta el RPC que no lo responde a tiempo
       if (LT_HOURS > 0) {
         const head = await p.getBlockNumber();
-        await p.getLogs({ address: CHAIN_CFG.factories[0].address, fromBlock: head - 500, toBlock: head });
+        await p.getLogs({ address: CHAIN_CFG.factories[0].address, fromBlock: head - 9, toBlock: head }); // 10 bloques: Alchemy limita el rango de eth_getLogs (400 con 500)
       }
       return { p, url };
     } catch (e) { console.warn("RPC falló", url, e.shortMessage || e.message); }

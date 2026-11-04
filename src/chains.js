@@ -290,7 +290,7 @@ export const CHAINS = {
       WETH: { address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18, label: "WETH" },
       USDC: { address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", decimals: 6, label: "USDG" }, // rol dólar = USDG (stable principal de la cadena)
     },
-    extraTokens: [],
+    extraTokens: [{ sym: "NVDA", address: "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC" }], // Stock Token oficial (pool v3 NVDA/USDG 0.05 %)
     excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA", params: UNI_FEES },
@@ -298,7 +298,8 @@ export const CHAINS = {
       { name: "Uniswap v4", kind: "v4", address: "0x8366a39CC670B4001A1121B8F6A443A643e40951", stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b", combos: [[100, 1], [500, 10], [3000, 60], [10000, 200]] },
     ],
     lenders: [
-      ...["0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", "0xc85CE8ffdA27b646D269516B8d0Fa6ec2E958B55", "0x34CD04070dD72b14E241112F6d83812Df5Af7fCD",
+      ...["0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010", // citada por deadpixelslabs/flashloan como Morpho Blue en 4663
+        "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", "0xc85CE8ffdA27b646D269516B8d0Fa6ec2E958B55", "0x34CD04070dD72b14E241112F6d83812Df5Af7fCD",
         "0x01b0Bd309AA75547f7a37Ad7B1219A898E67a83a", "0xd24ECdD8C1e0E57a4E26B1a7bbeAa3e95466A569", "0xDF9a1DC07e5dEe5ccCCaBeC35e446C70fAF7434e",
         "0xbCE7364E63C3B13C73E9977a83c9704E2aCa876e", "0xa6030627d724bA78a59aCf43Be7550b4C5a0653b", "0x18120312A7cf44DcfEc6dCe5632a431579ED9100"]
         .map((address) => ({ name: "Morpho Blue", kind: "balance", address, feeBps: 0n, probe: "morpho" })),
