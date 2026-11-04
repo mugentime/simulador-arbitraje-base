@@ -239,9 +239,12 @@ const server = http.createServer(async (req, res) => {
     return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
-  if (req.url === "/" || req.url.startsWith("/index.html")) {
+  if (req.url === "/" || req.url.startsWith("/index.html") || req.url.startsWith("/?")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    return res.end(fs.readFileSync(new URL("./dashboard.html", import.meta.url)));
+    // selector de cadenas: cada servicio de Railway expone su /api/stats; esta página los lee todos
+    const urls = process.env.STATS_URLS || "base=https://worker-production-1950.up.railway.app/api/stats,polygon=https://worker-polygon-production.up.railway.app/api/stats,bsc=https://worker-bsc-production.up.railway.app/api/stats,arbitrum=https://worker-arbitrum-production.up.railway.app/api/stats,optimism=https://worker-optimism-production.up.railway.app/api/stats";
+    const html = fs.readFileSync(new URL("./dashboard.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`);
+    return res.end(html);
   }
   res.writeHead(404, headers); res.end("{}");
 });
