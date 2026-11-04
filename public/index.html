@@ -156,7 +156,7 @@
   <section class="card">
     <details><summary>Bitácora del servidor</summary><ul id="diag"></ul></details>
   </section>
-<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 20:23 (hora de México) · datos del servidor en Railway</p>
+<p class="sub" style="margin-top:18px">Página: versión 2026-11-03 20:30 (hora de México) · datos del servidor en Railway</p>
 </main>
 <script>
 // Varias cadenas: <meta name="stats-urls" content="base=https://…/api/stats,polygon=https://…/api/stats">; una sola: stats-url
@@ -170,7 +170,10 @@ if (MULTI.length) {
 const $ = (id) => document.getElementById(id);
 const usd = (v, d = 2) => (!isFinite(v) || v === null ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const num = (v) => (v ?? 0).toLocaleString("es-MX");
-const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+// WETH/USDC son los "roles" internos (nativo envuelto / dólar); en cada cadena se muestran con su símbolo real (WBNB, WPOL…)
+let LBL = {};
+const lab = (s) => String(s).replace(/\b(WETH|USDC)\b/g, (m) => LBL[m] ?? m);
+const esc = (s) => lab(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 let lastPipeBlock = 0, lastVBlock = 0, lastData = null;
 
 async function load() {
@@ -192,7 +195,7 @@ async function load() {
   if (!d.ready) { $("blockline").textContent = "El servidor está arrancando; en un minuto empieza a procesar bloques."; return; }
 
   const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
-  if (d.chain) { $("title").textContent = `Protocolo de arbitraje con flashloan · ${d.chain.name} en vivo`; document.title = $("title").textContent; }
+  if (d.chain) { LBL = d.chain.tokens ?? {}; $("title").textContent = `Protocolo de arbitraje con flashloan · ${d.chain.name} en vivo`; document.title = $("title").textContent; }
   $("blockline").innerHTML = `Último bloque <b>${num(d.lastBlock)}</b>${agoS !== null ? ` (hace ${agoS} s)` : ""} · <b>${num(d.universe?.pools)}</b> pools y <b>${num(d.universe?.cycles)}</b> rutas vigiladas · observando desde ${d.startedAt ? new Date(d.startedAt).toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · <span class="muted">último error: ${esc(d.lastError)}</span>` : ""}${d.fast ? `<br>Flashblocks (estado cada 200 ms vía ${esc(d.fast.rpc)}): ${num(d.fast.loops)} lecturas · ${num(d.fast.changedPools)} cambios de pool · ${num(d.fast.evaluated)} rutas re-evaluadas · ${num(d.fast.profitable)} rentables · ${num(d.fast.simulated)} simuladas · ${num(d.fast.sent)} enviadas · ${d.fast.avgMs} ms por lectura${d.fast.lastError ? ` · <span class="muted">${esc(d.fast.lastError)}</span>` : ""}` : ""}`;
 
   // ---- arbitraje: acumulado
@@ -212,7 +215,7 @@ async function load() {
   $("eps").textContent = num(t.episodes);
   $("eps-sub").textContent = `${t.over1Usd} de $1 o más (suman ${usd(t.over1NetUsd)}) · ${d.openEpisodes} abiertas ahora${t.needsV4 ? ` · ${t.needsV4} requieren salto v4` : ""}`;
   $("best").textContent = d.best ? usd(d.best.netUsd) : "—";
-  $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)} · ${d.best.route}` : "";
+  $("best-sub").textContent = d.best ? `bloque ${num(d.best.block)} · préstamo ${usd(d.best.amountUsd, 0)} · ${lab(d.best.route)}` : "";
   const covered = d.lastBlock && d.firstBlock ? d.blocksProcessed / (d.lastBlock - d.firstBlock + 1) : 0;
   $("blocks").textContent = num(d.blocksProcessed);
   $("blocks-sub").textContent = `cobertura ${(covered * 100).toFixed(1)}% desde el arranque · ${num(d.blocksWithOpp)} con oportunidad`;
