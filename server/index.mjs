@@ -12,6 +12,7 @@ import { Harvester } from "./harvester.mjs";
 import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
 import { FastLoop } from "./fastloop.mjs";
+import { MempoolWatcher } from "./mempool.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
 
@@ -159,6 +160,7 @@ let harvester = null;
 let liquidations = null;
 let liquidator = null;
 let fast = null;
+let mempool = null;
 const FLASH_RPC = process.env.FLASH_RPC_URL || CHAIN_CFG.fastRpc || CHAIN_CFG.rpcs[0];
 let chainVerified = false;
 async function loop() {
@@ -191,9 +193,14 @@ async function loop() {
         if (fast) { fast.stop(); fast.executor = exec; fast.start(); }
         else { fast = new FastLoop({ url: FLASH_RPC, executor: exec, diag }); fast.start(); await diag(`flashblocks: bucle rápido cada 250 ms vía ${new URL(FLASH_RPC).host} (estado pending)`); }
       }
+      if (CHAIN_CFG.publicMempool && process.env.MEMPOOL !== "0") {
+        if (!mempool) { mempool = new MempoolWatcher({ wsUrls: CHAIN_CFG.ws ?? [], executor: exec, diag }); mempool.start(); await diag(`mempool: escuchando transacciones pendientes vía ${mempool.m.ws ?? "—"} (${mempool.routers.size} routers)`); }
+        else mempool.executor = exec;
+      }
       const onBlock = async (ctx) => {
         nb++; if (nb % 300 === 0) await exec.refreshBalance();
         if (fast) { if (fast.main !== ctx.pools) fast.setUniverse(ctx.pools, live.cycles ?? []); fast.setContext({ gas: ctx.gas, ethUsd: ctx.ethUsd, lenders: ctx.lenders }); }
+        if (mempool) { if (mempool.main !== ctx.pools) mempool.setUniverse(ctx.pools, live.cycles ?? []); mempool.setContext({ gas: ctx.gas, ethUsd: ctx.ethUsd, lenders: ctx.lenders }); }
         const text = await exec.onBlock(ctx);
         hv.onBlock(ctx).catch((e) => { hv.h.lastError = e.shortMessage || e.message; }); // en paralelo: no retrasa el siguiente bloque
         lq.onBlock(ctx).catch((e) => { lq.liq.aave.error = e.shortMessage || e.message; });
@@ -268,6 +275,7 @@ setInterval(async () => {
   const p1 = executor?.p1;
   const vs = live.vstats;
   let dxText = "";
+  if (mempool) { const m = mempool.m; dxText += ` · mempool ${m.connected ? "conectado" : "desconectado"} (${m.ws}): ${m.seen} vistas, ${m.routerTxs} a routers, ${m.decoded} decodificadas, ${m.modeled} modeladas, ${m.profitable} con back-run rentable, ${m.bundles} bundles${m.lastError ? ` (error: ${m.lastError})` : ""}`; }
   if (live.disloc) {
     const x = live.disloc();
     const top = x.top.slice(0, 4).map((r) => r.pair + " " + r.episodes + "ep/" + (r.share * 100).toFixed(0) + "%/med " + r.medianDur + "b/pico " + r.peakExcess + "bps/rentables " + r.captured).join(", ");

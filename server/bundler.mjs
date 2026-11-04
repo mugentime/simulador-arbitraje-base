@@ -23,7 +23,7 @@ export function activeBuilders() {
 }
 
 export async function sendBundle(rawTx, { maxBlockNumber, builders = activeBuilders(), timeoutMs = 2500, fetchImpl = fetch } = {}) {
-  const bundle = { txs: [rawTx], revertingTxHashes: [] };
+  const bundle = { txs: Array.isArray(rawTx) ? rawTx : [rawTx], revertingTxHashes: [] };
   if (maxBlockNumber) bundle.maxBlockNumber = Number(maxBlockNumber);
   const accepted = [], errors = {};
   await Promise.all(builders.map(async (b) => {

@@ -363,6 +363,52 @@ export class Executor {
   }
 
   /**
+   * Back-run: bundle [tx de la víctima, nuestra tx]. Nuestra tx solo se ejecuta si va justo detrás de la suya; si la
+   * ruta deja de ser rentable el bundle no se incluye (sin costo). Devuelve un texto de estado o null si no se envió.
+   */
+  async sendBackrun(victimRaw, victimHash, r, lenders, gas, ethUsd) {
+    if (!this.wallet || !this.p1.executor || this.mode !== "live" || this.p1.paused) return null;
+    if (!this.limits.bundleSend) return null; // sin bundles un back-run no tiene garantía de orden
+    const now = Date.now();
+    this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
+    if (this.sentTimes.length >= this.limits.maxTxPerHour) return null;
+    if ((this.p1.pending ?? []).length && !this.reconciling) { this.reconciling = true; try { await this.reconcile(ethUsd); } catch { /* red */ } finally { this.reconciling = false; } }
+    if ((this.p1.pending ?? []).length || this.sending) return null;
+    const plan = this.buildPlan(r, lenders, ethUsd);
+    if (!plan) return null;
+    this.sending = true;
+    try {
+      const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
+      const w = this.wallet.connect(this.provider);
+      const [nonce, netGp, head] = await Promise.all([
+        this.provider.getTransactionCount(this.wallet.address, "latest"),
+        this.provider.send("eth_gasPrice", []).then(BigInt).catch(() => MIN_BUNDLE_GAS_PRICE),
+        this.provider.getBlockNumber(),
+      ]);
+      const gasEst = Number(core.GAS_BASE + core.GAS_PER_HOP * BigInt(r.hops)) * 1.3;
+      const gasLimit = BigInt(Math.floor(gasEst * 1.4));
+      const tipWei = BigInt(Math.floor(((r.netUsd * this.limits.tipShare) / ethUsd) * 1e18 / Math.max(1, Number(gasLimit))));
+      let gasPrice = (netGp > MIN_BUNDLE_GAS_PRICE ? netGp : MIN_BUNDLE_GAS_PRICE) + tipWei;
+      const cap = BigInt(Math.floor(this.limits.maxTipGwei * 1e9)) + MIN_BUNDLE_GAS_PRICE;
+      if (gasPrice > cap) gasPrice = cap;
+      const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
+      const hash = ethers.keccak256(raw);
+      const maxBlockNumber = head + 2;
+      const { accepted, errors } = await sendBundle([victimRaw, raw], { maxBlockNumber });
+      this.p1.bundles = (this.p1.bundles ?? 0) + 1; this.p1.backruns = (this.p1.backruns ?? 0) + 1;
+      const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
+      const route = label(r);
+      if (!accepted.length) { this.p1.lastError = `back-run rechazado por todos los builders (${errTxt.slice(0, 160)})`; return `rechazado (${errTxt.slice(0, 160)})`; }
+      this.sentTimes.push(now); this.p1.sent++;
+      const rec = { block: head, ts: Math.floor(now / 1000), route, start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, backrun: victimHash, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: r.gasUsd, netUsd: r.netUsd, gasEst, sent: hash };
+      this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+      (this.p1.pending ??= []).push({ hash, sentAt: now, route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: r.netUsd, bundle: true, maxBlock: maxBlockNumber });
+      await this.save();
+      return `bundle ${hash.slice(0, 12)}… enviado a ${accepted.join(", ")} (hasta el bloque ${maxBlockNumber})${errTxt ? ` · rechazos: ${errTxt.slice(0, 120)}` : ""}`;
+    } finally { this.sending = false; }
+  }
+
+  /**
    * Envío como bundle de una transacción a varios builders. La tx se firma con el nonce actual ("latest": un bundle
    * no incluido no consume nonce) y un gasPrice ≥ 0.05 gwei + una parte del neto como pago al builder.
    */
