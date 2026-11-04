@@ -34,6 +34,53 @@ const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).conc
   // publicnode rechaza eth_sendRawTransaction (403): va al final
   : [...(core.CHAIN.rpcs ?? [])].sort((a, b) => /publicnode/.test(a) - /publicnode/.test(b)));
 
+// Envío directo al secuenciador (L2 con secuenciador central): se salta el balanceador de los RPC.
+// Los endpoints de Arbitrum/Robinhood solo aceptan eth_sendRawTransaction, así que las lecturas siguen por el RPC normal.
+const SEQUENCER_URL = {
+  base: "https://mainnet-sequencer.base.org",
+  optimism: "https://mainnet-sequencer.optimism.io",
+  arbitrum: "https://arb1-sequencer.arbitrum.io/rpc",
+  robinhood: "https://sequencer.mainnet.chain.robinhood.com",
+};
+export const sequencerUrl = (key) => (process.env.SEQUENCER_SEND === "0" ? null : process.env.SEQUENCER_URL || SEQUENCER_URL[key] || null);
+
+async function postRaw(url, raw, timeoutMs = 4000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [raw] }), signal: ctl.signal });
+    const txt = await r.text();
+    let j; try { j = JSON.parse(txt); } catch { throw Object.assign(new Error(`HTTP ${r.status}: ${txt.slice(0, 120)}`), { node: true }); }
+    if (j.error) throw Object.assign(new Error(j.error.message || JSON.stringify(j.error)), { rpcError: j.error });
+    return j.result;
+  } finally { clearTimeout(t); }
+}
+
+/**
+ * Proveedor que lee por `readUrl` y difunde cada tx firmada a la vez a todos los `fanout` (secuenciador primero).
+ * Gana la primera respuesta válida; "already known"/"nonce too low" de los más lentos se ignoran.
+ */
+export class FanoutProvider extends ethers.JsonRpcProvider {
+  constructor(readUrl, fanout, chainId) { super(readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
+  async send(method, params) {
+    if (method !== "eth_sendRawTransaction") return super.send(method, params);
+    const raw = params[0];
+    const hash = ethers.keccak256(raw);
+    const tries = this.fanout.map((u) => postRaw(u, raw).then((res) => ({ u, res })));
+    try {
+      const { u, res } = await Promise.any(tries);
+      this.lastWinner = new URL(u).host;
+      return res ?? hash;
+    } catch (agg) {
+      const errs = agg.errors ?? [agg];
+      // si alguno dice que ya la conoce, la tx está en camino
+      if (errs.some((e) => /already known|known transaction/i.test(e.message))) { this.lastWinner = "ya conocida"; return hash; }
+      const own = errs.find((e) => e.rpcError) ?? errs[0];
+      const err = new Error(own.message); err.error = own.rpcError ?? { message: own.message }; err.shortMessage = own.message;
+      throw err;
+    }
+  }
+}
+
 export function emptyPhase1() {
   return {
     version: 1, mode: null, wallet: null, executor: null, balanceEth: null, deployedAt: null, deployTx: null,
@@ -81,7 +128,9 @@ export class Executor {
   sender() {
     const url = this.sendRpcs[this.sendIdx % this.sendRpcs.length];
     if (!this.sendProv || this.sendUrl !== url) {
-      this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
+      this.sendUrl = url;
+      const seq = sequencerUrl(core.CHAIN.key);
+      this.sendProv = seq ? new FanoutProvider(url, [seq, url], Number(core.CHAIN_ID)) : new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
       this.sendSigner = new ethers.NonceManager(this.wallet.connect(this.sendProv)); // nonces consecutivos aunque haya envíos seguidos
     }
     return this.sendSigner;
@@ -372,7 +421,7 @@ export class Executor {
       if (this.forcedGasPrice) prio = this.forcedGasPrice;
       const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
-      await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${new URL(this.sendUrl).host})`);
+      await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${this.sendProv?.lastWinner ?? new URL(this.sendUrl).host})`);
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
       await this.save();
     } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
