@@ -12,3 +12,13 @@ ex.markRoute(route, true);
 ok(!core.PHANTOM_ROUTES.has(core.routeId(route)), "un ok la rehabilita");
 for (let i = 0; i < 10; i++) ex.markRoute(route, false);
 ok(!core.PHANTOM_ROUTES.has(core.routeId(route)), "con algún ok previo no vuelve a ser fantasma");
+// las rutas fantasma no se simulan en cada bloque: una re-comprobación cada PHANTOM_RECHECK_BLOCKS
+const r2 = [{ address: "0xCCC" }, { address: "0xDDD" }];
+for (let i = 0; i < 5; i++) ex.markRoute(r2, false);
+ex.lastChainBlock = 1000;
+ok(ex.phantomSkip({ route: r2 }) === false, "primera vez se permite re-comprobar");
+ex.lastChainBlock = 1001;
+ok(ex.phantomSkip({ route: r2 }) === true, "bloque siguiente: se salta");
+ex.lastChainBlock = 1601;
+ok(ex.phantomSkip({ route: r2 }) === false, "600 bloques después: se re-comprueba");
+ok(ex.phantomSkip({ route: [{ address: "0xEEE" }] }) === false, "ruta normal no se salta");

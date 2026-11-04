@@ -49,13 +49,15 @@ export const CHAINS = {
       // 2026-11-04 09:45
       { sym: "CLANKER", address: "0x1bc0c42215582d5A085795f4baDbaC3ff36d1Bcb" }, { sym: "SPX", address: "0x50dA645f148798F68EF2d7dB7C1CB22A6819bb2C" },
       // 2026-11-04 10:45
-      { sym: "SEAM", address: "0x1C7a460413dD4e964f96D8dFC56E7223cE88CD85" }, { sym: "SNX", address: "0x22e6966B799c4D5B13BE962E1D117b56327FDa66" },
+      { sym: "SEAM", address: "0x1C7a460413dD4e964f96D8dFC56E7223cE88CD85" }, // SNX 0x22e6966B… retirado 14:45 (SNX/WETH y SNX/USDC s0, 1 pool cada uno)
       // 2026-11-04 11:45
       { sym: "cbDOGE", address: "0xcbD06E5A2B0C65597161de254AA074E489dEb510" }, { sym: "MOG", address: "0x2Da56AcB9Ea78330f947bD57C54119Debda7AF71" },
       // 2026-11-04 12:45
       { sym: "HIGHER", address: "0x0578d8A44db98B23BF096A382e016e29a5Ce0ffe" }, { sym: "USDS", address: "0x820C137fa70C8691f0e44Dc420a5e53c168921Dc" },
       // 2026-11-04 13:45
       { sym: "BNKR", address: "0x22aF33FE49fD1Fa80c7149773dDe5890D3c76F3b" }, { sym: "DOGINME", address: "0x6921B130D297cc43754afba22e5EAc0FBf8Db75b" },
+      // 2026-11-04 14:45
+      { sym: "LINK", address: "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196" }, { sym: "SKI", address: "0x768BE13e1680b5ebE0024C42c896E3dB59ec0149" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -68,7 +70,10 @@ export const CHAINS = {
       // 12:45 inactivos
       "AERO/TOSHI", "AERO/VIRTUAL", "AIXBT/USDC", "cbBTC/cbXRP", "cbBTC/wstETH", "cbETH/weETH", "cbETH/wstETH", "EURC/USDT", "EURC/wstETH", "KAITO/USDC",
       // 13:45 inactivos
-      "SPX/cbBTC", "SPX/cbETH", "SPX/USDC", "USDbC/cbBTC", "USDT/USDbC", "VIRTUAL/cbBTC", "weETH/wstETH"],
+      "SPX/cbBTC", "SPX/cbETH", "SPX/USDC", "USDbC/cbBTC", "USDT/USDbC", "VIRTUAL/cbBTC", "weETH/wstETH",
+      // 14:45: peor 3 corridas (12:45, 13:45, 14:45) + inactivos (+ token SNX retirado)
+      "USDC/wstETH",
+      "SEAM/USDbC"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -123,6 +128,8 @@ export const CHAINS = {
       { sym: "XSGD", address: "0xDC3326e71D45186F113a2F448984CA0e8D201995" }, // SNX 0x50B728D8… y EURA 0xE0B52e49… verificados pero 0 pools
       // 2026-11-04 13:45
       // PAXG descartado (comisión por transferencia); STG 0x2F6F07CD… y FRAX 0x45c32fA6… verificados pero 0 pools
+      // 2026-11-04 14:45 (MAI = miMATIC on-chain)
+      { sym: "MAI", address: "0xa3Fa99A148fA48D14Ed51d610c367C61876997F1", symbols: ["miMATIC"] }, { sym: "VOXEL", address: "0xd0258a3fD00f38aa8090dfee343f10A9D4d30D3F" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -136,7 +143,10 @@ export const CHAINS = {
       // 12:45 inactivos (WETH real = ETH puenteado → por dirección)
       "AAVE/LINK", "AAVE/TEL", "AAVE/UNI", "AAVE/USDC", "AAVE/USDT", "AAVE/WBTC", "DAI/LINK", "DAI/WBTC", "LINK/USDT", "TEL/WBTC",
       // 13:45 inactivos (+ tokens COMP y QUICK retirados)
-      "UNI/USDC", "UNI/USDT"],
+      "UNI/USDC", "UNI/USDT",
+      // 14:45: peor 3 corridas (12:45, 13:45, 14:45): WETH real (ETH puenteado)/SUSHI por dirección + inactivo
+      ["0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", "0x0b3F868E0BE5597D5DB7fEB59E1CADBb0fdDa50a"],
+      "LDO/USDC.e"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "QuickSwap v2", kind: "v2pair", address: "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32", feeBps: 30 },
@@ -185,6 +195,8 @@ export const CHAINS = {
       { sym: "NEAR", address: "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63" }, { sym: "INJ", address: "0xa2B726B1145A4773F68593CF171187d8EBe4d495" },
       // 2026-11-04 13:45 (FLOKI descartado: impuesto por transferencia)
       { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, { sym: "TON", address: "0x76A797A59Ba2C17726896976B7B3747BfD1d220f", symbols: ["TONCOIN"] },
+      // 2026-11-04 14:45
+      { sym: "USD1", address: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d" }, { sym: "AAVE", address: "0xfb6115445Bff7b52FeB98650C87f44907E58f802" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -198,7 +210,9 @@ export const CHAINS = {
       // 12:45 inactivos (FDUSD/WBNB y FDUSD/USDC protegidos: únicos enlaces base de FDUSD)
       "ADA/ETH", "BTCB/DOT", "BTCB/FDUSD", "BTCB/LINK", "BTCB/LTC", "BTCB/SOL", "CAKE/DOT", "CAKE/FDUSD", "CAKE/LINK", "CAKE/LTC",
       // 13:45 inactivos
-      "BCH/LTC", "CAKE/UNI", "DOGE/LTC", "DOGE/USDC", "DOT/ETH", "ETH/LTC", "ETH/UNI", "SOL/USDC", "UNI/USDC", "USDC/XRP"],
+      "BCH/LTC", "CAKE/UNI", "DOGE/LTC", "DOGE/USDC", "DOT/ETH", "ETH/LTC", "ETH/UNI", "SOL/USDC", "UNI/USDC", "USDC/XRP",
+      // 14:45 inactivos
+      "ETH/XVS", "FIL/XVS", "LTC/XVS", "SHIB/USDT", "USDT/XVS"],
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -249,6 +263,8 @@ export const CHAINS = {
       { sym: "LUSD", address: "0x93b346b6BC2548dA6A1E7d98E9a421B42541425b" }, // WOO 0xcAFcD85D… y GRAIL 0x3d9907F9… verificados pero 0 pools
       // 2026-11-04 13:45
       { sym: "ETHFI", address: "0x7189fb5B6504bbfF6a852B13B7B82a3c118fDc27" }, { sym: "XAI", address: "0x4Cb9a7AE498CEDcBb5EAe9f25736aE7d428C9D66" },
+      // 2026-11-04 14:45
+      { sym: "rsETH", address: "0x4186BFC76E2E237523CBC30FD220FE055156b41F", symbols: ["wrsETH"] }, { sym: "LDO", address: "0x13Ad51ed4F1B7e9Dc168d8a00cB3f4dDD85EfA60" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -262,7 +278,9 @@ export const CHAINS = {
       "AAVE/ARB", "AAVE/USDC", "AAVE/WBTC", "ARB/WBTC", "CRV/USDC", "DAI/WBTC", "LINK/UNI", "LINK/USDC.e", "LINK/USDT", "LINK/WBTC",
       // 13:45: peor 3 corridas (11:45, 12:45, 13:45) + inactivos (+ tokens ezETH, GNS y STG retirados)
       "AAVE/PENDLE",
-      "PENDLE/UNI", "UNI/USDC", "UNI/USDC.e", "USDC/wstETH", "USDC.e/wstETH", "USDT/ZRO"],
+      "PENDLE/UNI", "UNI/USDC", "UNI/USDC.e", "USDC/wstETH", "USDC.e/wstETH", "USDT/ZRO",
+      // 14:45: peor 3 corridas (12:45, 13:45, 14:45)
+      "GMX/USDC.e"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -314,6 +332,8 @@ export const CHAINS = {
       // FXS 0x67CCEA5b…, USDe 0x5d3a1Ff2…, PENDLE 0xBC7B1Ff1… y BAL 0xFE8B128b… verificados pero 0 pools (sin pools ≥ MIN_LIQ_USD fuera de Slipstream)
       // 2026-11-04 13:45 (pools en Velodrome v2: OP/EXTRA, EXTRA/VELO, USDC/EXTRA)
       { sym: "EXTRA", address: "0x2dAD3a13ef0C6366220f989157009e501e7938F8" },
+      // 2026-11-04 14:45 (estables con pools en Velodrome v2)
+      { sym: "USD+", address: "0x73cb180bf0521828d8849bc8CF2B920918e23032" }, { sym: "MAI", address: "0xdFA46478F9e5EA86d57387849598dbFB2e964b02" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores

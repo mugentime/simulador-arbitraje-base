@@ -208,6 +208,22 @@ export class Executor {
     if (keys.length > 5000) for (const k of keys.slice(0, 1000)) delete m[k];
   }
 
+  /** Ruta fantasma (≥5 reverts, 0 ok): no se vuelve a simular en cada bloque; solo se re-comprueba cada
+   *  PHANTOM_RECHECK_BLOCKS bloques (por defecto 600) por si el pool cambió. Evita cientos de eth_call por hora
+   *  sobre la misma ruta imposible (p. ej. BSC WETH → jinhu → WETH, token con comisión: Pancake: K en cada bloque). */
+  phantomSkip(r) {
+    if (!r?.route?.length) return false;
+    const id = core.routeId(r.route);
+    if (!core.PHANTOM_ROUTES.has(id)) return false;
+    const m = (this.phantomChecked ??= new Map());
+    const blk = Number(this.lastChainBlock ?? 0);
+    const last = m.get(id);
+    const every = Number(process.env.PHANTOM_RECHECK_BLOCKS ?? 600);
+    if (last !== undefined && blk - last < every) { this.p1.phantomSkipped = (this.p1.phantomSkipped ?? 0) + 1; return true; }
+    m.set(id, blk);
+    return false;
+  }
+
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
     for (const [id, e] of Object.entries(this.p1.routeSim ?? {})) if (e.ok === 0 && e.rev >= Number(process.env.PHANTOM_AFTER ?? 5)) core.PHANTOM_ROUTES.add(id);
@@ -313,7 +329,7 @@ export class Executor {
     if (typeof block === "number") this.lastChainBlock = block;
     if (this.inflight || (typeof block === "number" && block <= this.lastSimBlock)) return null;
     const cooled = (r) => (this.routeCooldown.get(routeKey(r)) ?? 0) > this.lastChainBlock;
-    const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious && !cooled(r)).slice(0, 3);
+    const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious && !cooled(r) && !this.phantomSkip(r)).slice(0, 3);
     if (!cands.length) return results.some((r) => r.profitable) ? `Oportunidad por debajo del mínimo de ${this.limits.minNetUsd} USD; no se simula` : null;
     this.inflight = true; if (typeof block === "number") this.lastSimBlock = block;
     let text = null;
