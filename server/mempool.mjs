@@ -69,9 +69,10 @@ function pathSwaps(path, amountIn) {
 
 /** Pool del universo para un swap decodificado (mismo DEX, mismos tokens; en v3 además la comisión). */
 export function findPool(pools, router, s) {
+  if (!s?.tokenIn || !s?.tokenOut) return null;
   const a = s.tokenIn.toLowerCase(), b = s.tokenOut.toLowerCase();
   return pools.find((p) => {
-    if (!p.token0 || !p.token1) return false;
+    if (!p.token0?.address || !p.token1?.address) return false;
     const t = [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()];
     if (!(t.includes(a) && t.includes(b))) return false;
     if (!String(p.dex).startsWith(router.dex)) return false;
@@ -176,7 +177,12 @@ export class MempoolWatcher {
       this.m.seen++;
       (this.m.firstBy ??= {})[host] = (this.m.firstBy[host] ?? 0) + 1;
       if (typeof r === "string") { if (!fullTx) this.onHash(r).catch(() => {}); return; }
-      this.onTx(r).catch((e) => { this.m.lastError = (e.message || String(e)).slice(0, 120); });
+      this.onTx(r).catch((e) => {
+        this.m.errors = (this.m.errors ?? 0) + 1;
+        this.m.lastError = (e.message || String(e)).slice(0, 120);
+        // la primera vez se deja la traza completa en la bitácora para poder corregirlo
+        if (!this.loggedStack) { this.loggedStack = true; this.diag(`mempool: error procesando ${r.hash} (to ${r.to}): ${(e.stack || "").split("\n").slice(0, 4).join(" | ")}`).catch(() => {}); }
+      });
     });
     ws.on("error", (e) => { this.m.lastError = `${host}: ${(e.message || String(e)).slice(0, 100)}`; });
     ws.on("close", () => { this.conns[host] = false; this.m.connected = Object.values(this.conns).some(Boolean); this.retry(url); });
