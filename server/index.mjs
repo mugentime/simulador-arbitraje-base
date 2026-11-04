@@ -31,7 +31,7 @@ const SECRETS = [process.env.NODEREAL_KEY, process.env.ALCHEMY_KEY].filter((x) =
 const redact = (x) => (typeof x === "string" ? SECRETS.reduce((t, k) => t.split(k).join("***"), x) : x);
 for (const fn of ["log", "warn", "error"]) { const orig = console[fn].bind(console); console[fn] = (...a) => orig(...a.map(redact)); }
 
-// Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism (una instancia del servicio por cadena)
+// Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism|robinhood (una instancia del servicio por cadena)
 const CHAIN_CFG = chainByKey(process.env.CHAIN || "base");
 // NodeReal (cuenta gratuita de Jose): solo el WebSocket de mempool (más rápido que los nodos públicos). Las lecturas
 // de cada bloque siguen en los RPC públicos para no agotar los CU mensuales del plan gratuito.
@@ -280,7 +280,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/" || req.url.startsWith("/index.html") || req.url.startsWith("/?")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     // selector de cadenas: cada servicio de Railway expone su /api/stats; esta página los lee todos
-    const urls = process.env.STATS_URLS || "base=https://worker-production-1950.up.railway.app/api/stats,polygon=https://worker-polygon-production.up.railway.app/api/stats,bsc=https://worker-bsc-production.up.railway.app/api/stats,arbitrum=https://worker-arbitrum-production.up.railway.app/api/stats,optimism=https://worker-optimism-production.up.railway.app/api/stats";
+    const urls = process.env.STATS_URLS || "base=https://worker-production-1950.up.railway.app/api/stats,polygon=https://worker-polygon-production.up.railway.app/api/stats,bsc=https://worker-bsc-production.up.railway.app/api/stats,arbitrum=https://worker-arbitrum-production.up.railway.app/api/stats,optimism=https://worker-optimism-production.up.railway.app/api/stats,robinhood=https://worker-robinhood-production.up.railway.app/api/stats";
     const html = fs.readFileSync(new URL("./dashboard.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`);
     return res.end(html);
   }

@@ -277,6 +277,34 @@ export const CHAINS = {
     ],
     aavePool: AAVE_V3_CANON, morpho: "0xce95AfbB8EA029495c66020883F87aaE8864AF92",
   },
+
+  // Robinhood Chain (Arbitrum Orbit, 2026-11-04): secuenciador FCFS en AWS us-east-2, ~100 ms por bloque, sin mempool público ni prioridad por gas.
+  // Fuentes de direcciones: Dwellir (verificadas con llamadas en vivo), docs de Bags, RHCSwap. Morpho: dirección no documentada → candidatos probados al arrancar.
+  robinhood: {
+    key: "robinhood", id: 4663, name: "Robinhood Chain", native: "ETH", beefy: null, morphoApiChainId: 4663,
+    rpcs: ["https://rpc.mainnet.chain.robinhood.com"], // público con límite; RPC_URL/WS_RPC_URL (Alchemy) van delante
+    ws: [],
+    fastRpc: "https://rpc.mainnet.chain.robinhood.com", fastMs: 250,
+    publicMempool: false, l1GasOracle: null, blockMs: 100,
+    tokens: {
+      WETH: { address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18, label: "WETH" },
+      USDC: { address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", decimals: 6, label: "USDG" }, // rol dólar = USDG (stable principal de la cadena)
+    },
+    extraTokens: [],
+    excludedPairs: [],
+    factories: [
+      { name: "Uniswap v3", kind: "v3fee", address: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA", params: UNI_FEES },
+      { name: "Uniswap v2", kind: "v2pair", address: "0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f", feeBps: 30 },
+      { name: "Uniswap v4", kind: "v4", address: "0x8366a39CC670B4001A1121B8F6A443A643e40951", stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b", combos: [[100, 1], [500, 10], [3000, 60], [10000, 200]] },
+    ],
+    lenders: [
+      ...["0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", "0xc85CE8ffdA27b646D269516B8d0Fa6ec2E958B55", "0x34CD04070dD72b14E241112F6d83812Df5Af7fCD",
+        "0x01b0Bd309AA75547f7a37Ad7B1219A898E67a83a", "0xd24ECdD8C1e0E57a4E26B1a7bbeAa3e95466A569", "0xDF9a1DC07e5dEe5ccCCaBeC35e446C70fAF7434e",
+        "0xbCE7364E63C3B13C73E9977a83c9704E2aCa876e", "0xa6030627d724bA78a59aCf43Be7550b4C5a0653b", "0x18120312A7cf44DcfEc6dCe5632a431579ED9100"]
+        .map((address) => ({ name: "Morpho Blue", kind: "balance", address, feeBps: 0n, probe: "morpho" })),
+    ],
+    aavePool: null, morpho: "auto",
+  },
 };
 
 export function chainByKey(key) {
@@ -320,10 +348,12 @@ export async function verifyChain(ethers, provider, cfg) {
     try {
       if (!(await hasCode(l.address))) throw new Error("sin código");
       if (l.kind === "aave") { const c = new ethers.Contract(l.address, ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"], provider); await c.FLASHLOAN_PREMIUM_TOTAL(); }
+      if (l.probe === "morpho") { const c = new ethers.Contract(l.address, ["function isIrmEnabled(address) view returns (bool)"], provider); await c.isIrmEnabled(ethers.ZeroAddress); }
       out.lenders.push(l);
     } catch (e) { disabled.push(`${l.name} ${l.address}: ${e.shortMessage || e.message}`); }
   }
   if (out.aavePool && !out.lenders.some((l) => l.kind === "aave")) out.aavePool = null;
+  if (out.morpho === "auto") out.morpho = out.lenders.find((l) => l.probe === "morpho")?.address ?? null; // dirección no documentada: candidatos verificados arriba
   if (out.morpho && !(await hasCode(out.morpho))) { disabled.push(`Morpho ${out.morpho}: sin código`); out.morpho = null; }
   if (out.l1GasOracle && !(await hasCode(out.l1GasOracle))) { disabled.push(`oráculo L1 ${out.l1GasOracle}: sin código`); out.l1GasOracle = null; }
   return { cfg: out, disabled };
