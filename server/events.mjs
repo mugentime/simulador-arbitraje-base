@@ -52,21 +52,35 @@ export function emptyEvents() {
   return { enabled: false, ws: null, kind: null, connected: false, logs: 0, applied: 0, triggers: 0, profitable: 0, sent: 0, lagMs: null, lastError: null, reconnects: 0 };
 }
 
+const FAIL_SWITCH = Number(process.env.EVENTS_FAIL_SWITCH || 3);
+const PRIMARY_RETRY_MS = Number(process.env.EVENTS_PRIMARY_RETRY_MIN || 30) * 60_000;
+
 export class EventFeed {
   /** `fast` = FastLoop (comparte sus pools y su evaluación). */
-  constructor({ url, fast, diag, pending = false }) {
-    this.url = url; this.fast = fast; this.diag = diag; this.pending = pending;
-    this.e = emptyEvents(); this.e.enabled = !!url; this.e.ws = url ? new URL(url).host : null; this.e.kind = pending ? "pendingLogs" : "logs";
+  /** `fallbacks` = WebSockets públicos de la cadena: si el principal (Alchemy) rechaza con 429 o no abre
+   *  `FAIL_SWITCH` veces seguidas, se pasa al siguiente; cada `PRIMARY_RETRY_MS` se vuelve a probar el principal. */
+  constructor({ url, fast, diag, pending = false, fallbacks = [] }) {
+    this.urls = [...new Set([url, ...fallbacks].filter(Boolean))]; this.idx = 0;
+    this.url = this.urls[0] ?? null; this.fast = fast; this.diag = diag; this.pendingPref = pending; this.pending = pending;
+    this.fails = 0; this.switchedAt = 0;
+    this.e = emptyEvents(); this.e.enabled = !!this.url; this.e.ws = this.url ? new URL(this.url).host : null; this.e.kind = pending ? "pendingLogs" : "logs";
     this.queue = new Set(); this.flushing = false;
   }
 
-  start() { if (this.url && !this.started) { this.started = true; this.connect(); } }
+  start() {
+    if (this.url && !this.started) {
+      this.started = true; this.connect();
+      if (this.urls.length > 1) this.primaryTimer = setInterval(() => this.maybeReturnToPrimary(), 60_000).unref?.();
+    }
+  }
 
   connect() {
     let ws;
     try { ws = new WebSocket(this.url); } catch (e) { this.e.lastError = e.message; return this.retry(); }
     this.ws = ws;
+    let opened = false;
     ws.on("open", () => {
+      opened = true; this.fails = 0;
       this.e.connected = true;
       ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_subscribe", params: [this.pending ? "pendingLogs" : "logs", { topics: [EVENT_TOPICS] }] }));
     });
@@ -86,13 +100,51 @@ export class EventFeed {
       const a = applyLog(byAddr, log);
       if (a) { this.e.applied++; this.queue.add(a); this.schedule(); }
     });
-    ws.on("close", () => { this.e.connected = false; this.retry(); });
-    ws.on("error", (e) => { this.e.lastError = (e.message || String(e)).slice(0, 120); });
+    ws.on("close", () => {
+      this.e.connected = false;
+      if (!opened) this.fails++;
+      this.retry();
+    });
+    ws.on("error", (e) => {
+      const msg = (e.message || String(e)).slice(0, 120);
+      this.e.lastError = msg;
+      if (/\b429\b/.test(msg)) this.fails = Math.max(this.fails, FAIL_SWITCH - 1); // cuota agotada: cambiar ya
+    });
+  }
+
+  /** Elige la URL de la siguiente conexión: rota tras fallos seguidos y vuelve al principal cada cierto tiempo. */
+  pickUrl(now = Date.now()) {
+    if (this.urls.length < 2) return this.url;
+    if (this.fails >= FAIL_SWITCH) {
+      this.idx = (this.idx + 1) % this.urls.length; this.fails = 0; this.switchedAt = now;
+      this.e.switches = (this.e.switches ?? 0) + 1;
+    } else if (this.idx !== 0 && this.e.connected === false && now - this.switchedAt >= PRIMARY_RETRY_MS) {
+      this.idx = 0; this.switchedAt = now; // probar de nuevo el principal
+    }
+    const url = this.urls[this.idx];
+    if (url !== this.url) {
+      this.url = url; this.e.ws = new URL(url).host;
+      this.pending = this.idx === 0 ? this.pendingPref : false; // los públicos no dan pendingLogs
+      this.e.kind = this.pending ? "pendingLogs" : "logs";
+      Promise.resolve(this.diag?.(`eventos: WebSocket cambiado a ${this.e.ws} (${this.e.kind})`)).catch(() => {});
+    }
+    return url;
   }
 
   retry() {
     this.e.reconnects++;
-    setTimeout(() => this.connect(), Math.min(30_000, 1000 * this.e.reconnects));
+    this.pickUrl();
+    const delay = this.fails === 0 ? 1000 : Math.min(30_000, 1000 * 2 ** Math.min(this.fails, 5));
+    this.retryTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  /** Volver al principal mientras se está conectado a un público: cada PRIMARY_RETRY_MS se cierra y se reintenta. */
+  maybeReturnToPrimary(now = Date.now()) {
+    if (this.idx !== 0 && this.e.connected && now - this.switchedAt >= PRIMARY_RETRY_MS) {
+      this.idx = 0; this.fails = 0; this.switchedAt = now; this.pickUrl(now); try { this.ws?.close(); } catch {}
+      return true;
+    }
+    return false;
   }
 
   /** Agrupa los eventos que llegan juntos (mismo flashblock/bloque) y evalúa una sola vez. */
