@@ -26,6 +26,12 @@ const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", imp
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
+/** Gas perdido en reverts de la última hora a partir de p1.recent ("<hash> · revertida (gas $X)", ts del bloque en segundos). */
+export const seedRevertGas = (recent = [], now = Date.now()) => (recent ?? []).flatMap((r) => {
+  const m = typeof r?.sent === "string" && r.sent.match(/revertida \(gas \$([0-9.]+)\)/);
+  const t = (r?.ts ?? 0) * 1000;
+  return m && now - t < 3600e3 ? [{ t, usd: Number(m[1]) }] : [];
+});
 const LADDER_RETRY_RE = /transferFrom reverted|InsufficientProfit|IIA|STF|TRANSFER_FROM_FAILED|CurrencyNotSettled|insufficient|BalanceNotSettled/i; // motivos que justifican probar un monto menor
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
 // Alchemy (cuenta de Jose, ALCHEMY_KEY en Railway): solo para ENVIAR transacciones (pocas llamadas, propagación rápida).
@@ -154,9 +160,8 @@ export class Executor {
       bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 6), // validez del bundle en bloques (BSC ~0.75 s/bloque: 3 bloques llegaban vencidos)
       backrunPublic: process.env.BACKRUN_PUBLIC === "1", // back-run sin bundles (mismo gas que la víctima)
     };
-    this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
+    this.inflight = false; this.lastSimBlock = 0; // sentTimes, revertGas y consecutiveReverts: en el estado persistente (getters abajo)
     this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
-    this.revertGas = []; // [{t, usd}] gas perdido en reverts (presupuesto por hora del envío directo)
     this.lastChainBlock = 0;
     this.sendIdx = 0; this.sendRpcs = sendRpcs();
   }
@@ -228,6 +233,7 @@ export class Executor {
 
   async init() {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
+    if (!this.p1.revertGas) this.p1.revertGas = seedRevertGas(this.p1.recent); // primera vez: reconstruye la última hora desde los envíos recientes
     for (const [id, e] of Object.entries(this.p1.routeSim ?? {})) if (e.ok === 0 && e.rev >= Number(process.env.PHANTOM_AFTER ?? 5)) core.PHANTOM_ROUTES.add(id);
     if (!this.p1.reconciledLegacy && process.env.RAILWAY_PROJECT_ID) {
       // migración única: los 3 envíos del 2026-11-03 cuyo recibo no quedó registrado (el wait expiró)
@@ -300,6 +306,16 @@ export class Executor {
       await this.diag(`fase 1: falló el despliegue: ${this.p1.lastError}`);
     }
   }
+
+  // Tope por hora (sentTimes), presupuesto de reverts por hora (revertGas [{t, usd}]) y racha de reverts: en this.p1, que se
+  // guarda en el volumen. Antes vivían en memoria y cada redeploy (hubo varios por hora) los ponía a cero: Base gastó $0.51 en
+  // 2 reverts en 10 min con REVERT_BUDGET_USD_PER_HOUR=0.25 porque entre uno y otro hubo un redeploy.
+  get sentTimes() { return this.p1 ? (this.p1.sentTimes ??= []) : (this._sentTimes ??= []); }
+  set sentTimes(v) { if (this.p1) this.p1.sentTimes = v; else this._sentTimes = v; }
+  get revertGas() { return this.p1 ? (this.p1.revertGas ??= []) : (this._revertGas ??= []); }
+  set revertGas(v) { if (this.p1) this.p1.revertGas = v; else this._revertGas = v; }
+  get consecutiveReverts() { return this.p1 ? (this.p1.consecutiveReverts ?? 0) : (this._consecutiveReverts ?? 0); }
+  set consecutiveReverts(v) { if (this.p1) this.p1.consecutiveReverts = v; else this._consecutiveReverts = v; }
 
   async save() { this.p1.updatedAt = Date.now(); await this.store.set("phase1", this.p1); }
 
