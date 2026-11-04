@@ -13,6 +13,7 @@ import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
 import { FastLoop } from "./fastloop.mjs";
 import { MempoolWatcher } from "./mempool.mjs";
+import { addrCapFromError, callCapped } from "./logcap.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
 import { pairTable, pairLine } from "../src/pairs.js";
@@ -91,13 +92,24 @@ function logsProviderFor(main, mainUrl) {
   const provs = new Map([[mainUrl, main]]);
   let idx = 0;
   const get = (u) => { if (!provs.has(u)) provs.set(u, new ethers.JsonRpcProvider(u, Number(CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 })); return provs.get(u); };
+  const addrCap = new Map(); // url -> máximo de direcciones por eth_getLogs que acepta ese nodo (aprendido del error)
   return {
     async getLogs(filter, { timeoutMs = 6000 } = {}) {
       const errs = [];
       for (let i = 0; i < urls.length; i++) {
         const u = urls[(idx + i) % urls.length];
         try {
-          const r = await Promise.race([get(u).getLogs(filter), new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${Math.round(timeoutMs / 1000)} s`)), timeoutMs))]);
+          const call = (f) => Promise.race([get(u).getLogs(f), new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${Math.round(timeoutMs / 1000)} s`)), timeoutMs))]);
+          const once = async () => {
+            try { return await callCapped(call, filter, addrCap.get(u)); }
+            catch (e) {
+              const cap = addrCapFromError(e);
+              if (!cap || addrCap.has(u) || !Array.isArray(filter.address) || filter.address.length <= cap) throw e;
+              addrCap.set(u, cap); // reintenta en el mismo nodo respetando su límite
+              return await callCapped(call, filter, cap);
+            }
+          };
+          const r = await once();
           if (i) { idx = (idx + i) % urls.length; await diag(`vaults: eth_getLogs ahora vía ${new URL(u).host}`); }
           return r;
         } catch (e) {
