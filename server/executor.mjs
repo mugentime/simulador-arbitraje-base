@@ -15,6 +15,7 @@ import fs from "node:fs";
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
 import { sendBundle, MIN_BUNDLE_GAS_PRICE } from "./bundler.mjs";
+import { bumpPairs } from "../src/pairs.js";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
 const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", import.meta.url)));
@@ -254,6 +255,7 @@ export class Executor {
         rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
         rec.netUsd = rec.profitUsd - rec.gasUsd;
         this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd; this.p1.simulated++;
+        bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
         this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
       } catch (e) { rec.reason = decodeRevert(this.iface, e); rec.tentative = true; }
       return rec;
@@ -271,9 +273,11 @@ export class Executor {
       rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
       rec.netUsd = rec.profitUsd - rec.gasUsd;
       this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd;
+      bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
       this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
+      bumpPairs((this.p1.byPair ??= {}), rec.route, "rev");
       await atBlock;
       if ((rec.reasonAtBlock || tag) && Date.now() - (this.lastBreakdown ?? 0) > 20_000) { // el modelo se equivocó con el mismo estado: desglose por salto, modelo vs cotizador on-chain
         this.lastBreakdown = Date.now();
@@ -504,6 +508,7 @@ export class Executor {
       const rec = this.p1.recent.find((r) => typeof r.sent === "string" && r.sent.startsWith(t.hash));
       if (rcpt.status === 1) {
         this.p1.confirmed++; this.consecutiveReverts = 0;
+        bumpPairs((this.p1.byPair ??= {}), t.route, "conf");
         const ev = rcpt.logs.map((l) => { try { return this.iface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "Executed");
         const realized = ev ? core.tokenToUsd({ sym: t.startSym, decimals: t.startDecimals }, ethUsd)(ev.args.profit) : 0;
         this.p1.realizedUsd += realized - paid;
@@ -511,6 +516,7 @@ export class Executor {
         await this.diag(`fase 1: confirmada ${t.hash} · bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${realized - paid >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
       } else {
         this.p1.reverted++; this.consecutiveReverts++;
+        bumpPairs((this.p1.byPair ??= {}), t.route, "sentRev");
         this.revertGas.push({ t: Date.now(), usd: paid });
         this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;

@@ -4,6 +4,7 @@
 
 import * as core from "./core.js";
 import { emptyDisloc, trackBlock, summarize as summarizeDisloc } from "./dislocations.js";
+import { isExcludedPool } from "./pairs.js";
 import { emptyVaultStats, harvestTable, processVaultBlock } from "./vaultsim.js";
 
 /** Liquidez mínima por token de referencia (≈ $150): se calcula al usarse porque la cadena activa puede cambiar. */
@@ -158,7 +159,7 @@ export async function fromSpecs(ethers, provider, foundEntries, metaList) {
   const baseAddrs = Object.values(core.TOKENS).map((t) => t.address);
   const meta = new Map(metaList.map((t) => [t.address.toLowerCase(), t]));
   const found = new Map(foundEntries);
-  const all = await core.loadPools(ethers, provider, found, meta);
+  const all = (await core.loadPools(ethers, provider, found, meta)).filter((p) => !isExcludedPool(p, core.EXCLUDED_PAIRS));
   const pools = core.filterPools(all, baseAddrs.slice(0, 2), MIN_LIQ);
   // guardar solo los specs que pasaron el filtro, para que el próximo arranque sea ligero
   const keep = new Set(pools.map((p) => p.address));
@@ -198,7 +199,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 6; // v6: comisión por par en Biswap
+  const UNIVERSE_FORMAT = 7; // v7: excludedPairs + tokens añadidos en la revisión horaria
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);
@@ -207,10 +208,13 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
     await store.set("universe", { builtAt: now(), format: UNIVERSE_FORMAT, ...uni.specs });
   }
   stats.universe = { pools: uni.pools.length, cycles: uni.cycles.length, builtAt: new Date(now()).toISOString() };
-  if (live) live.cycles = uni.cycles;
+  if (live) { live.cycles = uni.cycles; live.pools = uni.pools; live.dislocRaw = () => dstats; }
   await setPhase("procesando bloques");
   let lenders = await core.readLenders(ethers, provider);
-  log(`universo listo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos`);
+  const extraSyms = new Set((core.EXTRA_TOKENS ?? []).map((t) => t.sym));
+  const perTok = {};
+  for (const p of uni.pools) for (const t of [p.token0, p.token1]) if (extraSyms.has(t.sym)) perTok[t.sym] = (perTok[t.sym] ?? 0) + 1;
+  log(`universo listo: ${uni.pools.length} pools, ${uni.cycles.length} ciclos · pools por token adicional: ${[...extraSyms].map((s) => `${s} ${perTok[s] ?? 0}`).join(", ")}${core.EXCLUDED_PAIRS.size ? ` · pares excluidos: ${[...core.EXCLUDED_PAIRS].join(", ")}` : ""}`);
 
   let last = stats.lastBlock ?? 0;
   let sinceFlush = 0, n = 0;

@@ -1,3 +1,4 @@
+import { excludedSet } from "./pairs.js";
 import * as CL from "./clmath.js";
 // Núcleo del simulador: lectura on-chain de Base + pipeline del protocolo (puntos 1-3).
 // Funciona en el navegador (ethers global) y en Node (ethers importado). Todo con BigInt.
@@ -70,7 +71,9 @@ export let LENDERS = [
  * Activa una cadena: sustituye tokens, factories, prestamistas y oráculo por los de `cfg` (ver chains.js).
  * Los importadores que usan `core.X` ven el cambio al instante (enlaces vivos de ESM).
  */
+export let EXCLUDED_PAIRS = new Set(); // pares excluidos (ver src/pairs.js y excludedPairs en chains.js)
 export function applyChain(cfg) {
+  EXCLUDED_PAIRS = excludedSet(cfg.excludedPairs ?? []);
   CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [] };
   CHAIN_ID = BigInt(cfg.id);
   TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));

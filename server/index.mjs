@@ -15,6 +15,7 @@ import { FastLoop } from "./fastloop.mjs";
 import { MempoolWatcher } from "./mempool.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
+import { pairTable, pairLine } from "../src/pairs.js";
 
 // Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism (una instancia del servicio por cadena)
 const CHAIN_CFG = chainByKey(process.env.CHAIN || "base");
@@ -283,3 +284,19 @@ setInterval(async () => {
   }
   if (st) console.log(`${new Date().toISOString()} resumen: bloque ${st.lastBlock} · ${st.blocksProcessed} bloques · ${st.totals.episodes} oportunidades · neto $${st.totals.netUsd.toFixed(2)} · fase ${st.phase}${p1 ? ` · fase1 ${p1.mode}: ${p1.simulated} sim, ${p1.wouldSucceed} ok, ${p1.wouldRevert} rev (${Object.entries(p1.byReason || {}).map(([k, n]) => `${k}×${n}`).join(", ") || "—"}), neto sim $${p1.projectedNetUsd.toFixed(4)}, enviadas ${p1.sent} (${p1.confirmed} confirmadas, ${p1.reverted} revertidas${p1.bundles ? `, ${p1.bundles} bundles/${p1.bundlesMissed ?? 0} no incluidos` : ""}, realizado $${p1.realizedUsd.toFixed(4)}, gas pagado $${p1.gasPaidUsd.toFixed(4)})${p1.paused ? " PAUSADA" : ""}` : ""}${vs ? ` · vaults ${(vs.events.rebalanceo + vs.events.zap + vs.events.salida)} eventos, ${vs.withOpp} con EV+, $${vs.netUsd.toFixed(2)}${vs.lastError ? ` (error: ${vs.lastError})` : ""}` : ""}${liquidations ? ` · liquidaciones: Aave ${liquidations.liq.aave.borrowers} prestatarios, ${liquidations.liq.aave.liquidatable} liquidables; Morpho ${liquidations.liq.morpho.liquidatable} liquidables (${liquidations.liq.morpho.apiPositions} en API); ${liquidations.liq.opportunities} episodios, est. $${liquidations.liq.estProfitUsd.toFixed(2)}; ajenas ${liquidations.liq.seen.aave}+${liquidations.liq.seen.morpho}${liquidator ? `; ejecución: ${liquidator.x.simulated} sim, ${liquidator.x.wouldSucceed} ok, ${liquidator.x.sent} enviadas (${liquidator.x.confirmed} conf, ${liquidator.x.reverted} rev), realizado $${liquidator.x.realizedUsd.toFixed(4)}` : ""}${liquidations.liq.aave.error ? ` (Aave: ${liquidations.liq.aave.error})` : ""}${liquidations.liq.morpho.error ? ` (Morpho: ${liquidations.liq.morpho.error})` : ""}` : ""}${fast ? ` · flashblocks ${fast.f.loops} lecturas, ${fast.f.changedPools} cambios, ${fast.f.evaluated} rutas, ${fast.f.profitable} rentables, ${fast.f.simulated} sim, ${fast.f.sent} env, ${fast.f.avgMs} ms${fast.f.lastError ? ` (error: ${fast.f.lastError})` : ""}` : ""}${harvester ? ` · harvest ${harvester.h.strategies} estrategias, ${harvester.h.worthNow} rentables ahora, ${harvester.h.sent} enviadas (${harvester.h.confirmed} ok, ${harvester.h.reverted} rev), realizado $${harvester.h.realizedUsd.toFixed(4)}${harvester.h.lastError ? ` (error: ${harvester.h.lastError})` : ""}` : ""}${dxText}${st.lastError ? ` · error: ${st.lastError}` : ""}`);
 }, 60_000);
+
+// métricas por par (para el ranking de la revisión horaria): a los 5 min del arranque y luego cada 30 min
+async function logPairs() {
+  try {
+    const st = live.stats ?? (await store.get("stats"));
+    if (!live.pools || !st) return;
+    const seen = (await store.get("pairsSeen")) ?? {};
+    const rows = pairTable({ pools: live.pools, disloc: live.dislocRaw ? live.dislocRaw() : null, byRoute: st.byRoute, p1ByPair: executor?.p1?.byPair ?? {}, firstSeen: seen });
+    let changed = false;
+    for (const r of rows) if (!seen[r.pair]) { seen[r.pair] = Date.now(); changed = true; }
+    if (changed) await store.set("pairsSeen", seen);
+    console.log(`${new Date().toISOString()} pares: ${rows.length} vigilados (${CHAIN_CFG.key}; p=pools, e=episodios/% bloques desajustado, pico bps, r=rutas rentables/episodios, ok/rv=simulaciones, s=puntuación; mejor→peor) · ${pairLine(rows)}`);
+  } catch (e) { console.log(`${new Date().toISOString()} pares: error ${e.message}`); }
+}
+setTimeout(logPairs, 5 * 60_000);
+setInterval(logPairs, 30 * 60_000);

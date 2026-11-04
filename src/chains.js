@@ -36,7 +36,11 @@ export const CHAINS = {
       { sym: "DEGEN", address: "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed" }, { sym: "BRETT", address: "0x532f27101965dd16442E59d40670FaF5eBB142E4" },
       { sym: "MORPHO", address: "0xBAa5CC21fd487B8Fcc2F632f3F4E8D37262a0842" }, { sym: "WELL", address: "0xA88594D404727625A9437C3f886C7643872296AE" },
       { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
+      // revisión horaria 2026-11-04: añadidos
+      { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" }, { sym: "AIXBT", address: "0x4F9Fd6Be4a90f2620860d680c0d4d5Fb53d1A825" },
     ],
+    // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
+    excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -70,7 +74,11 @@ export const CHAINS = {
       { sym: "DAI", address: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063" }, { sym: "WBTC", address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6" },
       { sym: "LINK", address: "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39" }, { sym: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B" },
       { sym: "wstETH", address: "0x03b54A6e9a984069379fae1a4fC4dBAE93B3bCCD" }, { sym: "MaticX", address: "0xfa68FB4628DFF1028CFEc22b4162FCcd0d45efb6" },
+      // revisión horaria 2026-11-04: añadidos
+      { sym: "QUICK", address: "0xB5C064F955D8e7F38fE0460C556a72987494eE17" }, { sym: "CRV", address: "0x172370d5Cd63279eFa6d502DAB29171933a610AF" },
     ],
+    // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
+    excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "QuickSwap v2", kind: "v2pair", address: "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32", feeBps: 30 },
@@ -99,7 +107,11 @@ export const CHAINS = {
       { sym: "CAKE", address: "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82" }, { sym: "DAI", address: "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3" },
       { sym: "XRP", address: "0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE" }, { sym: "SOL", address: "0x570A5D26f7765Ecb712C0924E4De545B89fD43dF" },
       { sym: "DOGE", address: "0xbA2aE424d960c26247Dd6c32edC70B295c744C43" },
+      // revisión horaria 2026-11-04: añadidos
+      { sym: "FDUSD", address: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409" }, { sym: "TWT", address: "0x4B0F1812e5Df2A09796481Ff14017e6005508003" },
     ],
+    // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
+    excludedPairs: [],
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -130,7 +142,11 @@ export const CHAINS = {
       { sym: "wstETH", address: "0x5979D7b546E38E414F7E9822514be443A4800529" }, { sym: "weETH", address: "0x35751007a407ca6FEFfE80b3cB397736D2cf4dbe" },
       { sym: "GMX", address: "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a" }, { sym: "LINK", address: "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4" },
       { sym: "PENDLE", address: "0x0c880f6761F1af8d9Aa9C466984b80DAb9a8c9e8" }, { sym: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf" },
+      // revisión horaria 2026-11-04: añadidos
+      { sym: "rETH", address: "0xEC70Dcb4A1EFa46b8F2D97C310C9c4790ba5ffA8" }, { sym: "MAGIC", address: "0x539bdE0d7Dbd336b79148AA742883198BBF60342" },
     ],
+    // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
+    excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -161,7 +177,11 @@ export const CHAINS = {
       { sym: "OP", address: "0x4200000000000000000000000000000000000042" }, { sym: "wstETH", address: "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb" },
       { sym: "VELO", address: "0x9560e827aF36c94D2Ac33a39bCE1Fe78631088Db" }, { sym: "USDC.e", address: "0x7F5c764cBc14f9669B88837ca1490cCa17c31607" },
       { sym: "SNX", address: "0x8700dAec35aF8Ff88c16BdF0418774CB3D7599B4" }, { sym: "rETH", address: "0x9Bcef72be871e61ED4fBbc7630889beE758eb81D" },
+      // revisión horaria 2026-11-04: añadidos
+      { sym: "weETH", address: "0x5A7fACB970D094B6C7FF1df0eA68D99E6e73CBFF" }, { sym: "LINK", address: "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6" },
     ],
+    // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
+    excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "Velodrome Slipstream", kind: "v3tick", address: "0xCc0bDDB707055e04e09910ed7D0E70C7D6aD4Ba1", params: [1, 50, 100, 200] },
