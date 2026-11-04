@@ -212,7 +212,7 @@ export const CHAINS = {
       // 2026-11-04 15:45
       { sym: "ETC", address: "0x3d6545b08693daE087E957cb1180ee38B9e3c25E" }, // USDe 0x5d3a1Ff2… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 16:45 (tokens de gobernanza de DEX: Biswap y BakerySwap)
-      { sym: "BSW", address: "0x965F527D9159dCe6288a2219DB51fc6Eef120dD1" }, { sym: "BAKE", address: "0xE02dF9e3e622DeBdD69fb838bB799E3F168902c5" },
+      { sym: "BSW", address: "0x965F527D9159dCe6288a2219DB51fc6Eef120dD1" }, { sym: "SXP", address: "0x47BEAd2563dCBf3bF2c9407fEa4dC236fAbA485A" }, // BAKE 0xE02dF9e3… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
