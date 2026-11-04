@@ -177,7 +177,7 @@ export async function existingPools(ethers, provider, tokenAddrs, factories = FA
         const sig = f.kind === "v3fee" ? "getPool(address,address,uint24)" : "getPool(address,address,int24)";
         for (const p of f.params) { calls.push([f.address, enc(iface, sig, [a, b, p])]); meta.push({ dex: f.name, kind: "v3" }); }
       } else if (f.kind === "v2pair") {
-        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee });
+        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag });
       } else if (f.kind === "aero") {
         calls.push([f.address, enc(iface, "getPool(address,address,bool)", [a, b, false])]);
         meta.push({ dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -249,7 +249,7 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
         const base = { dex: f.name, createdBlock: lg.blockNumber };
         const t = lg.topics, d = lg.data;
         if (f.kind === "v2pair") {
-          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee });
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag });
         } else if (f.kind === "aero") {
           if (BigInt(t[3]) === 1n) continue; // estable: otra curva
           specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -388,6 +388,14 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
     }
     pools.push(p);
   });
+  // forks v2 con pares "estables" (curva x³y+xy³, p. ej. Camelot stableSwap()): el modelo de producto constante no
+  // vale para ellos (revierten con "K"), así que se descartan
+  const flagged = pools.filter((p) => found.get(p.address)?.stableFlag);
+  if (flagged.length) {
+    const rs = await multicall(ethers, provider, flagged.map((p) => [p.address, ethers.id(found.get(p.address).stableFlag + "()").slice(0, 10)]));
+    const drop = new Set(flagged.filter((p, i) => !rs[i] || rs[i] === "0x" || word(rs[i], 0) !== 0n).map((p) => p));
+    for (let i = pools.length - 1; i >= 0; i--) if (drop.has(pools[i])) pools.splice(i, 1);
+  }
   for (const [id, m] of found) {
     if (m.kind !== "v4") continue;
     const tok0 = byAddr.get(m.token0.toLowerCase()), tok1 = byAddr.get(m.token1.toLowerCase());

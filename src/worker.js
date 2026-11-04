@@ -199,7 +199,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 8; // v8: símbolos alternativos (USDT0, USDC bridged) + excludedPairs
+  const UNIVERSE_FORMAT = 9; // v9: descarta pares estables de Camelot; símbolos alternativos; excludedPairs
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

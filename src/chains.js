@@ -151,7 +151,7 @@ export const CHAINS = {
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "SushiSwap v2", kind: "v2pair", address: SUSHI_V2, feeBps: 30 },
-      { name: "Camelot v2", kind: "v2pair", address: "0x6EcCab422D763aC031210895C81787E87B43A652", feeBps: 30 },
+      { name: "Camelot v2", kind: "v2pair", address: "0x6EcCab422D763aC031210895C81787E87B43A652", feeBps: 30, stableFlag: "stableSwap" }, // pares estables: curva distinta, se descartan
     ],
     lenders: [
       { name: "Aave v3", kind: "aave", address: AAVE_V3_CANON, feeBps: null },
