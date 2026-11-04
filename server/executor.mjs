@@ -32,6 +32,8 @@ export function emptyPhase1() {
   };
 }
 
+const routeKey = (r) => label(r);
+
 export class Executor {
   constructor({ provider, store, diag, mode = "simulate", autoDeploy = false }) {
     this.provider = provider; this.store = store; this.diag = diag; this.mode = mode; this.autoDeploy = autoDeploy;
@@ -43,8 +45,13 @@ export class Executor {
       pauseAfterReverts: Number(process.env.PAUSE_AFTER_REVERTS ?? 3),
       minNetUsd: Number(process.env.MIN_NET_USD ?? 0.05),
       minSendNetUsd: Number(process.env.MIN_SEND_NET_USD ?? 0.01),
+      tipShare: Number(process.env.TIP_SHARE ?? 0.4), // fracción del neto simulado que se ofrece como propina (orden dentro del bloque)
+      maxTipGwei: Number(process.env.MAX_TIP_GWEI ?? 0.2),
+      routeCooldownBlocks: Number(process.env.ROUTE_COOLDOWN_BLOCKS ?? 30), // tras un revert, esa ruta no se reenvía hasta pasados N bloques
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
+    this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
+    this.lastChainBlock = 0;
     this.sendIdx = 0; this.sendRpcs = sendRpcs();
   }
 
@@ -165,8 +172,10 @@ export class Executor {
     if (this.wallet && (this.p1.pending ?? []).length && !this.reconciling) { this.reconciling = true; try { await this.reconcile(ethUsd); } catch (e) { this.p1.lastError = `reconcile: ${e.shortMessage || e.message}`; } finally { this.reconciling = false; } }
     if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
     if (!this.p1.executor) return results.some((r) => r.profitable) ? "Fase 1: contrato no desplegado" : null;
+    if (typeof block === "number") this.lastChainBlock = block;
     if (this.inflight || (typeof block === "number" && block <= this.lastSimBlock)) return null;
-    const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious).slice(0, 3);
+    const cooled = (r) => (this.routeCooldown.get(routeKey(r)) ?? 0) > this.lastChainBlock;
+    const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious && !cooled(r)).slice(0, 3);
     if (!cands.length) return results.some((r) => r.profitable) ? `Oportunidad por debajo del mínimo de ${this.limits.minNetUsd} USD; no se simula` : null;
     this.inflight = true; if (typeof block === "number") this.lastSimBlock = block;
     let text = null;
@@ -281,6 +290,7 @@ export class Executor {
   }
 
   async send(plan, rec, gas, ethUsd) {
+    rec.route ??= label(plan.meta);
     const now = Date.now();
     this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
     if (this.sentTimes.length >= this.limits.maxTxPerHour) { rec.sent = "omitida: tope por hora"; return; }
@@ -288,9 +298,22 @@ export class Executor {
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
     // Una tx que revierte cuesta ~1 gas completo; solo compensa enviar si el neto simulado cubre varias fallas.
     if (rec.netUsd < this.limits.minSendNetUsd) { rec.sent = `omitida: neto simulado $${rec.netUsd.toFixed(4)} < mínimo de envío $${this.limits.minSendNetUsd}`; return; }
+    // una sola transacción en vuelo: si la anterior aún no tiene recibo, no se envía otra (evita nonces repetidos y
+    // reenviar una oportunidad que ya se tomó otro en el mismo bloque)
+    if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
+    if (this.sending) { rec.sent = "omitida: envío en curso"; return; }
+    this.sending = true;
     try {
       const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
-      const prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
+      // Propina: Base ordena por propina dentro de cada flashblock; con la mínima vamos al final y otro bot se lleva
+      // la ruta antes. Se ofrece una fracción del neto simulado, con tope.
+      const tipUsd = rec.netUsd * this.limits.tipShare;
+      const tipWei = BigInt(Math.floor((tipUsd / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
+      const capWei = BigInt(Math.floor(this.limits.maxTipGwei * 1e9));
+      let prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
+      if (tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
+      rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
+      if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
       const maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
       const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: maxFee, maxPriorityFeePerGas: prio }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
@@ -298,6 +321,7 @@ export class Executor {
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
       await this.save();
     } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
+    finally { this.sending = false; }
   }
 
   /** Resuelve el resultado de las transacciones enviadas (recibo), aunque el proceso se haya reiniciado. */
@@ -325,6 +349,7 @@ export class Executor {
         await this.diag(`fase 1: confirmada ${t.hash} · bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${realized - paid >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
       } else {
         this.p1.reverted++; this.consecutiveReverts++;
+        this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
         await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
         if (this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
