@@ -10,8 +10,10 @@ import { emptyVaultStats, harvestTable, processVaultBlock } from "./vaultsim.js"
 /** Liquidez mínima por token de referencia (≈ $150): se calcula al usarse porque la cadena activa puede cambiar. */
 export function minLiq() {
   return {
-    [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, // 0.05 del nativo envuelto (se ajusta por precio abajo)
-    [core.TOKENS.USDC.address.toLowerCase()]: 150n * 10n ** BigInt(core.TOKENS.USDC.decimals), // 150 USDC
+    [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, // 0.05 del nativo envuelto (piso; filterPools lo sube al equivalente en USDC)
+    // MIN_LIQ_USD (por defecto 500): reserva mínima de USDC en un pool; el mínimo del nativo envuelto se eleva a su
+    // equivalente en filterPools con el precio del pool WETH/USDC más profundo.
+    [core.TOKENS.USDC.address.toLowerCase()]: BigInt(Math.max(1, Math.round(Number(globalThis.process?.env?.MIN_LIQ_USD ?? 500)))) * 10n ** BigInt(core.TOKENS.USDC.decimals),
   };
 }
 export const MIN_LIQ = new Proxy({}, { get: (_, k) => minLiq()[k], ownKeys: () => Object.keys(minLiq()), getOwnPropertyDescriptor: (_, k) => ({ value: minLiq()[k], enumerable: true, configurable: true }) });
@@ -199,7 +201,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 21; // v21: OP sin alUSD (0 pools); v20: OP alUSD en lugar de frxETH (0 pools); v19: OP frxETH en lugar de sETH (0 pools), PERP/USDC vuelve (único enlace base de PERP); v18: 10:45 +2 tokens por cadena, inactivos excluidos (Base 10, BSC 8, Polygon 10, Arbitrum 4, OP 10); v17: OP CRV en lugar de DOLA (0 pools); v16: 09:45 +2 tokens por cadena, hasta 10 pares inactivos excluidos por cadena; v15: 08:45 +2 tokens por cadena, 1 par excluido en Base/BSC/Arbitrum, bucle rápido solo con pools en ciclos; v14: 07:45 +2 tokens por cadena y 1 par excluido más por cadena; v13: Base USDe en lugar de LBTC, OP PERP en lugar de LDO (0 pools); v12: 06:45 +2 tokens por cadena y 1 par excluido por cadena; v11: OP WLD/AAVE en lugar de cbETH/ezETH; v10: +2 tokens por cadena (05:50), comisión de protocolo v4; v9: descarta pares estables de Camelot; símbolos alternativos; excludedPairs
+  const UNIVERSE_FORMAT = 22; // v22: 11:45 +2 tokens por cadena, inactivos excluidos, liquidez mínima en pools entre tokens no base y mínimo de WETH por precio (MIN_LIQ_USD); v21: OP sin alUSD (0 pools); v20: OP alUSD en lugar de frxETH (0 pools); v19: OP frxETH en lugar de sETH (0 pools), PERP/USDC vuelve (único enlace base de PERP); v18: 10:45 +2 tokens por cadena, inactivos excluidos (Base 10, BSC 8, Polygon 10, Arbitrum 4, OP 10); v17: OP CRV en lugar de DOLA (0 pools); v16: 09:45 +2 tokens por cadena, hasta 10 pares inactivos excluidos por cadena; v15: 08:45 +2 tokens por cadena, 1 par excluido en Base/BSC/Arbitrum, bucle rápido solo con pools en ciclos; v14: 07:45 +2 tokens por cadena y 1 par excluido más por cadena; v13: Base USDe en lugar de LBTC, OP PERP en lugar de LDO (0 pools); v12: 06:45 +2 tokens por cadena y 1 par excluido por cadena; v11: OP WLD/AAVE en lugar de cbETH/ezETH; v10: +2 tokens por cadena (05:50), comisión de protocolo v4; v9: descarta pares estables de Camelot; símbolos alternativos; excludedPairs
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

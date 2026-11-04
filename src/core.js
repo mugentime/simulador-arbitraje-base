@@ -481,20 +481,62 @@ export async function refreshTicks(ethers, provider, pools, { words = 2, maxTick
 }
 
 /** Filtro del punto 1: liquidez mínima del token base en el pool; pools token-token solo si ambos tokens ya tienen un pool base aceptable. */
+/**
+ * Filtra pools por liquidez. 1.ª pasada: pools con un token base (rol WETH/USDC) con reserva ≥ mínimo; sus otros
+ * tokens quedan "buenos". 2.ª pasada: pools entre dos tokens buenos, ahora también con liquidez mínima en ambos
+ * lados (antes entraban con cualquier reserva > 0 y generaban rutas fantasma de cientos de bps, p. ej. USDT/USDC.e
+ * en Arbitrum). El mínimo de cada token bueno se deriva del precio de su pool base más profundo. Si `baseAddrs` trae
+ * WETH y USDC y hay un pool entre ambos, el mínimo de WETH se eleva al equivalente del mínimo de USDC (0.05 WPOL
+ * en Polygon eran centavos).
+ */
 export function filterPools(pools, baseAddrs, minLiq) {
   const base = new Set(baseAddrs.map((a) => a.toLowerCase()));
   const good = new Set(base);
+  const min = {};
+  for (const b of base) min[b] = minLiq[b] ?? 0n;
+  const lc = (t) => t.address.toLowerCase();
+  const live = pools.filter((p) => p.reserve0 > 0n && p.reserve1 > 0n);
+  // mínimo del nativo envuelto ajustado por precio con el pool WETH/USDC más profundo
+  const [w, u] = baseAddrs.map((a) => a.toLowerCase());
+  if (w && u && min[u] > 0n) {
+    let best = null;
+    for (const p of live) {
+      const a = lc(p.token0), b = lc(p.token1);
+      if (!((a === w && b === u) || (a === u && b === w))) continue;
+      const [ru, rw] = a === u ? [p.reserve0, p.reserve1] : [p.reserve1, p.reserve0];
+      if (!best || ru > best[0]) best = [ru, rw];
+    }
+    if (best) { const eq = (min[u] * best[1]) / best[0]; if (eq > min[w]) min[w] = eq; }
+  }
   const kept = [];
-  for (const p of pools) {
-    if (p.reserve0 === 0n || p.reserve1 === 0n) continue;
+  const keptSet = new Set();
+  const depth = new Map(); // token bueno → [reserva base del pool más profundo, mínimo equivalente del token]
+  for (const p of live) {
     for (const t of [p.token0, p.token1]) {
-      const key = t.address.toLowerCase();
-      if (base.has(key) && reservesFor(p, t.address)[0] >= (minLiq[key] ?? 0n)) { kept.push(p); good.add(other(p, t.address).address.toLowerCase()); break; }
+      const key = lc(t);
+      if (!base.has(key)) continue;
+      const [rb, ro] = reservesFor(p, t.address);
+      if (rb < min[key]) continue;
+      kept.push(p); keptSet.add(p);
+      const o = lc(other(p, t.address));
+      good.add(o);
+      if (!base.has(o)) {
+        const prev = depth.get(o);
+        const eq = min[key] > 0n ? (min[key] * ro) / rb : 0n;
+        // normaliza a "veces el mínimo de su base" para comparar pools contra WETH y contra USDC
+        const ratio = min[key] > 0n ? (rb * 1000n) / min[key] : 0n;
+        if (!prev || ratio > prev[0]) depth.set(o, [ratio, eq]);
+      }
+      break;
     }
   }
-  for (const p of pools) {
-    if (kept.includes(p) || p.reserve0 === 0n || p.reserve1 === 0n) continue;
-    if (good.has(p.token0.address.toLowerCase()) && good.has(p.token1.address.toLowerCase())) kept.push(p);
+  const minOf = (key) => (base.has(key) ? min[key] : depth.get(key)?.[1] ?? 0n);
+  for (const p of live) {
+    if (keptSet.has(p)) continue;
+    const a = lc(p.token0), b = lc(p.token1);
+    if (!good.has(a) || !good.has(b)) continue;
+    if (p.reserve0 < minOf(a) || p.reserve1 < minOf(b)) continue;
+    kept.push(p);
   }
   return kept;
 }
