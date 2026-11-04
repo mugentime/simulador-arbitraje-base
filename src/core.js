@@ -76,8 +76,10 @@ export let LENDERS = [
  * Los importadores que usan `core.X` ven el cambio al instante (enlaces vivos de ESM).
  */
 export let EXCLUDED_PAIRS = new Set(); // pares excluidos (ver src/pairs.js y excludedPairs en chains.js)
+export let BLOCKED_TOKENS = new Set(); // tokens que el contrato no puede mover (p. ej. Stock Tokens con lista de wallets aprobadas)
 export function applyChain(cfg) {
   EXCLUDED_PAIRS = excludedSet(cfg.excludedPairs ?? []);
+  BLOCKED_TOKENS = new Set((cfg.blockedTokens ?? []).map((a) => a.toLowerCase()));
   CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [], fcfs: !!cfg.fcfs };
   CHAIN_ID = BigInt(cfg.id);
   TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));

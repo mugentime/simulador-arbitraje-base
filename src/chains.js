@@ -353,7 +353,10 @@ export const CHAINS = {
       WETH: { address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18, label: "WETH" },
       USDC: { address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", decimals: 6, label: "USDG" }, // rol dólar = USDG (stable principal de la cadena)
     },
-    extraTokens: [{ sym: "NVDA", address: "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC" }], // Stock Token oficial (pool v3 NVDA/USDG 0.05 %)
+    // Stock Tokens (NVDA, TSLA…) NO: el contrato revisa cada transferencia contra un registro de wallets aprobadas;
+    // nuestro ArbExecutor no puede recibirlos → rutas fantasma (transferFrom reverted). Se excluyen sus pools.
+    extraTokens: [],
+    blockedTokens: ["0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC", "0x322F0929c4625eD5bAd873c95208D54E1c003b2d"],
     excludedPairs: [],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA", params: UNI_FEES },
