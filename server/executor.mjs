@@ -134,9 +134,12 @@ export class Executor {
     this.p1.wallet = this.wallet?.address ?? null;
     if (!this.wallet) { await this.diag("fase 1: sin PRIVATE_KEY; solo observación"); await this.save(); return; }
     this.p1.balanceEth = Number(ethers.formatEther(await this.provider.getBalance(this.wallet.address)));
-    if (!this.p1.executor && this.autoDeploy) await this.deploy();
-    if (this.p1.executor) {
-      const code = await this.provider.getCode(this.p1.executor);
+    let justDeployed = false;
+    if (!this.p1.executor && this.autoDeploy) { await this.deploy(); justDeployed = !!this.p1.executor; }
+    if (this.p1.executor && !justDeployed) {
+      // un RPC atrasado puede devolver "0x" justo tras el despliegue: reintentar antes de redesplegar
+      let code = "0x";
+      for (let i = 0; i < 4 && code === "0x"; i++) { if (i) await new Promise((r) => setTimeout(r, 1500)); code = await this.provider.getCode(this.p1.executor).catch(() => "0x"); }
       if (code === "0x") { await this.diag(`fase 1: no hay contrato en ${this.p1.executor}; se redespliega`); this.p1.executor = null; if (this.autoDeploy) await this.deploy(); }
       else if (this.p1.artifact !== ART_ID) {
         await this.diag(`fase 1: el contrato en ${this.p1.executor} es de una versión anterior (${this.p1.artifact ?? "sin versión"} ≠ ${ART_ID})${this.autoDeploy ? "; se despliega la nueva" : "; pon AUTO_DEPLOY=1 para desplegar la nueva"}`);
