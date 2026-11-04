@@ -6,6 +6,7 @@
 import { ethers } from "ethers";
 import WebSocket from "ws";
 import * as core from "../src/core.js";
+import { buildUsdPrices, evaluateJit, emptyJit } from "./jit.mjs";
 
 // Routers por cadena: nombre del DEX en el universo (p.dex) y tipo de calldata.
 export const ROUTERS = {
@@ -118,7 +119,7 @@ export function rawFromPending(tx) {
 }
 
 export function emptyMempool() {
-  return { enabled: false, ws: null, connected: false, seen: 0, routerTxs: 0, decoded: 0, modeled: 0, profitable: 0, bundles: 0, lastError: null, lastOpp: null };
+  return { enabled: false, ws: null, connected: false, seen: 0, routerTxs: 0, decoded: 0, modeled: 0, profitable: 0, bundles: 0, lastError: null, lastOpp: null, jit: emptyJit() };
 }
 
 export class MempoolWatcher {
@@ -135,6 +136,33 @@ export class MempoolWatcher {
     cycles.forEach((c, i) => { for (const p of c.route) (this.index.get(p.address) ?? this.index.set(p.address, []).get(p.address)).push(i); });
   }
   setContext(ctx) { this.ctx = ctx; }
+
+  /** Liquidez JIT, solo observación: ¿cuánto habríamos ganado poniendo liquidez justo antes de este swap? */
+  async observeJit(tx, router, swaps) {
+    const now = Date.now();
+    if (!this.jitPrices || this.jitPricesFor !== this.pools || now - this.jitPricesAt > 60_000) {
+      this.jitPrices = buildUsdPrices(this.pools, core.TOKENS, this.ctx.ethUsd); this.jitPricesFor = this.pools; this.jitPricesAt = now;
+    }
+    const { gas, ethUsd } = this.ctx;
+    const gasUsd = (Number(BigInt(process.env.JIT_GAS ?? 450000) * ((gas?.baseFee ?? 0n) + (gas?.priority ?? 0n))) / 1e18) * ethUsd;
+    const j = (this.m.jit ??= emptyJit());
+    for (const s of swaps) {
+      if (s.kind !== "v3" || !s.amountIn) continue;
+      const p = findPool(this.pools, router, s);
+      const r = evaluateJit(p, s.tokenIn, s.amountIn, { prices: this.jitPrices, gasUsd, borrowBps: Number(process.env.JIT_BORROW_BPS ?? 5), maxNotionalUsd: Number(process.env.JIT_MAX_USD ?? 200000) });
+      if (!r) continue;
+      j.evaluated++;
+      if (r.netUsd <= 0) continue;
+      j.positive++; j.sumNetUsd += r.netUsd;
+      const rec = { at: now, victim: tx.hash, pool: `${p.token0.sym}/${p.token1.sym} ${r.feePct}%`, ...Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === "number" ? +v.toFixed(4) : v])) };
+      if (!j.best || r.netUsd > j.best.netUsd) j.best = rec;
+      j.last = [rec, ...j.last].slice(0, 5);
+      if (r.netUsd >= Number(process.env.JIT_LOG_USD ?? 0.05) && now - (this.jitLogAt ?? 0) > 15_000) {
+        this.jitLogAt = now;
+        await this.diag(`jit (observación): ${String(tx.hash).slice(0, 12)}… ${rec.pool} · swap $${r.swapUsd.toFixed(0)} · neto $${r.netUsd.toFixed(4)} (optimista $${r.netOptUsd.toFixed(4)}; comisión $${r.feeUsd.toFixed(4)} + inventario $${r.invUsd.toFixed(4)} − deshacer $${r.backUsd.toFixed(4)} − préstamo $${r.borrowUsd.toFixed(4)} − gas $${r.gasUsd.toFixed(4)}) · liquidez ${r.k}× la del pool (${(r.share * 100).toFixed(0)} %), nocional $${r.notionalUsd.toFixed(0)}, ${r.ticks} ticks`);
+      }
+    }
+  }
 
   start() {
     if (!this.m.enabled || this.started) return;
@@ -209,6 +237,7 @@ export class MempoolWatcher {
     const swaps = decodeSwaps(tx.input ?? tx.data, BigInt(tx.value ?? 0));
     if (!swaps.length) return;
     this.m.decoded++;
+    if (process.env.JIT_OBSERVE !== "0") { try { await this.observeJit(tx, router, swaps); } catch (e) { this.m.lastError = `jit: ${e.message}`; } }
     const applied = applySwaps(this.pools, router, swaps);
     if (!applied) return;
     this.m.modeled++;
