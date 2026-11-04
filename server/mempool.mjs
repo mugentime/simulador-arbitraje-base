@@ -13,13 +13,20 @@ export const ROUTERS = {
   bsc: [
     { address: "0x10ED43C718714eb63d5aA57B78B54704E256024E", dex: "PancakeSwap v2", kind: "v2" },
     { address: "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8", dex: "Biswap v2", kind: "v2" },
-    { address: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4", dex: "PancakeSwap v3", kind: "v3" }, // SmartRouter
+    { address: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4", dex: "PancakeSwap v3", kind: "v3", v2Dex: "PancakeSwap v2" }, // SmartRouter (también v2)
+    // Universal Routers (comandos V2/V3_SWAP_EXACT_IN)
+    { address: "0x1A0A18AC4BECDDbd6389559687d1A73d8927E416", dex: "PancakeSwap v3", kind: "ur", v2Dex: "PancakeSwap v2", v3Dex: "PancakeSwap v3" },
+    { address: "0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB", dex: "PancakeSwap v3", kind: "ur", v2Dex: "PancakeSwap v2", v3Dex: "PancakeSwap v3" }, // Infinity
+    { address: "0x1906c1d672b88cD1B9aC7593301cA990F94Eae07", dex: "Uniswap v3", kind: "ur", v2Dex: "Uniswap v2", v3Dex: "Uniswap v3" },
+    { address: "0x8B844f885672f333Bc0042cB669255f93a4C1E6b", dex: "Uniswap v3", kind: "ur", v2Dex: "Uniswap v2", v3Dex: "Uniswap v3" }, // UR 2.1.1 (misma dirección en BSC y Polygon)
   ],
   polygon: [
     { address: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff", dex: "QuickSwap v2", kind: "v2" },
     { address: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", dex: "SushiSwap v2", kind: "v2" },
     { address: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45", dex: "Uniswap v3", kind: "v3" }, // SwapRouter02
     { address: "0xE592427A0AEce92De3Edee1F18E0157C05861564", dex: "Uniswap v3", kind: "v3" }, // SwapRouter v1 (exactInputSingle con deadline)
+    { address: "0x1095692A6237d83C6a72F3F5eFEdb9A670C49223", dex: "Uniswap v3", kind: "ur", v2Dex: "Uniswap v2", v3Dex: "Uniswap v3" }, // Universal Router 2.0
+    { address: "0x8B844f885672f333Bc0042cB669255f93a4C1E6b", dex: "Uniswap v3", kind: "ur", v2Dex: "Uniswap v2", v3Dex: "Uniswap v3" }, // Universal Router 2.1.1
   ],
 };
 
@@ -34,6 +41,12 @@ const IFACE = new ethers.Interface([
   "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96))",
   // SwapRouter v1 (con deadline)
   "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) returns (uint256)",
+  // exactInput multi-salto (SwapRouter02 sin deadline; v1 con deadline)
+  "function exactInput((bytes path,address recipient,uint256 amountIn,uint256 amountOutMinimum))",
+  "function exactInput((bytes path,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum)) returns (uint256)",
+  // Universal Router
+  "function execute(bytes commands,bytes[] inputs,uint256 deadline)",
+  "function execute(bytes commands,bytes[] inputs)",
   "function multicall(uint256 deadline,bytes[] data)",
   "function multicall(bytes[] data)",
   "function multicall(bytes32 previousBlockhash,bytes[] data)",
@@ -55,11 +68,53 @@ export function decodeSwaps(data, value = 0n, depth = 0) {
   }
   if (n.startsWith("swapExactTokensFor")) return pathSwaps(a.path, a.amountIn);
   if (n.startsWith("swapExactETHFor")) return pathSwaps(a.path, value);
+  if (n === "exactInput") { const p = a[0]; return v3PathSwaps(p.path, BigInt(p.amountIn)); }
+  if (n === "execute") return urSwaps(a.commands, a.inputs, value);
   if (n === "exactInputSingle") {
     const p = a[0];
     return [{ kind: "v3", tokenIn: ethers.getAddress(p.tokenIn), tokenOut: ethers.getAddress(p.tokenOut), amountIn: BigInt(p.amountIn), fee: Number(p.fee) }];
   }
   return [];
+}
+
+const ABI = ethers.AbiCoder.defaultAbiCoder();
+const CONTRACT_BALANCE = 1n << 255n;
+
+/** Path v3 empaquetado (token(20) fee(3) token(20) …) → swaps v3 encadenados. */
+export function v3PathSwaps(path, amountIn) {
+  const hex = String(path).replace(/^0x/, "");
+  const out = [];
+  for (let i = 0; i + 86 <= hex.length; i += 46) {
+    const tIn = ethers.getAddress("0x" + hex.slice(i, i + 40)), fee = parseInt(hex.slice(i + 40, i + 46), 16), tOut = ethers.getAddress("0x" + hex.slice(i + 46, i + 86));
+    out.push({ kind: "v3", tokenIn: tIn, tokenOut: tOut, fee, amountIn: out.length === 0 ? amountIn : null });
+  }
+  return out;
+}
+
+/**
+ * Universal Router (Uniswap y PancakeSwap comparten estos códigos): V3_SWAP_EXACT_IN (0x00), V2_SWAP_EXACT_IN (0x08),
+ * WRAP_ETH (0x0b). amountIn = CONTRACT_BALANCE se resuelve con lo que haya entrado antes (msg.value envuelto o la salida previa).
+ */
+export function urSwaps(commands, inputs, value = 0n) {
+  const cmds = ethers.getBytes(commands);
+  const out = [];
+  let wrapped = 0n;
+  for (let i = 0; i < cmds.length && i < inputs.length; i++) {
+    const c = cmds[i] & 0x3f;
+    try {
+      if (c === 0x0b) { wrapped = value; continue; }
+      if (c === 0x00) {
+        const [, amt, , path] = ABI.decode(["address", "uint256", "uint256", "bytes", "bool"], inputs[i]);
+        const amountIn = amt === CONTRACT_BALANCE ? (wrapped || null) : amt;
+        out.push(...v3PathSwaps(path, amountIn));
+      } else if (c === 0x08) {
+        const [, amt, , path] = ABI.decode(["address", "uint256", "uint256", "address[]", "bool"], inputs[i]);
+        const amountIn = amt === CONTRACT_BALANCE ? (wrapped || null) : amt;
+        out.push(...pathSwaps(path, amountIn ?? 0n).map((s, k) => (k === 0 && !amountIn ? { ...s, amountIn: null } : s)));
+      }
+    } catch { /* comando con otro formato (p. ej. versión distinta): se ignora */ }
+  }
+  return out;
 }
 
 function pathSwaps(path, amountIn) {
@@ -77,7 +132,8 @@ export function findPool(pools, router, s) {
     if (!p.token0?.address || !p.token1?.address) return false;
     const t = [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()];
     if (!(t.includes(a) && t.includes(b))) return false;
-    if (!String(p.dex).startsWith(router.dex)) return false;
+    const dex = s.kind === "v3" ? (router.v3Dex ?? router.dex) : (router.v2Dex ?? router.dex);
+    if (!String(p.dex).startsWith(dex)) return false;
     if (s.kind === "v3") return p.kind === "v3" && (s.fee === undefined || Number(p.feePips) === s.fee);
     return p.kind === "v2";
   }) ?? null;
@@ -237,7 +293,13 @@ export class MempoolWatcher {
   async onTx(tx) {
     if (!tx.to || !this.pools || !this.ctx) return;
     const router = this.routers.get(String(tx.to).toLowerCase());
-    if (!router) return;
+    if (!router) {
+      // destinos desconocidos con calldata de swap probable (≥ 4 bytes y valor o datos largos): para saber qué agregador decodificar
+      const inp = tx.input ?? tx.data ?? "0x";
+      if (inp.length >= 10 + 64 * 3) { const k = String(tx.to).toLowerCase(); const u = (this.m.unknownTo ??= {}); u[k] = (u[k] ?? 0) + 1;
+        if (Object.keys(u).length > 400) for (const [a, n] of Object.entries(u)) if (n < 3) delete u[a]; }
+      return;
+    }
     this.m.routerTxs++;
     const swaps = decodeSwaps(tx.input ?? tx.data, BigInt(tx.value ?? 0));
     if (!swaps.length) return;
