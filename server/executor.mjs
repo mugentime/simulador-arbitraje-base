@@ -551,7 +551,13 @@ export class Executor {
       // Back-run público (Polygon): comisión fijada para igualar la propina EFECTIVA de la víctima (ver sendBackrunPublic)
       const forced = this.forcedFee;
       // FCFS (Robinhood): el secuenciador ordena por llegada, la propina no adelanta nada → sin propina extra
-      const tipUsd = forced || core.CHAIN.fcfs ? 0 : rec.netUsd * this.limits.tipShare;
+      // La propina también se pierde si revierte: con propina = 60 % del neto, un intento de neto $0.34 arriesgaba $0.20
+      // para ganar $0.14 (23:08 UTC). Se limita para que, tras la propina, el neto siga ≥ EV_MULT × lo que se pierde al
+      // revertir: (N − T) ≥ m·(G + T) → T ≤ (N − m·G)/(1 + m).
+      const basePrio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
+      const gasBaseUsd = (Number((gas.baseFee + basePrio) * BigInt(Math.ceil(rec.gasEst ?? 0)) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd;
+      const evTipCap = Math.max(0, (rec.netUsd - evMult * gasBaseUsd) / (1 + evMult));
+      const tipUsd = forced || core.CHAIN.fcfs ? 0 : Math.min(rec.netUsd * this.limits.tipShare, evTipCap);
       const tipWei = BigInt(Math.floor((tipUsd / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
       const capWei = BigInt(Math.floor(this.limits.maxTipGwei * 1e9));
       let prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
@@ -563,6 +569,7 @@ export class Executor {
       if (!this.limits.bundleSend) {
         const priceWei = forced ? BigInt(forced.maxFeePerGas ?? forced.gasPrice ?? 0n) : gas.baseFee + prio;
         const riskUsd = (Number(priceWei * BigInt(Math.ceil(rec.gasEst ?? 0)) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd;
+        if (!forced && rec.netUsd < evMult * riskUsd * 0.999) { rec.sent = `omitida: neto tras propina $${rec.netUsd.toFixed(4)} < ${evMult}× lo que perdería si revierte $${riskUsd.toFixed(4)}`; return; }
         if (spentHour + riskUsd > this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: si revierte perdería $${riskUsd.toFixed(3)} y quedan $${Math.max(0, this.limits.revertBudgetUsdPerHour - spentHour).toFixed(3)} del presupuesto de la hora`; return; }
       }
       let maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
