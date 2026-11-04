@@ -122,7 +122,7 @@ export const CHAINS = {
       // 2026-11-04 12:45
       { sym: "XSGD", address: "0xDC3326e71D45186F113a2F448984CA0e8D201995" }, // SNX 0x50B728D8… y EURA 0xE0B52e49… verificados pero 0 pools
       // 2026-11-04 13:45
-      /* PAXG descartado: comisión por transferencia */ { sym: "STG", address: "0x2F6F07CDcf3588944Bf4C42aC74ff24bF56e7590" }, { sym: "FRAX", address: "0x45c32fA6DF82ead1e2EF74d17b76547EDdFaFF89" },
+      // PAXG descartado (comisión por transferencia); STG 0x2F6F07CD… y FRAX 0x45c32fA6… verificados pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -184,7 +184,7 @@ export const CHAINS = {
       // 2026-11-04 12:45
       { sym: "NEAR", address: "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63" }, { sym: "INJ", address: "0xa2B726B1145A4773F68593CF171187d8EBe4d495" },
       // 2026-11-04 13:45 (FLOKI descartado: impuesto por transferencia)
-      { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, { sym: "TON", address: "0x76A797A59Ba2C17726896976B7B3747BfD1d220f" },
+      { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, { sym: "TON", address: "0x76A797A59Ba2C17726896976B7B3747BfD1d220f", symbols: ["TONCOIN"] },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
