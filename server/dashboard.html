@@ -54,7 +54,7 @@
 
     <h3>Acumulado</h3>
     <div class="kpis">
-      <div class="kpi"><div class="l">Beneficio REAL (transacciones en Base)</div><div class="v" id="real">—</div><div class="s" id="real-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio REAL (transacciones en <span class="chainname">Base</span>)</div><div class="v" id="real">—</div><div class="s" id="real-sub"></div></div>
       <div class="kpi"><div class="l">Detectado por el modelo (techo teórico)</div><div class="v" id="net">—</div><div class="s" id="net-sub"></div></div>
       <div class="kpi"><div class="l">Oportunidades (episodios)</div><div class="v" id="eps">—</div><div class="s" id="eps-sub"></div></div>
       <div class="kpi"><div class="l">Mejor oportunidad</div><div class="v" id="best">—</div><div class="s" id="best-sub"></div></div>
@@ -96,7 +96,7 @@
     <h3>Ejecución · harvest de vaults Beefy (sin préstamo)</h3>
     <p class="sub">Cualquiera puede llamar <code>harvest()</code> en una estrategia de Beefy; la estrategia cobra sus recompensas, las reinvierte y paga una comisión en WETH a quien llamó. Se llama cuando esa comisión supera el gas con margen.</p>
     <div class="kpis">
-      <div class="kpi"><div class="l">Beneficio REAL (harvests en Base)</div><div class="v" id="h-real">—</div><div class="s" id="h-real-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio REAL (harvests en <span class="chainname">Base</span>)</div><div class="v" id="h-real">—</div><div class="s" id="h-real-sub"></div></div>
       <div class="kpi"><div class="l">Estrategias vigiladas</div><div class="v" id="h-strats">—</div><div class="s" id="h-strats-sub"></div></div>
       <div class="kpi"><div class="l">Rentables ahora</div><div class="v" id="h-worth">—</div><div class="s" id="h-worth-sub"></div></div>
       <div class="kpi"><div class="l">Simulaciones</div><div class="v" id="h-sim">—</div><div class="s" id="h-sim-sub"></div></div>
@@ -119,7 +119,7 @@
     <h2>Liquidaciones con flashloan (Aave v3 y Morpho Blue)</h2>
     <p class="sub">Cuando un préstamo queda por debajo de su umbral (factor de salud &lt; 1), quien lo liquide paga parte de la deuda y recibe el colateral con un bono fijo (≈5% en Aave, 4–15% en Morpho). El flashloan pone el dinero de la deuda; se devuelve con el colateral vendido. Aquí se mide cuántas posiciones liquidables aparecen y cuánto tardan otros en tomarlas.</p>
     <div class="kpis">
-      <div class="kpi"><div class="l">Beneficio REAL (liquidaciones en Base)</div><div class="v" id="l-real">—</div><div class="s" id="l-real-sub"></div></div>
+      <div class="kpi"><div class="l">Beneficio REAL (liquidaciones en <span class="chainname">Base</span>)</div><div class="v" id="l-real">—</div><div class="s" id="l-real-sub"></div></div>
       <div class="kpi"><div class="l">Posiciones liquidables vistas</div><div class="v" id="l-opps">—</div><div class="s" id="l-opps-sub"></div></div>
       <div class="kpi"><div class="l">Beneficio estimado (techo)</div><div class="v" id="l-est">—</div><div class="s" id="l-est-sub"></div></div>
       <div class="kpi"><div class="l">Aave v3 · vigilancia</div><div class="v" id="l-aave">—</div><div class="s" id="l-aave-sub"></div></div>
@@ -192,6 +192,7 @@ async function load() {
   if (!d.ready) { $("blockline").textContent = "El servidor está arrancando; en un minuto empieza a procesar bloques."; return; }
 
   const agoS = d.lastBlockTs ? Math.max(0, Math.round(d.now / 1000 - d.lastBlockTs)) : null;
+  if (d.chain) document.querySelectorAll(".chainname").forEach((e) => (e.textContent = d.chain.name));
   if (d.chain) { LBL = d.chain.tokens ?? {}; $("title").textContent = `Protocolo de arbitraje con flashloan · ${d.chain.name} en vivo`; document.title = $("title").textContent; }
   $("blockline").innerHTML = `Último bloque <b>${num(d.lastBlock)}</b>${agoS !== null ? ` (hace ${agoS} s)` : ""} · <b>${num(d.universe?.pools)}</b> pools y <b>${num(d.universe?.cycles)}</b> rutas vigiladas · observando desde ${d.startedAt ? new Date(d.startedAt).toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" }) : "—"}${d.lastError ? ` · <span class="muted">último error: ${esc(d.lastError)}</span>` : ""}${d.fast ? `<br>Flashblocks (estado cada 200 ms vía ${esc(d.fast.rpc)}): ${num(d.fast.loops)} lecturas · ${num(d.fast.changedPools)} cambios de pool · ${num(d.fast.evaluated)} rutas re-evaluadas · ${num(d.fast.profitable)} rentables · ${num(d.fast.simulated)} simuladas · ${num(d.fast.sent)} enviadas · ${d.fast.avgMs} ms por lectura${d.fast.lastError ? ` · <span class="muted">${esc(d.fast.lastError)}</span>` : ""}` : ""}`;
 
