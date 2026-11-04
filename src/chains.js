@@ -188,7 +188,8 @@ export const CHAINS = {
       // revisión horaria 2026-11-04: añadidos
       { sym: "weETH", address: "0x5A7fACB970D094B6C7FF1df0eA68D99E6e73CBFF" }, { sym: "LINK", address: "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6" },
       // 2026-11-04 05:50
-      { sym: "cbETH", address: "0xadDb6A0412DE1BA0F936DCaeb8Aaa24578dcF3B2" }, { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" },
+      // cbETH y ezETH verificados pero con 0 pools fuera de Slipstream (factory sin código): sustituidos por WLD y AAVE
+      { sym: "WLD", address: "0xdC6fF44d5d932Cbd77B52E5612Ba0529DC6226F1" }, { sym: "AAVE", address: "0x76FB31fb4af56892A25e32cFC43De717950c9278" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],
