@@ -49,7 +49,7 @@ const sqrtAt = (tick) => Math.sqrt(1.0001 ** tick);
  * Evalúa JIT para un swap de entrada exacta `amountIn` (unidades crudas) de `tokenIn` en el pool v3 `p`.
  * Devuelve null si no aplica o {netUsd, feeUsd, invUsd, backUsd, borrowUsd, gasUsd, notionalUsd, share, ticks, k}.
  */
-export function evaluateJit(p, tokenIn, amountIn, { prices, gasUsd = 0, borrowBps = 5, maxNotionalUsd = 200_000, grid } = {}) {
+export function evaluateJit(p, tokenIn, amountIn, { prices, gasUsd = 0, borrowBps = 5, maxNotionalUsd = 200_000, grid, backFee } = {}) {
   if (!p || p.kind !== "v3" || !p.sqrtPriceX96 || !p.liquidity || !p.tickSpacing) return null;
   const a = Number(amountIn);
   const Lp = Number(p.liquidity);
@@ -84,7 +84,7 @@ export function evaluateJit(p, tokenIn, amountIn, { prices, gasUsd = 0, borrowBp
     const invUsd = (x1 - x0) * u0 + (y1 - y0) * u1;
     // exceso del token de entrada que hay que convertir de vuelta para devolver el préstamo
     const excessUsd = zf1 ? Math.max(0, x1 - x0) * u0 : Math.max(0, y1 - y0) * u1;
-    const backUsd = excessUsd * f;
+    const backUsd = excessUsd * (backFee ?? f); // deshacer en el pool más barato del par (si se conoce)
     const borrowUsd = notionalUsd * borrowBps / 1e4;
     // conservador: el inventario se deshace en el mismo pool al precio posterior al swap (P1) → pérdida impermanente
     const invP1Usd = (x1 - x0) * u1 * s1 * s1 + (y1 - y0) * u1;

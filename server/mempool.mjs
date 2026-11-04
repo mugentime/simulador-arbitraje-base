@@ -149,7 +149,11 @@ export class MempoolWatcher {
     for (const s of swaps) {
       if (s.kind !== "v3" || !s.amountIn) continue;
       const p = findPool(this.pools, router, s);
-      const r = evaluateJit(p, s.tokenIn, s.amountIn, { prices: this.jitPrices, gasUsd, borrowBps: Number(process.env.JIT_BORROW_BPS ?? 5), maxNotionalUsd: Number(process.env.JIT_MAX_USD ?? 200000) });
+      if (!p) continue;
+      const pair = [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()].sort().join();
+      const backFee = Math.min(...this.pools.filter((q) => q.reserve0 > 0n && q.token0?.address && [q.token0.address.toLowerCase(), q.token1.address.toLowerCase()].sort().join() === pair)
+        .map((q) => (q.feePips !== undefined ? Number(q.feePips) / 1e6 : (q.feeBps ?? 30) / 1e4)));
+      const r = evaluateJit(p, s.tokenIn, s.amountIn, { prices: this.jitPrices, gasUsd, backFee: isFinite(backFee) ? backFee : undefined, borrowBps: Number(process.env.JIT_BORROW_BPS ?? 5), maxNotionalUsd: Number(process.env.JIT_MAX_USD ?? 200000) });
       if (!r) continue;
       j.evaluated++;
       if (r.netUsd <= 0) continue;
