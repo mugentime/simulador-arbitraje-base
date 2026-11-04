@@ -138,8 +138,9 @@ export class Executor {
       pauseAfterReverts: Number(process.env.PAUSE_AFTER_REVERTS ?? 3),
       minNetUsd: Number(process.env.MIN_NET_USD ?? 0.05),
       minSendNetUsd: Number(process.env.MIN_SEND_NET_USD ?? 0.01),
-      tipShare: Number(process.env.TIP_SHARE ?? 0.4), // fracción del neto simulado que se ofrece como propina (orden dentro del bloque)
-      maxTipGwei: Number(process.env.MAX_TIP_GWEI ?? 0.2),
+      tipShare: Number(process.env.TIP_SHARE ?? 0.6), // fracción del neto simulado que se ofrece como propina (orden dentro del bloque)
+      maxTipGwei: Number(process.env.MAX_TIP_GWEI ?? 2), // tope de cordura; el límite real es la fracción del neto
+      bundleTipShare: Number(process.env.BUNDLE_TIP_SHARE ?? 0.8), // pago al builder en bundles (no cuesta si no se incluye)
       routeCooldownBlocks: Number(process.env.ROUTE_COOLDOWN_BLOCKS ?? 30), // tras un revert, esa ruta no se reenvía hasta pasados N bloques
       // Envío directo: sin eth_call ni estimateGas antes de enviar (ahorra 150–400 ms: la tx entra en el mismo bloque/flashblock
       // en que se vio la ineficiencia). El contrato revierte si no hay beneficio, así que el riesgo es solo el gas del revert,
@@ -301,6 +302,16 @@ export class Executor {
 
   async save() { this.p1.updatedAt = Date.now(); await this.store.set("phase1", this.p1); }
 
+  /** minProfit on-chain ≥ costo total de gas (con propina o pago al builder): si se gana el orden pero el beneficio real
+   *  no cubre lo pagado, la tx revierte (en bundle: no se incluye y no cuesta). Devuelve el calldata re-codificado. */
+  encodeWithCost(plan, costUsd, ethUsd) {
+    const t = plan.meta.startTok;
+    const units = t.sym === "WETH" ? costUsd / ethUsd : costUsd; // fuera de WETH los tokens de inicio son dólares
+    const need = BigInt(Math.floor(units * 1.02 * 10 ** t.decimals));
+    const minProfit = need > plan.minProfit ? need : plan.minProfit;
+    return this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, minProfit, plan.hops]]);
+  }
+
   buildPlan(r, lenders, ethUsd) {
     const lender = lenders.find((l) => l.name === r.lender);
     const source = lender?.source ?? SOURCE[r.lender];
@@ -316,7 +327,7 @@ export class Executor {
     }
     if (tokenIn !== r.startTok.address) return null;
     // beneficio mínimo on-chain = gas estimado del modelo, en unidades del token prestado
-    const gasInToken = r.startTok.sym === "USDC" ? r.gasUsd : r.startTok.sym === "WETH" ? r.gasUsd / ethUsd : 0;
+    const gasInToken = r.startTok.sym === "WETH" ? r.gasUsd / ethUsd : r.gasUsd; // tokens de inicio no-WETH = dólares (USDC/USDT/USDG)
     const minProfit = BigInt(Math.floor(gasInToken * 10 ** r.startTok.decimals));
     return { source, lender: lender.address, token: r.startTok.address, amount: r.amountIn, minProfit, hops, meta: r };
   }
@@ -502,9 +513,10 @@ export class Executor {
       if (!forced) rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
       if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
       let maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
+      const txData = forced ? data : this.encodeWithCost(plan, (Number((gas.baseFee + prio) * BigInt(rec.gasEst) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd, ethUsd);
       const fee = forced ?? { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
       if (forced) { prio = forced.maxPriorityFeePerGas ?? forced.gasPrice; maxFee = forced.maxFeePerGas ?? forced.gasPrice; }
-      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
+      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data: txData, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${this.sendProv?.lastWinner ?? new URL(this.sendUrl).host})`);
       this.sendProv?.lastReport?.then((r) => this.diag(`fase 1: difusión ${tx.hash.slice(0, 10)}: ${r}`)).catch(() => {});
@@ -532,7 +544,7 @@ export class Executor {
     if (!plan) return null;
     this.sending = true;
     try {
-      const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
+      let data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
       const w = this.wallet.connect(this.provider);
       const [nonce, netGp, head] = await Promise.all([
         this.provider.getTransactionCount(this.wallet.address, "latest"),
@@ -541,10 +553,11 @@ export class Executor {
       ]);
       const gasEst = Number(core.GAS_BASE + core.GAS_PER_HOP * BigInt(r.hops)) * 1.3;
       const gasLimit = BigInt(Math.floor(gasEst * 1.4));
-      const tipWei = BigInt(Math.floor(((r.netUsd * this.limits.tipShare) / ethUsd) * 1e18 / Math.max(1, Number(gasLimit))));
+      const tipWei = BigInt(Math.floor(((r.netUsd * this.limits.bundleTipShare) / ethUsd) * 1e18 / Math.max(1, gasEst)));
       let gasPrice = (netGp > MIN_BUNDLE_GAS_PRICE ? netGp : MIN_BUNDLE_GAS_PRICE) + tipWei;
       const cap = BigInt(Math.floor(this.limits.maxTipGwei * 1e9)) + MIN_BUNDLE_GAS_PRICE;
       if (gasPrice > cap) gasPrice = cap;
+      data = this.encodeWithCost(plan, (Number(gasPrice * BigInt(Math.floor(gasEst))) / 1e18) * ethUsd, ethUsd);
       const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
       const hash = ethers.keccak256(raw);
       // el RPC público puede ir unos bloques por detrás (BSC ~0.75 s/bloque): se toma el bloque más alto conocido y
@@ -603,12 +616,14 @@ export class Executor {
     ]);
     const gasLimit = BigInt(Math.floor(rec.gasEst * 1.25));
     // pago al builder: hasta tipShare del neto simulado, repartido en el gas de la tx
-    const tipWei = BigInt(Math.floor(((rec.netUsd * this.limits.tipShare) / ethUsd) * 1e18 / Math.max(1, Number(gasLimit))));
+    // el builder ordena por lo que le pagamos (gasPrice × gas): se ofrece bundleTipShare del neto; si el bundle no entra no cuesta
+    const tipWei = BigInt(Math.floor(((rec.netUsd * this.limits.bundleTipShare) / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
     let gasPrice = (netGp > MIN_BUNDLE_GAS_PRICE ? netGp : MIN_BUNDLE_GAS_PRICE) + tipWei;
     const cap = BigInt(Math.floor(this.limits.maxTipGwei * 1e9)) + MIN_BUNDLE_GAS_PRICE;
     if (gasPrice > cap) gasPrice = cap;
     const costUsd = (Number(gasPrice * BigInt(rec.gasEst)) / 1e18) * ethUsd;
     if (rec.profitUsd !== null && rec.profitUsd !== undefined && costUsd >= rec.profitUsd) { rec.sent = `omitida: gas del bundle $${costUsd.toFixed(4)} ≥ beneficio $${rec.profitUsd.toFixed(4)}`; return; }
+    data = this.encodeWithCost(plan, costUsd, ethUsd); // si el beneficio real no cubre lo pagado al builder, revierte → no se incluye
     const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
     const hash = ethers.keccak256(raw);
     const maxBlockNumber = Math.max(head, this.lastChainBlock || 0) + this.limits.bundleBlocks; // ver sendBackrun
