@@ -303,7 +303,8 @@ export class Executor {
 
   buildPlan(r, lenders, ethUsd) {
     const lender = lenders.find((l) => l.name === r.lender);
-    if (!lender || !(r.lender in SOURCE)) return null;
+    const source = lender?.source ?? SOURCE[r.lender];
+    if (!lender || source === undefined) return null;
     if (r.route.some((p) => p.kind === "v4" && !p.tickSpacing)) return null; // v4 sin tickSpacing conocido (universo viejo): se reconstruye solo
     let tokenIn = r.startTok.address;
     const hops = [];
@@ -317,7 +318,7 @@ export class Executor {
     // beneficio mínimo on-chain = gas estimado del modelo, en unidades del token prestado
     const gasInToken = r.startTok.sym === "USDC" ? r.gasUsd : r.startTok.sym === "WETH" ? r.gasUsd / ethUsd : 0;
     const minProfit = BigInt(Math.floor(gasInToken * 10 ** r.startTok.decimals));
-    return { source: SOURCE[r.lender], lender: lender.address, token: r.startTok.address, amount: r.amountIn, minProfit, hops, meta: r };
+    return { source, lender: lender.address, token: r.startTok.address, amount: r.amountIn, minProfit, hops, meta: r };
   }
 
   /** Llamado por el worker en cada bloque con los resultados ya evaluados. */

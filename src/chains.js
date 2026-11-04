@@ -222,6 +222,9 @@ export const CHAINS = {
     ],
     lenders: [
       { name: "Aave v3", kind: "aave", address: "0x6807dc923806fE8Fd134338EABCA509979a7e0cB", feeBps: null },
+      // flash de pools v3 al 0.01 % (1 bps, contra 5 bps de Aave): los pools concretos se resuelven al arrancar (verifyChain)
+      { name: "PancakeSwap v3 flash", kind: "v3flash", factory: PANCAKE_V3, fee: 100 },
+      { name: "Uniswap v3 flash", kind: "v3flash", factory: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", fee: 100 },
     ],
     aavePool: "0x6807dc923806fE8Fd134338EABCA509979a7e0cB", morpho: null,
   },
@@ -431,7 +434,19 @@ export async function verifyChain(ethers, provider, cfg) {
       out.factories.push(f);
     } catch (e) { disabled.push(`${f.name} ${f.address}: ${e.shortMessage || e.message}`); }
   }
-  for (const l of cfg.lenders) {
+  for (const l of cfg.lenders.filter((x) => x.kind === "v3flash")) {
+    // un prestamista por pool de 0.01 % entre los tokens de referencia (p. ej. WBNB/USDT, USDT/USDC)
+    const roles = Object.values(out.tokens);
+    const fac = new ethers.Contract(l.factory, ["function getPool(address,address,uint24) view returns (address)"], provider);
+    for (let i = 0; i < roles.length; i++) for (let j = i + 1; j < roles.length; j++) {
+      try {
+        const pool = await fac.getPool(roles[i].address, roles[j].address, l.fee);
+        if (!pool || pool === ethers.ZeroAddress || !(await hasCode(pool))) continue;
+        out.lenders.push({ name: `${l.name} ${roles[i].label}/${roles[j].label}`, kind: "balance", address: pool, feeBps: BigInt(l.fee / 100), source: 3, pool: true });
+      } catch (e) { disabled.push(`${l.name} ${roles[i].label}/${roles[j].label}: ${e.shortMessage || e.message}`); }
+    }
+  }
+  for (const l of cfg.lenders.filter((x) => x.kind !== "v3flash")) {
     try {
       if (!(await hasCode(l.address))) throw new Error("sin código");
       if (l.kind === "aave") { const c = new ethers.Contract(l.address, ["function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)"], provider); await c.FLASHLOAN_PREMIUM_TOTAL(); }

@@ -707,7 +707,7 @@ export async function readLenders(ethers, provider, tokens = TOKENS, lenders = L
     }
   }
   const r = await multicall(ethers, provider, calls);
-  const state = lenders.map((l) => ({ name: l.name, address: l.address, feeBps: l.feeBps, liquidity: {}, ok: false }));
+  const state = lenders.map((l) => ({ name: l.name, address: l.address, feeBps: l.feeBps, liquidity: {}, ok: false, source: l.source, pool: !!l.pool }));
   const idx = new Map(state.map((s) => [s.name, s]));
   const aTokens = [];
   r.forEach((raw, i) => {
@@ -789,8 +789,10 @@ function ternaryMax(f, lo, hi) {
 }
 
 // Segmentos de préstamo: [hasta cuánto se puede pedir, a qué costo]. Primero gratuitos.
-export function lenderSegments(lenders, sym) {
+export function lenderSegments(lenders, sym, route = null) {
   const segs = [];
+  // un pool v3 que presta queda bloqueado durante el flash: no sirve si la ruta pasa por él
+  if (route) { const inRoute = new Set(route.map((p) => String(p.address).toLowerCase())); lenders = lenders.filter((l) => !l.pool || !inRoute.has(String(l.address).toLowerCase())); }
   const free = lenders.filter((l) => l.ok && l.feeBps === 0n && (l.liquidity[sym] ?? 0n) > 0n)
     .sort((a, b) => (b.liquidity[sym] > a.liquidity[sym] ? 1 : -1));
   if (free.length) segs.push({ name: free[0].name, max: free[0].liquidity[sym], bps: 0n });
@@ -879,7 +881,7 @@ export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0
   const toOptimize = new Set(order.slice(0, maxOptimize).map((x) => x.c));
   for (const { c, startTok, firstRes, marginalBps } of pre) {
     const cap = firstRes / 2n; // tope de búsqueda; el óptimo real queda muy por debajo por el deslizamiento
-    const segs = lenderSegments(lenders, startTok.sym);
+    const segs = lenderSegments(lenders, startTok.sym, c.route);
     const toUsd = tokenToUsd(startTok, ethUsd);
     const gasUsd = (Number(gasWeiFor(c.route.length)) / 1e18) * ethUsd;
     // si una operación mínima ya pierde, ningún monto gana (la curva es cóncava): no hace falta optimizar
