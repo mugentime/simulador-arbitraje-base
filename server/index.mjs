@@ -195,7 +195,7 @@ let fast = null;
 let events = null;
 // WebSocket para el estado por eventos: WS_EVENTS_URL, o el de Alchemy de la cadena (Base: pendingLogs de Flashblocks)
 const ALCHEMY_WS_SLUG = { base: "base-mainnet", arbitrum: "arb-mainnet", optimism: "opt-mainnet", polygon: "polygon-mainnet", bsc: "bnb-mainnet", robinhood: "robinhood-mainnet" }[CHAIN_CFG.key];
-const EVENTS_WS = process.env.WS_EVENTS_URL || (process.env.ALCHEMY_KEY && ALCHEMY_WS_SLUG ? `wss://${ALCHEMY_WS_SLUG}.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}` : process.env.WS_RPC_URL || null);
+const EVENTS_WS = process.env.WS_EVENTS_URL || (process.env.ALCHEMY_KEY && ALCHEMY_WS_SLUG ? `wss://${ALCHEMY_WS_SLUG}.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}` : process.env.WS_RPC_URL || CHAIN_CFG.ws?.[0] || null); // sin Alchemy: el primer WS público de la cadena
 let mempool = null;
 const FLASH_RPC = process.env.FLASH_RPC_URL || CHAIN_CFG.fastRpc || CHAIN_CFG.rpcs[0];
 let chainVerified = false;
