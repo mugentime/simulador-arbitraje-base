@@ -172,11 +172,15 @@ export class MempoolWatcher {
       if (j.id === 2 && j.error) { this.m.lastError = `${host}: suscripción rechazada: ${j.error.message}`; ws.close(); return; }
       const r = j.params?.result;
       if (!r) return;
-      const h = typeof r === "string" ? r : r.hash;
-      if (!this.firstSeen(h)) return;
+      if (typeof r === "string") {
+        // nodo que solo da hashes: no consume el deduplicado (otro nodo puede traer la tx completa); se pide con ritmo limitado
+        (this.m.hashesBy ??= {})[host] = (this.m.hashesBy[host] ?? 0) + 1;
+        if (!fullTx && !this.dedup.has(r.toLowerCase())) this.onHash(r).catch(() => {});
+        return;
+      }
+      if (!this.firstSeen(r.hash)) return;
       this.m.seen++;
       (this.m.firstBy ??= {})[host] = (this.m.firstBy[host] ?? 0) + 1;
-      if (typeof r === "string") { if (!fullTx) this.onHash(r).catch(() => {}); return; }
       this.onTx(r).catch((e) => {
         this.m.errors = (this.m.errors ?? 0) + 1;
         this.m.lastError = (e.message || String(e)).slice(0, 120);
@@ -194,7 +198,7 @@ export class MempoolWatcher {
     // así que se limita el ritmo para no saturar el RPC
     if ((this.hashBudget = (this.hashBudget ?? 0) + 1) % 4 !== 0) return;
     const tx = await this.executor.provider.send("eth_getTransactionByHash", [h]).catch(() => null);
-    if (tx) await this.onTx(tx);
+    if (tx && this.firstSeen(tx.hash)) { this.m.seen++; await this.onTx(tx); }
   }
 
   async onTx(tx) {

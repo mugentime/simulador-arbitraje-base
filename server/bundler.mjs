@@ -17,7 +17,7 @@ export const MIN_BUNDLE_GAS_PRICE = 50_000_000n; // 0.05 gwei: precio medio mín
 /** Builders activos: BUNDLE_BUILDERS="nombre=url,nombre=url" sustituye la lista por defecto (pruebas o builders nuevos). */
 export function activeBuilders() {
   const env = process.env.BUNDLE_BUILDERS;
-  if (!env) return BSC_BUILDERS;
+  if (!env) return process.env.NODEREAL_KEY ? [...BSC_BUILDERS, { name: "NodeReal", url: `https://bsc-mainnet.nodereal.io/v1/${process.env.NODEREAL_KEY}`, method: "eth_sendBundle" }] : BSC_BUILDERS;
   return env.split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const i = x.indexOf("="); return { name: x.slice(0, i), url: x.slice(i + 1), method: "eth_sendBundle" }; });
 }
 

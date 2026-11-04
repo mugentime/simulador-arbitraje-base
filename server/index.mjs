@@ -25,8 +25,18 @@ function reasonsText(byReason) {
   return Object.entries(agg).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}×${n}`).join(", ") || "—";
 }
 
+// Claves de proveedores (p. ej. NODEREAL_KEY) viven solo en variables de Railway: se tachan de todo lo que se escribe
+// en los logs por si algún error de red incluye la URL completa.
+const SECRETS = [process.env.NODEREAL_KEY].filter((x) => x && x.length >= 8);
+const redact = (x) => (typeof x === "string" ? SECRETS.reduce((t, k) => t.split(k).join("***"), x) : x);
+for (const fn of ["log", "warn", "error"]) { const orig = console[fn].bind(console); console[fn] = (...a) => orig(...a.map(redact)); }
+
 // Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism (una instancia del servicio por cadena)
 const CHAIN_CFG = chainByKey(process.env.CHAIN || "base");
+// NodeReal (cuenta gratuita de Jose): solo el WebSocket de mempool (más rápido que los nodos públicos). Las lecturas
+// de cada bloque siguen en los RPC públicos para no agotar los CU mensuales del plan gratuito.
+const NODEREAL_SLUG = { bsc: "bsc-mainnet", polygon: "polygon-mainnet" }[CHAIN_CFG.key];
+const NODEREAL_WS = process.env.NODEREAL_KEY && NODEREAL_SLUG ? `wss://${NODEREAL_SLUG}.nodereal.io/ws/v1/${process.env.NODEREAL_KEY}` : null;
 core.applyChain(CHAIN_CFG);
 const RPCS = [process.env.RPC_URL, ...CHAIN_CFG.rpcs].filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/data") ? "/data" : path.resolve("data"));
@@ -60,6 +70,7 @@ const store = {
 };
 
 async function diag(m) {
+  m = redact(m);
   const list = (await store.get("diag")) ?? [];
   list.push({ t: Date.now(), m });
   await store.set("diag", list.slice(-30));
@@ -214,7 +225,7 @@ async function loop() {
         else { fast = new FastLoop({ url: FLASH_RPC, executor: exec, diag }); fast.start(); await diag(`flashblocks: bucle rápido cada 250 ms vía ${new URL(FLASH_RPC).host} (estado pending)`); }
       }
       if (CHAIN_CFG.publicMempool && process.env.MEMPOOL !== "0") {
-        if (!mempool) { mempool = new MempoolWatcher({ wsUrls: CHAIN_CFG.ws ?? [], executor: exec, diag }); mempool.start(); await diag(`mempool: escuchando transacciones pendientes vía ${mempool.m.ws ?? "—"} (${mempool.routers.size} routers)`); }
+        if (!mempool) { mempool = new MempoolWatcher({ wsUrls: [NODEREAL_WS, ...(CHAIN_CFG.ws ?? [])].filter(Boolean), executor: exec, diag }); mempool.start(); await diag(`mempool: escuchando transacciones pendientes vía ${mempool.m.ws ?? "—"} (${mempool.routers.size} routers)`); }
         else mempool.executor = exec;
       }
       const onBlock = async (ctx) => {
@@ -295,7 +306,7 @@ setInterval(async () => {
   const p1 = executor?.p1;
   const vs = live.vstats;
   let dxText = "";
-  if (mempool) { const m = mempool.m; dxText += ` · mempool ${m.connected ? "conectado" : "desconectado"} (${m.ws}): ${m.seen} vistas, ${m.routerTxs} a routers, ${m.decoded} decodificadas, ${m.modeled} modeladas, ${m.profitable} con back-run rentable, ${m.bundles} bundles${m.firstBy ? `; primero en avisar: ${Object.entries(m.firstBy).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}${m.lastError ? ` (${m.errors ?? 0} errores; último: ${m.lastError})` : ""}`; }
+  if (mempool) { const m = mempool.m; dxText += ` · mempool ${m.connected ? "conectado" : "desconectado"} (${m.ws}): ${m.seen} vistas, ${m.routerTxs} a routers, ${m.decoded} decodificadas, ${m.modeled} modeladas, ${m.profitable} con back-run rentable, ${m.bundles} bundles${m.firstBy ? `; primero en avisar: ${Object.entries(m.firstBy).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}${m.hashesBy ? `; solo hashes: ${Object.entries(m.hashesBy).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}${m.lastError ? ` (${m.errors ?? 0} errores; último: ${m.lastError})` : ""}`; }
   if (live.disloc) {
     const x = live.disloc();
     const top = x.top.slice(0, 4).map((r) => r.pair + " " + r.episodes + "ep/" + (r.share * 100).toFixed(0) + "%/med " + r.medianDur + "b/pico " + r.peakExcess + "bps/rentables " + r.captured).join(", ");
