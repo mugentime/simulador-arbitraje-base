@@ -12,12 +12,17 @@ import { Harvester } from "./harvester.mjs";
 import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
 import { FastLoop } from "./fastloop.mjs";
+import * as core from "../src/core.js";
+import { chainByKey, verifyChain } from "../src/chains.js";
 
-const RPCS = [process.env.RPC_URL, "https://base-rpc.publicnode.com", "https://base.llamarpc.com", "https://mainnet.base.org", "https://1rpc.io/base", "https://base.drpc.org"].filter(Boolean);
+// Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism (una instancia del servicio por cadena)
+const CHAIN_CFG = chainByKey(process.env.CHAIN || "base");
+core.applyChain(CHAIN_CFG);
+const RPCS = [process.env.RPC_URL, ...CHAIN_CFG.rpcs].filter(Boolean);
 const DATA_DIR = process.env.DATA_DIR || (fs.existsSync("/data") ? "/data" : path.resolve("data"));
 const LT_HOURS = Number(process.env.LT_HOURS ?? 2);
 const PORT = Number(process.env.PORT || 8080);
-const CHAIN_ID = BigInt(process.env.CHAIN_ID || 8453);
+const CHAIN_ID = BigInt(CHAIN_CFG.id);
 const EXECUTE_MODE = (process.env.EXECUTE_MODE || "simulate").toLowerCase() === "live" ? "live" : "simulate";
 const AUTO_DEPLOY = process.env.AUTO_DEPLOY === "1";
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -60,14 +65,14 @@ async function provider() {
       const id = BigInt(await p.send("eth_chainId", []));
       if (id !== CHAIN_ID) throw new Error(`chainId ${id}`);
       // el long tail necesita eth_getLogs: se descarta el RPC que no lo responde a tiempo
-      if (LT_HOURS > 0 && CHAIN_ID === 8453n) {
+      if (LT_HOURS > 0) {
         const head = await p.getBlockNumber();
-        await p.getLogs({ address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", fromBlock: head - 500, toBlock: head });
+        await p.getLogs({ address: CHAIN_CFG.factories[0].address, fromBlock: head - 500, toBlock: head });
       }
       return { p, url };
     } catch (e) { console.warn("RPC falló", url, e.shortMessage || e.message); }
   }
-  throw new Error("ningún RPC de Base respondió");
+  throw new Error(`ningún RPC de ${CHAIN_CFG.name} respondió`);
 }
 
 // ---------------------------------------------------------------- proveedor de eth_getLogs con respaldo
@@ -98,7 +103,7 @@ function logsProviderFor(main, mainUrl) {
 
 // ---------------------------------------------------------------- bloques nuevos por WebSocket (con respaldo por sondeo)
 // Despierta al worker en cuanto el nodo anuncia un bloque, en vez de preguntar cada segundo.
-const WS_RPCS = (process.env.WS_RPC_URL ? [process.env.WS_RPC_URL] : []).concat(["wss://base-rpc.publicnode.com", "wss://base.drpc.org", "wss://mainnet.base.org"]);
+const WS_RPCS = (process.env.WS_RPC_URL ? [process.env.WS_RPC_URL] : []).concat(CHAIN_CFG.ws ?? []);
 let wsWaiters = [];
 let wsBlock = 0, wsAlive = false;
 function blockWaiter(fallbackMs) {
@@ -154,12 +159,19 @@ let harvester = null;
 let liquidations = null;
 let liquidator = null;
 let fast = null;
-const FLASH_RPC = process.env.FLASH_RPC_URL || "https://mainnet.base.org";
+const FLASH_RPC = process.env.FLASH_RPC_URL || CHAIN_CFG.fastRpc || CHAIN_CFG.rpcs[0];
+let chainVerified = false;
 async function loop() {
   while (!stopping) {
     try {
       const { p, url } = await provider();
-      await diag(`servidor: RPC ${new URL(url).host}`);
+      await diag(`servidor: cadena ${CHAIN_CFG.name} (${CHAIN_CFG.id}) · RPC ${new URL(url).host}`);
+      if (!chainVerified) {
+        // verificación on-chain de las direcciones configuradas: lo que no responde se desactiva
+        const { cfg, disabled } = await verifyChain(ethers, p, CHAIN_CFG);
+        core.applyChain(cfg); chainVerified = true;
+        await diag(`cadena: ${Object.keys(cfg.tokens).length} tokens, ${cfg.factories.length} factories, ${cfg.lenders.length} prestamistas verificados${disabled.length ? ` · desactivado: ${disabled.join(" · ")}` : ""}`);
+      }
       const exec = new Executor({ provider: p, store, diag, mode: EXECUTE_MODE, autoDeploy: AUTO_DEPLOY });
       await exec.init();
       let nb = 0;
@@ -224,7 +236,7 @@ const server = http.createServer(async (req, res) => {
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html")) {

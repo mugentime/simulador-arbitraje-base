@@ -10,8 +10,11 @@
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
 
-export const AAVE_POOL = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5";
-export const MORPHO = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+// Direcciones por cadena (ver src/chains.js); se leen al usarse porque la cadena activa se fija al arrancar.
+export const AAVE_POOL_OF = () => core.CHAIN.aavePool;
+export const MORPHO_OF = () => core.CHAIN.morpho;
+const AAVE_POOL = { toString: () => core.CHAIN.aavePool ?? "" };
+const MORPHO = { toString: () => core.CHAIN.morpho ?? "" };
 const MORPHO_API = process.env.MORPHO_API || "https://api.morpho.org/graphql";
 const ABI = [
   "function getUserAccountData(address) view returns (uint256 totalCollateralBase,uint256 totalDebtBase,uint256 availableBorrowsBase,uint256 currentLiquidationThreshold,uint256 ltv,uint256 healthFactor)",
@@ -68,14 +71,17 @@ export class Liquidations {
   async save() { this.liq.updatedAt = Date.now(); await this.store.set("liq", this.liq); }
 
   async onBlock({ block, ts, gas, ethUsd }) {
-    if (!this.discovering && (this.liq.aave.lastDiscoveryBlock === null || block - this.liq.aave.lastDiscoveryBlock > 300)) {
+    if (core.CHAIN.aavePool && !this.discovering && (this.liq.aave.lastDiscoveryBlock === null || block - this.liq.aave.lastDiscoveryBlock > 300)) {
       this.discovering = true;
       this.discoverAave(block).catch((e) => { this.liq.aave.error = e.shortMessage || e.message; }).finally(() => { this.discovering = false; });
     }
     if (this.busy || block % this.cfg.scanEvery !== 0) return;
     this.busy = true;
     try {
-      await Promise.all([this.scanAave({ block, ts, gas, ethUsd }).catch((e) => { this.liq.aave.error = e.shortMessage || e.message; }), this.scanMorpho({ block, ts, gas, ethUsd }).catch((e) => { this.liq.morpho.error = e.shortMessage || e.message; })]);
+      await Promise.all([
+        core.CHAIN.aavePool ? this.scanAave({ block, ts, gas, ethUsd }).catch((e) => { this.liq.aave.error = e.shortMessage || e.message; }) : Promise.resolve(),
+        core.CHAIN.morpho && core.CHAIN.morphoApiChainId ? this.scanMorpho({ block, ts, gas, ethUsd }).catch((e) => { this.liq.morpho.error = e.shortMessage || e.message; }) : Promise.resolve(),
+      ]);
       await this.save();
     } finally { this.busy = false; }
   }
@@ -89,8 +95,8 @@ export class Liquidations {
     while (from <= head) {
       const to = Math.min(head, from + this.cfg.chunk - 1);
       const [logs, mlogs] = await Promise.all([
-        this.logs.getLogs({ address: AAVE_POOL, fromBlock: from, toBlock: to, topics: [[topicBorrow, topicLiq]] }),
-        this.logs.getLogs({ address: MORPHO, fromBlock: from, toBlock: to, topics: [[this.iface.getEvent("Liquidate").topicHash]] }).catch(() => []),
+        this.logs.getLogs({ address: String(AAVE_POOL), fromBlock: from, toBlock: to, topics: [[topicBorrow, topicLiq]] }),
+        this.logs.getLogs({ address: String(MORPHO), fromBlock: from, toBlock: to, topics: [[this.iface.getEvent("Liquidate").topicHash]] }).catch(() => []),
       ]);
       for (const lg of mlogs) {
         const ev = this.iface.parseLog(lg);
@@ -133,7 +139,7 @@ export class Liquidations {
     const full = this.scans % this.cfg.fullEvery === 1;
     const list = full ? [...this.borrowers.keys()] : [...this.borrowers.entries()].filter(([, v]) => v.hf !== undefined && v.hf < this.cfg.watchHf).map(([a]) => a);
     if (!list.length) return;
-    const calls = list.map((a) => [AAVE_POOL, this.iface.encodeFunctionData("getUserAccountData", [a])]);
+    const calls = list.map((a) => [String(AAVE_POOL), this.iface.encodeFunctionData("getUserAccountData", [a])]);
     const res = await core.multicall(ethers, this.provider, calls, block);
     const cands = [];
     list.forEach((a, i) => {
@@ -180,9 +186,9 @@ export class Liquidations {
     // variantes por si el esquema no admite algún campo/filtro/orden: se usa la primera que responda sin error
     const queries = [];
     for (const f of [fieldsA, fieldsB]) {
-      queries.push(`{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { ${f} } }`);
-      queries.push(`{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [8453], borrowShares_gte: 1 }) { ${f} } }`);
-      queries.push(`{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [8453] }) { ${f} } }`);
+      queries.push(`{ marketPositions(first: 60, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [${core.CHAIN.morphoApiChainId}], healthFactor_lte: 1.05, borrowShares_gte: 1 }) { ${f} } }`);
+      queries.push(`{ marketPositions(first: 100, orderBy: HealthFactor, orderDirection: Asc, where: { chainId_in: [${core.CHAIN.morphoApiChainId}], borrowShares_gte: 1 }) { ${f} } }`);
+      queries.push(`{ marketPositions(first: 100, orderBy: BorrowShares, orderDirection: Desc, where: { chainId_in: [${core.CHAIN.morphoApiChainId}] }) { ${f} } }`);
     }
     let items = null; const errs = [];
     for (const query of queries) {
@@ -198,7 +204,7 @@ export class Liquidations {
     // verificación on-chain de las más cercanas a 1
     const calls = [];
     for (const it of items) {
-      calls.push([MORPHO, this.iface.encodeFunctionData("position", [it.market.uniqueKey, it.user.address])], [MORPHO, this.iface.encodeFunctionData("market", [it.market.uniqueKey])], [it.market.oracleAddress, this.iface.encodeFunctionData("price")]);
+      calls.push([String(MORPHO), this.iface.encodeFunctionData("position", [it.market.uniqueKey, it.user.address])], [String(MORPHO), this.iface.encodeFunctionData("market", [it.market.uniqueKey])], [it.market.oracleAddress, this.iface.encodeFunctionData("price")]);
     }
     const res = calls.length ? await core.multicall(ethers, this.provider, calls, block) : [];
     const cands = [];

@@ -12,7 +12,7 @@ export function emptyFast() {
 export class FastLoop {
   constructor({ url, executor, diag, intervalMs = 250 }) {
     this.url = url; this.executor = executor; this.diag = diag; this.intervalMs = intervalMs;
-    this.provider = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 });
+    this.provider = new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
     this.f = emptyFast(); this.f.enabled = true; this.f.rpc = new URL(url).host;
     this.running = false; this.ctx = null;
   }

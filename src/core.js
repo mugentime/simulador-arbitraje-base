@@ -2,16 +2,17 @@ import * as CL from "./clmath.js";
 // Núcleo del simulador: lectura on-chain de Base + pipeline del protocolo (puntos 1-3).
 // Funciona en el navegador (ethers global) y en Node (ethers importado). Todo con BigInt.
 
-export const CHAIN_ID = 8453n;
+export let CHAIN_ID = 8453n;
+export let CHAIN = { key: "base", name: "Base", id: 8453, native: "ETH", blockMs: 2000, publicMempool: false };
 
-export const TOKENS = {
+export let TOKENS = {
   WETH: { address: "0x4200000000000000000000000000000000000006", decimals: 18 },
   USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
   cbBTC: { address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", decimals: 8 },
 };
 
 /** Tokens adicionales de Base para ampliar los pares (se verifican on-chain por símbolo al arrancar; los que no coinciden se descartan). */
-export const EXTRA_TOKENS = [
+export let EXTRA_TOKENS = [
   { sym: "USDbC", address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA" },
   { sym: "DAI", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb" },
   { sym: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2" },
@@ -42,10 +43,10 @@ export async function verifiedExtraTokens(ethers, provider, list = EXTRA_TOKENS)
 }
 
 export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
-export const GAS_ORACLE = "0x420000000000000000000000000000000000000F"; // OP Stack: fee L1
+export let GAS_ORACLE = "0x420000000000000000000000000000000000000F"; // OP Stack: fee L1 (null en cadenas sin oráculo)
 
 // Factories en Base: las direcciones de pool se obtienen on-chain, no están escritas a mano.
-export const FACTORIES = [
+export let FACTORIES = [
   { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: [100, 500, 3000, 10000] },
   { name: "PancakeSwap v3", kind: "v3fee", address: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", params: [100, 500, 2500, 10000] },
   { name: "Aerodrome Slipstream", kind: "v3tick", address: "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A", params: [1, 50, 100, 200] },
@@ -58,11 +59,25 @@ export const FACTORIES = [
 export const V4_DYNAMIC_FEE = 0x800000;
 
 // Proveedores de flashloan (punto 2). La liquidez y la comisión se leen on-chain.
-export const LENDERS = [
+export let LENDERS = [
   { name: "Morpho Blue", kind: "balance", address: "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", feeBps: 0n },
   { name: "Balancer v3", kind: "balance", address: "0xbA1333333333a1BA1108E8412f11850A5C319bA9", feeBps: 0n },
   { name: "Aave v3", kind: "aave", address: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5", feeBps: null },
 ];
+
+/**
+ * Activa una cadena: sustituye tokens, factories, prestamistas y oráculo por los de `cfg` (ver chains.js).
+ * Los importadores que usan `core.X` ven el cambio al instante (enlaces vivos de ESM).
+ */
+export function applyChain(cfg) {
+  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250 };
+  CHAIN_ID = BigInt(cfg.id);
+  TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));
+  EXTRA_TOKENS = (cfg.extraTokens ?? []).map((t) => ({ ...t }));
+  FACTORIES = cfg.factories.map((f) => ({ ...f }));
+  LENDERS = cfg.lenders.map((l) => ({ ...l }));
+  GAS_ORACLE = cfg.l1GasOracle ?? null;
+}
 
 export const GAS_BASE = 120000n;
 export const GAS_PER_HOP = 90000n;
@@ -633,7 +648,7 @@ export async function readGas(ethers, provider) {
     provider.send("eth_maxPriorityFeePerGas", []).catch(() => "0x0"),
   ]);
   let l1Fee = 0n;
-  try {
+  if (GAS_ORACLE) try {
     const dummy = "0x" + "ab".repeat(CALLDATA_BYTES);
     const raw = await provider.call({ to: GAS_ORACLE, data: enc(iface, "getL1Fee", [dummy]) });
     l1Fee = BigInt(raw);

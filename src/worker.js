@@ -6,10 +6,14 @@ import * as core from "./core.js";
 import { emptyDisloc, trackBlock, summarize as summarizeDisloc } from "./dislocations.js";
 import { emptyVaultStats, harvestTable, processVaultBlock } from "./vaultsim.js";
 
-export const MIN_LIQ = {
-  [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, // 0.05 WETH
-  [core.TOKENS.USDC.address.toLowerCase()]: 150n * 10n ** 6n, // 150 USDC
-};
+/** Liquidez mínima por token de referencia (≈ $150): se calcula al usarse porque la cadena activa puede cambiar. */
+export function minLiq() {
+  return {
+    [core.TOKENS.WETH.address.toLowerCase()]: 5n * 10n ** 16n, // 0.05 del nativo envuelto (se ajusta por precio abajo)
+    [core.TOKENS.USDC.address.toLowerCase()]: 150n * 10n ** BigInt(core.TOKENS.USDC.decimals), // 150 USDC
+  };
+}
+export const MIN_LIQ = new Proxy({}, { get: (_, k) => minLiq()[k], ownKeys: () => Object.keys(minLiq()), getOwnPropertyDescriptor: (_, k) => ({ value: minLiq()[k], enumerable: true, configurable: true }) });
 export const HEARTBEAT_STALE_MS = 45_000;
 export const BUILDING_STALE_MS = 4 * 60_000; // armar el universo puede tardar minutos con RPC públicos
 const UNIVERSE_TTL_MS = 30 * 60_000; // el universo se reconstruye cada 30 min; mientras, se reutiliza

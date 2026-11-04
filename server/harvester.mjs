@@ -189,11 +189,11 @@ export class Harvester {
       const r = await fetch(BEEFY_API, { signal: AbortSignal.timeout(20_000) });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const all = await r.json();
-      const base = all.filter((v) => v.chain === "base" && v.status === "active" && v.strategy && /^0x[0-9a-fA-F]{40}$/.test(v.strategy));
+      const base = all.filter((v) => v.chain === core.CHAIN.beefy && v.status === "active" && v.strategy && /^0x[0-9a-fA-F]{40}$/.test(v.strategy));
       this.strats = base.map((v) => ({ address: ethers.getAddress(v.strategy), id: v.id, name: v.name, platform: v.platformId, token: v.token }));
       await this.store.set("beefy", { at: Date.now(), strats: this.strats });
       this.h.lastDiscovery = Date.now(); this.h.strategies = this.strats.length;
-      await this.diag(`harvest: ${this.strats.length} estrategias activas de Beefy en Base (api.beefy.finance)`);
+      await this.diag(`harvest: ${this.strats.length} estrategias activas de Beefy en ${core.CHAIN.name} (api.beefy.finance)`);
     } catch (e) {
       this.h.lastError = `descubrimiento: ${e.shortMessage || e.message}`;
       await this.diag(`harvest: no se pudo leer la lista de Beefy (${this.h.lastError}); ${this.strats.length} estrategias en caché`);

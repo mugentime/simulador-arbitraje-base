@@ -21,7 +21,7 @@ const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
-const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]);
+const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"] : (core.CHAIN.sendRpcs ?? [core.CHAIN.fastRpc]));
 
 export function emptyPhase1() {
   return {
@@ -66,7 +66,7 @@ export class Executor {
   sender() {
     const url = this.sendRpcs[this.sendIdx % this.sendRpcs.length];
     if (!this.sendProv || this.sendUrl !== url) {
-      this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, 8453, { staticNetwork: true, batchMaxCount: 1 });
+      this.sendUrl = url; this.sendProv = new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
       this.sendSigner = new ethers.NonceManager(this.wallet.connect(this.sendProv)); // nonces consecutivos aunque haya envíos seguidos
     }
     return this.sendSigner;
@@ -100,12 +100,12 @@ export class Executor {
     this.p1 = (await this.store.get("phase1")) ?? emptyPhase1();
     if (!this.p1.reconciledLegacy && process.env.RAILWAY_PROJECT_ID) {
       // migración única: los 3 envíos del 2026-11-03 cuyo recibo no quedó registrado (el wait expiró)
-      this.p1.pending = (this.p1.pending ?? []).concat([
+      if (core.CHAIN.key === "base") this.p1.pending = (this.p1.pending ?? []).concat([
         { hash: "0xdb84afff00000000000000000000000000000000000000000000000000000000", legacyPrefix: "0xdb84afff", sentAt: Date.now(), route: "envío anterior", startSym: "USDC", startDecimals: 6 },
         { hash: "0x7208509781ce93d17f9551af654f30492ae21e1017406fc98e1f0fe0752aa8c3", sentAt: Date.now(), route: "WETH → Aerodrome Slipstream → USDC → Uniswap v3 → WETH", startSym: "WETH", startDecimals: 18 },
         { hash: "0xd2cdf7f2a9d6fe7cdbb679541597ccc46a8b08b675f7e765938bb401f744f62d", sentAt: Date.now(), route: "USDC → Uniswap v4 → cbBTC → PancakeSwap v3 → USDC", startSym: "USDC", startDecimals: 6 },
       ].filter((t) => !t.legacyPrefix));
-      this.p1.sent = Math.max(this.p1.sent, 2);
+      if (core.CHAIN.key === "base") this.p1.sent = Math.max(this.p1.sent, 2);
       this.p1.reconciledLegacy = true;
     }
     if (this.p1.modelVersion !== 2) { // contadores de simulaciones del modelo/contrato anteriores: se reinician, se conserva el contrato

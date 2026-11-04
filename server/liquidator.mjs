@@ -5,7 +5,7 @@
 
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
-import { AAVE_POOL, MORPHO } from "./liquidations.mjs";
+import { AAVE_POOL_OF, MORPHO_OF } from "./liquidations.mjs";
 
 const ABI = [
   "function getReservesList() view returns (address[])",
@@ -42,10 +42,10 @@ export class Liquidator {
   // ------------------------------------------------------------------ Aave: reservas y posición detallada
   async loadAave() {
     if (this.aave && Date.now() - this.aave.at < 3600_000) return this.aave;
-    const pool = new ethers.Contract(AAVE_POOL, ABI, this.provider);
+    const pool = new ethers.Contract(AAVE_POOL_OF(), ABI, this.provider);
     const [list, ap] = await Promise.all([pool.getReservesList(), pool.ADDRESSES_PROVIDER()]);
     const oracle = await new ethers.Contract(ap, ABI, this.provider).getPriceOracle();
-    const calls = list.flatMap((a) => [[AAVE_POOL, this.iface.encodeFunctionData("getReserveData", [a])], [a, this.iface.encodeFunctionData("decimals")], [a, this.iface.encodeFunctionData("symbol")]]);
+    const calls = list.flatMap((a) => [[AAVE_POOL_OF(), this.iface.encodeFunctionData("getReserveData", [a])], [a, this.iface.encodeFunctionData("decimals")], [a, this.iface.encodeFunctionData("symbol")]]);
     const res = await core.multicall(ethers, this.provider, calls);
     const reserves = new Map();
     list.forEach((a, i) => {
@@ -142,7 +142,7 @@ export class Liquidator {
       const maxByCol = (c.usd / (c.bonusBps / 10000)) / d.price; // deuda cubrible con el colateral disponible
       const coverUnits = Math.min((Number(d.amount) / 10 ** d.decimals) * closeFactor, maxByCol) * 0.995;
       amount = BigInt(Math.floor(coverUnits * 10 ** d.decimals));
-      hop0 = [3, AAVE_POOL, d.address, c.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["address"], [cand.user])];
+      hop0 = [3, AAVE_POOL_OF(), d.address, c.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["address"], [cand.user])];
       label = `Aave · ${d.symbol} deuda → ${c.symbol} colateral (bono ${(c.bonusBps / 100 - 100).toFixed(1)}%)`;
       valueUsd = coverUnits * d.price;
       expectedCol = BigInt(Math.floor((valueUsd * (c.bonusBps / 10000) / c.price) * 10 ** c.decimals));
@@ -159,7 +159,7 @@ export class Liquidator {
       const repaid = (seized * price / 10n ** 36n) * 1_000_000n / BigInt(Math.floor(lif * 1e6));
       amount = repaid * 1005n / 1000n; // margen de redondeo; lo no usado vuelve con el préstamo
       const mp = [loanTok.address, colTok.address, ethers.getAddress(m.market.oracleAddress), ethers.getAddress(m.market.irmAddress), BigInt(m.market.lltv)];
-      hop0 = [4, MORPHO, loanTok.address, colTok.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,address,address,uint256)", "address", "uint256"], [mp, cand.user, seized])];
+      hop0 = [4, MORPHO_OF(), loanTok.address, colTok.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,address,address,uint256)", "address", "uint256"], [mp, cand.user, seized])];
       label = `Morpho · ${colTok.sym}/${loanTok.sym} LLTV ${(Number(m.market.lltv) / 1e16).toFixed(0)}% (LIF ${((lif - 1) * 100).toFixed(1)}%)`;
       expectedCol = seized;
       if (price === 0n || borrowed === 0n) return;
@@ -173,8 +173,10 @@ export class Liquidator {
     let t = colTok.address;
     for (const p of route.route) { const out = core.other(p, t).address; hops.push(this.hopFor(p, t, out)); t = out; }
     // prestamista: Morpho (0%) si tiene el token; si no, Balancer v3
-    const morphoBal = await new ethers.Contract(loanTok.address, ABI, this.provider).balanceOf(MORPHO);
-    const source = morphoBal >= amount ? 0 : 1, lender = source === 0 ? core.LENDERS[0].address : core.LENDERS[1].address;
+    const morphoBal = await new ethers.Contract(loanTok.address, ABI, this.provider).balanceOf(MORPHO_OF() ?? ethers.ZeroAddress);
+    const morphoL = core.LENDERS.find((l) => l.name === "Morpho Blue"), balL = core.LENDERS.find((l) => l.name === "Balancer v3");
+    const source = morphoL && morphoBal >= amount ? 0 : 1, lender = source === 0 ? morphoL.address : balL?.address;
+    if (!lender) throw new Error("sin prestamista sin comisión (Morpho/Balancer) en esta cadena");
     const plan = [source, lender, loanTok.address, amount, 0n, hops];
     const data = this.executor.iface.encodeFunctionData("execute", [plan]);
     const tx = { to: exec, from: wallet.address, data };
