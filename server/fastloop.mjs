@@ -30,12 +30,13 @@ export class FastLoop {
   /** Contexto del último bloque completo: gas, precio ETH, prestamistas. */
   setContext(ctx) { this.ctx = ctx; }
 
-  start() { if (!this.running) { this.running = true; this.loop().catch((e) => { this.f.lastError = e.message; this.running = false; }); } }
+  start() { if (!this.running) { this.running = true; this.gen = (this.gen ?? 0) + 1; this.loop(this.gen).catch((e) => { this.f.lastError = e.message; this.running = false; }); } }
   stop() { this.running = false; }
 
-  async loop() {
+  async loop(gen) {
     let lastWarn = 0;
-    while (this.running) {
+    // `gen` evita que un bucle antiguo siga vivo tras stop()+start(): solo corre el de la generación actual
+    while (this.running && gen === this.gen) {
       const t0 = Date.now();
       try {
         if (!this.pools?.length || !this.ctx) { await sleep(500); continue; }

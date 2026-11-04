@@ -174,7 +174,11 @@ async function loop() {
       await lx.init();
       liquidator = lx;
       lq.onCandidate = (cand, ctx) => lx.attempt(cand, ctx).catch(() => {});
-      if (process.env.FLASHBLOCKS !== "0") { fast = new FastLoop({ url: FLASH_RPC, executor: exec, diag }); fast.start(); await diag(`flashblocks: bucle rápido cada 250 ms vía ${new URL(FLASH_RPC).host} (estado pending)`); }
+      if (process.env.FLASHBLOCKS !== "0") {
+        // un solo bucle rápido: el de la tanda anterior se detiene (si no, se acumulan bucles con ejecutores y nonces propios)
+        if (fast) { fast.stop(); fast.executor = exec; fast.start(); }
+        else { fast = new FastLoop({ url: FLASH_RPC, executor: exec, diag }); fast.start(); await diag(`flashblocks: bucle rápido cada 250 ms vía ${new URL(FLASH_RPC).host} (estado pending)`); }
+      }
       const onBlock = async (ctx) => {
         nb++; if (nb % 300 === 0) await exec.refreshBalance();
         if (fast) { if (fast.main !== ctx.pools) fast.setUniverse(ctx.pools, live.cycles ?? []); fast.setContext({ gas: ctx.gas, ethUsd: ctx.ethUsd, lenders: ctx.lenders }); }
