@@ -92,6 +92,26 @@ export function emptyPhase1() {
 
 const routeKey = (r) => label(r);
 
+/**
+ * Comisión de un back-run público: debe igualar la propina EFECTIVA de la víctima para quedar justo detrás de ella
+ * (a igual propina, los nodos ordenan por orden de llegada). Antes se mandaba una tx legacy con gasPrice = maxFeePerGas
+ * de la víctima: si la víctima es EIP-1559 con propina < maxFee − baseFee, nuestra propina efectiva era MAYOR y el
+ * constructor del bloque nos ponía ANTES que ella, donde la ruta aún no existe → revert.
+ */
+export function backrunFee(victimTx, baseFee = 0n) {
+  const big = (x) => (x == null ? null : BigInt(x));
+  const maxFee = big(victimTx.maxFeePerGas), tip = big(victimTx.maxPriorityFeePerGas);
+  if (maxFee != null && tip != null && maxFee > 0n) {
+    const base = BigInt(baseFee ?? 0n);
+    const effTip = maxFee - base < tip ? maxFee - base : tip;
+    if (effTip < 0n) return null;
+    return { fee: { maxFeePerGas: maxFee, maxPriorityFeePerGas: tip }, effective: base + effTip, desc: `tipo 2, propina ${Number(tip) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei` };
+  }
+  const gp = big(victimTx.gasPrice);
+  if (gp == null || gp <= 0n) return null;
+  return { fee: { gasPrice: gp, type: 0 }, effective: gp, desc: `legacy ${Number(gp) / 1e9} gwei` };
+}
+
 export class Executor {
   constructor({ provider, store, diag, mode = "simulate", autoDeploy = false }) {
     this.provider = provider; this.store = store; this.diag = diag; this.mode = mode; this.autoDeploy = autoDeploy;
@@ -409,20 +429,22 @@ export class Executor {
       if (this.limits.bundleSend) { await this.sendAsBundle(plan, rec, gas, ethUsd, data, now); return; }
       // Propina: Base ordena por propina dentro de cada flashblock; con la mínima vamos al final y otro bot se lleva
       // la ruta antes. Se ofrece una fracción del neto simulado, con tope.
-      const tipUsd = rec.netUsd * this.limits.tipShare;
+      // Back-run público (Polygon): comisión fijada para igualar la propina EFECTIVA de la víctima (ver sendBackrunPublic)
+      const forced = this.forcedFee;
+      const tipUsd = forced ? 0 : rec.netUsd * this.limits.tipShare;
       const tipWei = BigInt(Math.floor((tipUsd / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
       const capWei = BigInt(Math.floor(this.limits.maxTipGwei * 1e9));
       let prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
-      if (tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
-      rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
+      if (!forced && tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
+      if (!forced) rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
       if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
       let maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
-      const fee = this.forcedGasPrice ? { gasPrice: this.forcedGasPrice, type: 0 } : { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
-      if (this.forcedGasPrice) prio = this.forcedGasPrice;
+      const fee = forced ?? { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
+      if (forced) { prio = forced.maxPriorityFeePerGas ?? forced.gasPrice; maxFee = forced.maxFeePerGas ?? forced.gasPrice; }
       const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${this.sendProv?.lastWinner ?? new URL(this.sendUrl).host})`);
-      (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
+      (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd, victim: rec.backrun ?? null });
       await this.save();
     } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
     finally { this.sending = false; }
@@ -487,18 +509,19 @@ export class Executor {
     if (!victimTx) return null;
     const plan = this.buildPlan(r, lenders, ethUsd);
     if (!plan) return null;
-    const gp = BigInt(victimTx.gasPrice ?? victimTx.maxFeePerGas ?? 0);
-    if (gp <= 0n) return null;
+    const fx = backrunFee(victimTx, gas.baseFee);
+    if (!fx) return null;
+    const gp = fx.effective;
     const gasEst = Number(core.GAS_BASE + core.GAS_PER_HOP * BigInt(r.hops)) * 1.3;
     const costUsd = (Number(gp) * gasEst / 1e18) * ethUsd;
     const rec = { block: this.lastChainBlock, ts: Math.floor(Date.now() / 1000), route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, backrun: victimTx.hash, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: costUsd, netUsd: r.grossUsd - r.flashFeeUsd - costUsd, gasEst, sent: null };
     if (rec.netUsd <= 0) return `omitido: gas al precio de la víctima $${costUsd.toFixed(4)} ≥ beneficio`;
     // send() aplica topes, presupuesto de reverts y una sola tx en vuelo; se fija el precio exacto de la víctima
-    this.forcedGasPrice = gp;
-    try { await this.send(plan, rec, { ...gas, baseFee: 0n, priority: 0n }, ethUsd); } finally { this.forcedGasPrice = null; }
+    this.forcedFee = fx.fee;
+    try { await this.send(plan, rec, { ...gas, baseFee: 0n, priority: 0n }, ethUsd); } finally { this.forcedFee = null; }
     this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
     if (/^0x/.test(String(rec.sent))) this.p1.backruns = (this.p1.backruns ?? 0) + 1;
-    return `envío público al precio de la víctima (${Number(gp) / 1e9} gwei): ${rec.sent}`;
+    return `envío público con la propina efectiva de la víctima (${fx.desc}): ${rec.sent}`;
   }
 
   /**
@@ -581,13 +604,24 @@ export class Executor {
         this.revertGas.push({ t: Date.now(), usd: paid });
         this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
-        await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
+        await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}${t.victim ? " · " + await this.backrunOrder(t.victim, rcpt) : ""}`);
         if (this.consecutiveReverts >= this.limits.pauseAfterReverts * (this.limits.directSend ? 4 : 1)) { this.p1.paused = true; // en envío directo manda el presupuesto por hora, no la racha
            this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
     }
     this.p1.pending = keep;
     await this.save();
+  }
+
+  /** Diagnóstico de un back-run revertido: ¿quedamos antes o después de la víctima, y en qué bloque? */
+  async backrunOrder(victimHash, rcpt) {
+    try {
+      const v = await this.provider.getTransactionReceipt(victimHash);
+      if (!v) return `víctima ${victimHash.slice(0, 12)}… sin minar (nosotros idx ${rcpt.index ?? "?"})`;
+      const where = v.blockNumber !== rcpt.blockNumber ? `víctima en otro bloque (${v.blockNumber})`
+        : (v.index < rcpt.index ? `tras la víctima (idx ${v.index} → ${rcpt.index}, ${rcpt.index - v.index - 1} tx entre medio)` : `ANTES de la víctima (idx ${rcpt.index} < ${v.index})`);
+      return `back-run: ${where}`;
+    } catch (e) { return `back-run: sin recibo de la víctima (${String(e.message ?? e).slice(0, 60)})`; }
   }
 
   /** Cotización exacta on-chain de un salto (v2 por reservas; v3/v4 por el contrato Quoter sin tokens). */
