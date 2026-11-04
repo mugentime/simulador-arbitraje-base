@@ -5,6 +5,7 @@
 
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
+import { sendErrMsg } from "./executor.mjs";
 import { AAVE_POOL_OF, MORPHO_OF } from "./liquidations.mjs";
 
 const ABI = [
@@ -211,7 +212,7 @@ export class Liquidator {
       this.sentTimes.push(now); this.x.sent++; rec.sent = sent.hash;
       this.x.pending.push({ hash: sent.hash, sentAt: now, label, user: cand.user, loan: loanTok, unitUsd: valueUsd / (Number(amount) / 10 ** loanTok.decimals) });
       await this.diag(`liquidación: ENVIADA ${sent.hash} · ${label} · neto simulado $${rec.netUsd.toFixed(4)}`);
-    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.x.lastError = rec.sent; await this.diag(`liquidación: ${rec.sent}`); }
+    } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.x.lastError = rec.sent; await this.diag(`liquidación: ${rec.sent}`); }
     this.push(rec);
   }
 

@@ -96,11 +96,11 @@ export class Executor {
         const w = this.sender();
         try { return await fn(w); } catch (e) {
           lastErr = e;
-          const m = `${e.shortMessage || e.message}`;
+          const m = sendErrMsg(e);
           if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
           // errores propios de la tx (no del nodo): no tiene sentido probar otro RPC
-          if (/insufficient funds|execution reverted|CALL_EXCEPTION|underpriced|already known/i.test(m)) throw e;
-          await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 60)}); probando otro`);
+          if (/insufficient funds|execution reverted|CALL_EXCEPTION|underpriced|already known|tip cap|fee cap|below minimum|exceeds block gas limit|intrinsic gas/i.test(m)) throw e;
+          await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 160)}); probando otro`);
           this.rotateSender();
         }
       }
@@ -372,7 +372,7 @@ export class Executor {
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${new URL(this.sendUrl).host})`);
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
       await this.save();
-    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
+    } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
     finally { this.sending = false; }
   }
 
@@ -577,6 +577,17 @@ function label(r) {
   let t = r.start; const parts = [t];
   for (const p of r.route) { const n = p.token0.sym === t ? p.token1.sym : p.token0.sym; parts.push(`${p.dex} → ${n}`); t = n; }
   return parts.join(" → ");
+}
+
+/**
+ * Mensaje útil de un error de envío. ethers v6 envuelve los errores JSON-RPC que no sabe clasificar como
+ * "could not coalesce error" y deja el mensaje real del nodo en e.error / e.info.error (p. ej. "gas tip cap … below
+ * minimum" en Polygon): sin esto el log solo decía "could not coalesce error" y se probaban todos los RPC en vano.
+ */
+export function sendErrMsg(e) {
+  const inner = e?.error?.message ?? e?.info?.error?.message ?? e?.info?.payload?.error?.message;
+  const base = `${e?.shortMessage || e?.message || e}`;
+  return inner && !base.includes(inner) ? `${base}: ${inner}` : base;
 }
 
 function decodeRevert(iface, e) {

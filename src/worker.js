@@ -199,7 +199,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 15; // v15: 08:45 +2 tokens por cadena, 1 par excluido en Base/BSC/Arbitrum, bucle rápido solo con pools en ciclos; v14: 07:45 +2 tokens por cadena y 1 par excluido más por cadena; v13: Base USDe en lugar de LBTC, OP PERP en lugar de LDO (0 pools); v12: 06:45 +2 tokens por cadena y 1 par excluido por cadena; v11: OP WLD/AAVE en lugar de cbETH/ezETH; v10: +2 tokens por cadena (05:50), comisión de protocolo v4; v9: descarta pares estables de Camelot; símbolos alternativos; excludedPairs
+  const UNIVERSE_FORMAT = 16; // v16: 09:45 +2 tokens por cadena, hasta 10 pares inactivos excluidos por cadena; v15: 08:45 +2 tokens por cadena, 1 par excluido en Base/BSC/Arbitrum, bucle rápido solo con pools en ciclos; v14: 07:45 +2 tokens por cadena y 1 par excluido más por cadena; v13: Base USDe en lugar de LBTC, OP PERP en lugar de LDO (0 pools); v12: 06:45 +2 tokens por cadena y 1 par excluido por cadena; v11: OP WLD/AAVE en lugar de cbETH/ezETH; v10: +2 tokens por cadena (05:50), comisión de protocolo v4; v9: descarta pares estables de Camelot; símbolos alternativos; excludedPairs
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

@@ -7,6 +7,7 @@
 
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
+import { sendErrMsg } from "./executor.mjs";
 
 const BEEFY_API = "https://api.beefy.finance/vaults";
 const ABI = [
@@ -303,7 +304,7 @@ export class Harvester {
       this.sentTimes.push(now); this.h.sent++; rec.sent = sent.hash;
       this.h.pending.push({ hash: sent.hash, sentAt: now, id: r.id, strategy: r.address, rewardUsd: r.feeUsd ?? r.rewardUsd });
       await this.diag(`harvest: enviada ${sent.hash} · ${r.id} · comisión medida $${(r.feeUsd ?? 0).toFixed(4)} vs gas $${rec.gasUsd.toFixed(4)}`);
-    } catch (e) { rec.sent = `error al enviar: ${e.shortMessage || e.message}`; this.h.lastError = rec.sent; await this.diag(`harvest: ${rec.sent}`); }
+    } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.h.lastError = rec.sent; await this.diag(`harvest: ${rec.sent}`); }
     this.push(rec);
   }
 
