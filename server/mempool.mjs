@@ -216,8 +216,8 @@ export class MempoolWatcher {
     this.busy = true;
     try {
       let raw;
-      try { raw = rawFromPending(tx); } catch (e) { this.m.lastError = `no se pudo reconstruir la tx ${tx.hash}: ${e.message}`; return; }
-      const r = await this.executor.sendBackrun(raw, tx.hash, best, lenders, gas, ethUsd);
+      try { raw = rawFromPending(tx); } catch (e) { if (this.executor.limits.bundleSend) { this.m.lastError = `no se pudo reconstruir la tx ${tx.hash}: ${e.message}`; return; } raw = null; }
+      const r = await this.executor.sendBackrun(raw, tx.hash, best, lenders, gas, ethUsd, tx);
       if (r) { this.m.bundles++; await this.diag(`mempool: back-run de ${String(tx.hash).slice(0, 12)}… (${router.dex}) · neto modelo $${best.netUsd.toFixed(4)} · ${r}`); }
     } finally { this.busy = false; }
   }

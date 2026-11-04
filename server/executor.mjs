@@ -60,6 +60,7 @@ export class Executor {
       // Bundles a builders (BSC): si la tx revertiría, el builder no la incluye → un intento fallido no cuesta gas.
       bundleSend: process.env.BUNDLE_SEND === "1",
       bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 3), // validez del bundle en bloques
+      backrunPublic: process.env.BACKRUN_PUBLIC === "1", // back-run sin bundles (mismo gas que la víctima)
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
     this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
@@ -352,8 +353,10 @@ export class Executor {
       if (tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
       rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
       if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
-      const maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
-      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), maxFeePerGas: maxFee, maxPriorityFeePerGas: prio }));
+      let maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
+      const fee = this.forcedGasPrice ? { gasPrice: this.forcedGasPrice, type: 0 } : { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
+      if (this.forcedGasPrice) prio = this.forcedGasPrice;
+      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${new URL(this.sendUrl).host})`);
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd });
@@ -366,9 +369,11 @@ export class Executor {
    * Back-run: bundle [tx de la víctima, nuestra tx]. Nuestra tx solo se ejecuta si va justo detrás de la suya; si la
    * ruta deja de ser rentable el bundle no se incluye (sin costo). Devuelve un texto de estado o null si no se envió.
    */
-  async sendBackrun(victimRaw, victimHash, r, lenders, gas, ethUsd) {
+  async sendBackrun(victimRaw, victimHash, r, lenders, gas, ethUsd, victimTx = null) {
     if (!this.wallet || !this.p1.executor || this.mode !== "live" || this.p1.paused) return null;
-    if (!this.limits.bundleSend) return null; // sin bundles un back-run no tiene garantía de orden
+    // sin bundles (Polygon): envío público con el MISMO precio de gas que la víctima → los nodos ordenan por precio y
+    // luego por llegada, así que quedamos justo detrás. Si revierte se paga gas (cuenta para el presupuesto por hora).
+    if (!this.limits.bundleSend) return this.limits.backrunPublic ? this.sendBackrunPublic(victimTx, r, lenders, gas, ethUsd) : null;
     const now = Date.now();
     this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
     if (this.sentTimes.length >= this.limits.maxTxPerHour) return null;
@@ -411,6 +416,24 @@ export class Executor {
       await this.save();
       return `bundle ${hash.slice(0, 12)}… enviado a ${accepted.join(", ")} (hasta el bloque ${maxBlockNumber})${errTxt ? ` · rechazos: ${errTxt.slice(0, 120)}` : ""}`;
     } finally { this.sending = false; }
+  }
+
+  async sendBackrunPublic(victimTx, r, lenders, gas, ethUsd) {
+    if (!victimTx) return null;
+    const plan = this.buildPlan(r, lenders, ethUsd);
+    if (!plan) return null;
+    const gp = BigInt(victimTx.gasPrice ?? victimTx.maxFeePerGas ?? 0);
+    if (gp <= 0n) return null;
+    const gasEst = Number(core.GAS_BASE + core.GAS_PER_HOP * BigInt(r.hops)) * 1.3;
+    const costUsd = (Number(gp) * gasEst / 1e18) * ethUsd;
+    const rec = { block: this.lastChainBlock, ts: Math.floor(Date.now() / 1000), route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, backrun: victimTx.hash, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: costUsd, netUsd: r.grossUsd - r.flashFeeUsd - costUsd, gasEst, sent: null };
+    if (rec.netUsd <= 0) return `omitido: gas al precio de la víctima $${costUsd.toFixed(4)} ≥ beneficio`;
+    // send() aplica topes, presupuesto de reverts y una sola tx en vuelo; se fija el precio exacto de la víctima
+    this.forcedGasPrice = gp;
+    try { await this.send(plan, rec, { ...gas, baseFee: 0n, priority: 0n }, ethUsd); } finally { this.forcedGasPrice = null; }
+    this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+    if (/^0x/.test(String(rec.sent))) this.p1.backruns = (this.p1.backruns ?? 0) + 1;
+    return `envío público al precio de la víctima (${Number(gp) / 1e9} gwei): ${rec.sent}`;
   }
 
   /**
