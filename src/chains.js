@@ -135,7 +135,7 @@ export const CHAINS = {
       // PAXG descartado (comisión por transferencia); STG 0x2F6F07CD… y FRAX 0x45c32fA6… verificados pero 0 pools
       // 2026-11-04 14:45: MAI 0xa3Fa99A1… y VOXEL 0xd0258a3f… probados, 0 pools ≥ MIN_LIQ_USD → retirados
       // 2026-11-04 15:45
-      { sym: "DIMO", address: "0xE261D618a959aFfFd53168Cd07D12E37B26761db" }, { sym: "AXL", address: "0x6e4E624106Cb12E168E6533F8ec7c82263358940" },
+      { sym: "DIMO", address: "0xE261D618a959aFfFd53168Cd07D12E37B26761db" }, // AXL 0x6e4E6241… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -204,7 +204,7 @@ export const CHAINS = {
       // 2026-11-04 14:45
       { sym: "USD1", address: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d" }, { sym: "AAVE", address: "0xfb6115445Bff7b52FeB98650C87f44907E58f802" },
       // 2026-11-04 15:45
-      { sym: "ETC", address: "0x3d6545b08693daE087E957cb1180ee38B9e3c25E" }, { sym: "USDe", address: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34" },
+      { sym: "ETC", address: "0x3d6545b08693daE087E957cb1180ee38B9e3c25E" }, // USDe 0x5d3a1Ff2… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -348,8 +348,7 @@ export const CHAINS = {
       // 2026-11-04 13:45 (pools en Velodrome v2: OP/EXTRA, EXTRA/VELO, USDC/EXTRA)
       { sym: "EXTRA", address: "0x2dAD3a13ef0C6366220f989157009e501e7938F8" },
       // 2026-11-04 14:45: USD+ 0x73cb180b… y MAI 0xdFA46478… probados, 0 pools fuera de Slipstream → retirados
-      // 2026-11-04 15:45 (Metronome: pools en Velodrome v2)
-      { sym: "msUSD", address: "0x9dAbAE7274D28A45F0B65Bf8ED201A5731492ca0" }, { sym: "msETH", address: "0x1610e3c85dd44Af31eD7f33a63642012Dca0C5A5" },
+      // 2026-11-04 15:45: msUSD 0x9dAbAE72… y msETH 0x1610e3c8… verificados, 0 pools fuera de Slipstream → retirados
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
