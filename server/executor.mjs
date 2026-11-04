@@ -17,6 +17,10 @@ import * as core from "../src/core.js";
 import { sendBundle, MIN_BUNDLE_GAS_PRICE } from "./bundler.mjs";
 import { bumpPairs } from "../src/pairs.js";
 
+// Clave de agregación de motivos de revert: sin argumentos numéricos (InsufficientProfit(196,4126) → InsufficientProfit),
+// para que el histograma del resumen no crezca con cada simulación. Panic(17) se conserva (un solo argumento).
+export const reasonKey = (r) => String(r ?? "desconocido").replace(/\(\s*-?\d+(?:\s*,\s*-?\d+)+\s*\)$/, "");
+
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
 const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", import.meta.url)));
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
@@ -276,7 +280,7 @@ export class Executor {
       bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
     } catch (e) {
       rec.reason = decodeRevert(this.iface, e);
-      this.p1.wouldRevert++; this.p1.byReason[rec.reason] = (this.p1.byReason[rec.reason] ?? 0) + 1;
+      this.p1.wouldRevert++; { const k = reasonKey(rec.reason); this.p1.byReason[k] = (this.p1.byReason[k] ?? 0) + 1; }
       bumpPairs((this.p1.byPair ??= {}), rec.route, "rev");
       await atBlock;
       if ((rec.reasonAtBlock || tag) && Date.now() - (this.lastBreakdown ?? 0) > 20_000) { // el modelo se equivocó con el mismo estado: desglose por salto, modelo vs cotizador on-chain
@@ -292,7 +296,7 @@ export class Executor {
         }
         await this.diag(`fase 1 desglose: ${parts.join(" | ")}`);
       }
-      await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : rec.reasonAtBlock} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
+      await this.diag(`fase 1: revertiría (${rec.reason}) · en el bloque ${block} del modelo: ${rec.profitAtBlockUsd !== null && rec.profitAtBlockUsd !== undefined ? "bruto on-chain $" + rec.profitAtBlockUsd.toFixed(4) : (rec.reasonAtBlock ?? "sin dato (bloque " + block + ")")} vs modelo bruto $${(r.grossUsd ?? 0).toFixed(4)} · ${rec.route} · préstamo $${rec.amountUsd.toFixed(0)} · pools ${r.route.map((p) => `${p.dex}:${p.address.slice(0, 10)}${p.kind === "v3" ? ` √P=${p.sqrtPriceX96}` : ""}`).join(" → ")}`);
       if (Date.now() - (this.lastProbe ?? 0) > 60_000) { this.lastProbe = Date.now(); await this.probe(plan).catch((e) => this.diag(`fase 1: sonda falló: ${e.shortMessage || e.message}`)); }
     }
     this.p1.simulated++;

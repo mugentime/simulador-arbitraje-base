@@ -194,7 +194,7 @@ export class Liquidator {
       await this.diag(`liquidación: simulada ${label} · ${cand.user.slice(0, 10)}… · paga $${valueUsd.toFixed(2)} · beneficio on-chain $${rec.profitUsd.toFixed(4)} − gas $${rec.gasUsd.toFixed(4)} = $${rec.netUsd.toFixed(4)}`);
     } catch (e) {
       rec.reason = decodeRevert(this.executor.iface, e);
-      this.x.wouldRevert++; this.x.byReason[rec.reason] = (this.x.byReason[rec.reason] ?? 0) + 1;
+      this.x.wouldRevert++; { const k = String(rec.reason ?? "desconocido").replace(/\(\s*-?\d+(?:\s*,\s*-?\d+)+\s*\)$/, ""); this.x.byReason[k] = (this.x.byReason[k] ?? 0) + 1; }
       this.backoff.set(cand.proto + ":" + cand.user, Date.now() + 10 * 60_000);
       if (this.liqs) { this.liqs.badUsers.add(cand.user); this.store.set("liqBad", [...this.liqs.badUsers]).catch(() => {}); }
       if ((this.x.wouldRevert % 25) === 1) await this.diag(`liquidación: revertiría (${rec.reason}) · ${label} · ${cand.user.slice(0, 10)}… · paga $${valueUsd.toFixed(2)} (se omiten avisos repetidos; ${this.x.wouldRevert} reverts en total)`);
