@@ -27,7 +27,7 @@ function reasonsText(byReason) {
 
 // Claves de proveedores (p. ej. NODEREAL_KEY) viven solo en variables de Railway: se tachan de todo lo que se escribe
 // en los logs por si algún error de red incluye la URL completa.
-const SECRETS = [process.env.NODEREAL_KEY].filter((x) => x && x.length >= 8);
+const SECRETS = [process.env.NODEREAL_KEY, process.env.ALCHEMY_KEY].filter((x) => x && x.length >= 8);
 const redact = (x) => (typeof x === "string" ? SECRETS.reduce((t, k) => t.split(k).join("***"), x) : x);
 for (const fn of ["log", "warn", "error"]) { const orig = console[fn].bind(console); console[fn] = (...a) => orig(...a.map(redact)); }
 

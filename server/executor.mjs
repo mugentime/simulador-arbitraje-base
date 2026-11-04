@@ -27,7 +27,10 @@ const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
-const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]
+// Alchemy (cuenta de Jose, ALCHEMY_KEY en Railway): solo para ENVIAR transacciones (pocas llamadas, propagación rápida).
+const ALCHEMY_SLUG = { base: "base-mainnet", arbitrum: "arb-mainnet", optimism: "opt-mainnet", polygon: "polygon-mainnet", bsc: "bnb-mainnet" };
+const alchemyUrl = () => (process.env.ALCHEMY_KEY && ALCHEMY_SLUG[core.CHAIN.key] ? [`https://${ALCHEMY_SLUG[core.CHAIN.key]}.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`] : []);
+const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(alchemyUrl()).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]
   // publicnode rechaza eth_sendRawTransaction (403): va al final
   : [...(core.CHAIN.rpcs ?? [])].sort((a, b) => /publicnode/.test(a) - /publicnode/.test(b)));
 
