@@ -38,6 +38,8 @@ export const CHAINS = {
       { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" }, { sym: "AIXBT", address: "0x4F9Fd6Be4a90f2620860d680c0d4d5Fb53d1A825" },
+      // 2026-11-04 05:50
+      { sym: "TOSHI", address: "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4" }, { sym: "tBTC", address: "0x236aa50979D5f3De3Bd1Eeb40E81137F22ab794b" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],
@@ -76,6 +78,8 @@ export const CHAINS = {
       { sym: "wstETH", address: "0x03b54A6e9a984069379fae1a4fC4dBAE93B3bCCD" }, { sym: "MaticX", address: "0xfa68FB4628DFF1028CFEc22b4162FCcd0d45efb6" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "QUICK", address: "0xB5C064F955D8e7F38fE0460C556a72987494eE17" }, { sym: "CRV", address: "0x172370d5Cd63279eFa6d502DAB29171933a610AF" },
+      // 2026-11-04 05:50
+      { sym: "SAND", address: "0xBbba073C31bF03b8ACf7c28EF0738DeCF3695683" }, { sym: "GHST", address: "0x385Eeac5cB85A38A9a07A70c73e0a3271CfB54A7" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],
@@ -109,6 +113,8 @@ export const CHAINS = {
       { sym: "DOGE", address: "0xbA2aE424d960c26247Dd6c32edC70B295c744C43" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "FDUSD", address: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409" }, { sym: "TWT", address: "0x4B0F1812e5Df2A09796481Ff14017e6005508003" },
+      // 2026-11-04 05:50
+      { sym: "slisBNB", address: "0xB0b84D294e0C75A6abe60171b70edEb2EFd14A1B" }, { sym: "LINK", address: "0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],
@@ -144,6 +150,8 @@ export const CHAINS = {
       { sym: "PENDLE", address: "0x0c880f6761F1af8d9Aa9C466984b80DAb9a8c9e8" }, { sym: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "rETH", address: "0xEC70Dcb4A1EFa46b8F2D97C310C9c4790ba5ffA8" }, { sym: "MAGIC", address: "0x539bdE0d7Dbd336b79148AA742883198BBF60342" },
+      // 2026-11-04 05:50
+      { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" }, { sym: "USDe", address: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],
@@ -179,6 +187,8 @@ export const CHAINS = {
       { sym: "SNX", address: "0x8700dAec35aF8Ff88c16BdF0418774CB3D7599B4" }, { sym: "rETH", address: "0x9Bcef72be871e61ED4fBbc7630889beE758eb81D" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "weETH", address: "0x5A7fACB970D094B6C7FF1df0eA68D99E6e73CBFF" }, { sym: "LINK", address: "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6" },
+      // 2026-11-04 05:50
+      { sym: "cbETH", address: "0xadDb6A0412DE1BA0F936DCaeb8Aaa24578dcF3B2" }, { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: [],

@@ -426,6 +426,7 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
       p.sqrtPriceX96 = word(s0, 0);
       p.tick = Number(BigInt.asIntN(24, word(s0, 1)));
       p.liquidity = word(liq, 0);
+      if (p.kind === "v4") v4EffectiveFees(p, word(s0, 2), word(s0, 3));
       // Pool en el extremo del rango de precios (tick mínimo/máximo): el swap on-chain revierte con SPL y
       // la liquidez virtual no significa nada. Se trata como sin liquidez.
       if (p.sqrtPriceX96 <= MIN_SQRT_RATIO * 4n || p.sqrtPriceX96 >= MAX_SQRT_RATIO / 4n) { p.reserve0 = p.reserve1 = 0n; continue; }
@@ -521,16 +522,36 @@ export function other(p, tokenAddr) {
   return tokenAddr === p.token0.address ? p.token1 : p.token0;
 }
 
+/**
+ * Uniswap v4: la comisión que paga el trader es lpFee + protocolFee − lpFee·protocolFee/1e6 (ProtocolFeeLibrary.
+ * calculateSwapFee), con protocolFee por dirección (12 bits bajos: 0→1, 12 bits altos: 1→0) en slot0. `feePips`
+ * sigue siendo la comisión de la clave del pool (se usa para codificar el salto); el modelo usa `swapFee0/1`.
+ */
+export function v4EffectiveFees(p, protocolFee, lpFee) {
+  const lp = lpFee > 0n ? lpFee : p.feePips;
+  const calc = (pf) => (pf === 0n ? lp : pf + lp - (pf * lp) / 1000000n);
+  p.protocolFee = protocolFee;
+  p.swapFee0 = calc(protocolFee & 0xfffn); // zeroForOne
+  p.swapFee1 = calc(protocolFee >> 12n);   // oneForZero
+}
+
+/** Comisión efectiva (pips) de un swap de `tokenIn` en el pool. */
+export function feeFor(p, tokenIn) {
+  if (p.kind === "v4" && p.swapFee0 !== undefined) return tokenIn === p.token0.address ? p.swapFee0 : p.swapFee1;
+  return p.feePips;
+}
+
 /** Salida de un pool para `amountIn` de `tokenIn`: exacta con cruce de ticks si el pool tiene tabla de ticks. */
 export function swapOut(p, tokenIn, amountIn) {
   if (amountIn <= 0n) return 0n;
+  const feePips = feeFor(p, tokenIn);
   if ((p.kind === "v3" || p.kind === "v4") && p.ticks && p.liquidity !== undefined) {
     if (p.liquidity === 0n && !p.ticks.length) return 0n;
-    const r = CL.swapExactIn({ sqrtPriceX96: p.sqrtPriceX96, tick: p.tick, liquidity: p.liquidity, feePips: p.feePips, tickSpacing: p.tickSpacing, ticks: p.ticks }, tokenIn === p.token0.address, amountIn);
+    const r = CL.swapExactIn({ sqrtPriceX96: p.sqrtPriceX96, tick: p.tick, liquidity: p.liquidity, feePips, tickSpacing: p.tickSpacing, ticks: p.ticks }, tokenIn === p.token0.address, amountIn);
     return r.amountOut; // si se agotó la tabla, es un piso (conservador)
   }
   const [ri, ro] = reservesFor(p, tokenIn);
-  return amountOut(amountIn, ri, ro, p.feePips);
+  return amountOut(amountIn, ri, ro, feePips);
 }
 
 export function routeOut(x, start, route) {

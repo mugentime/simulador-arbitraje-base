@@ -287,7 +287,7 @@ export class Executor {
           const o = core.swapOut(p, t, a);
           let chain = "?";
           try { chain = String(await this.quote(p, t, a, sp, tag)); } catch (e) { chain = "cotizador: " + (e.shortMessage || e.message).slice(0, 40); }
-          parts.push(`${p.dex} ${p.kind}${p.kind !== "v2" ? ` ticks=${p.ticks ? p.ticks.length : "sin tabla"} ts=${p.tickSpacing} tick=${p.tick} L=${p.liquidity}` : ""} fee=${p.feePips}pips: ${a} → modelo ${o} / cadena ${chain}`);
+          parts.push(`${p.dex} ${p.kind}${p.kind !== "v2" ? ` ticks=${p.ticks ? p.ticks.length : "sin tabla"} ts=${p.tickSpacing} tick=${p.tick} L=${p.liquidity}` : ""} fee=${p.feePips}pips${p.protocolFee ? `+proto ${p.protocolFee}` : ""}: ${a} → modelo ${o} / cadena ${chain}`);
           a = o; t = core.other(p, t).address;
         }
         await this.diag(`fase 1 desglose: ${parts.join(" | ")}`);
@@ -543,7 +543,7 @@ export class Executor {
     if (!this.p1.quoter) throw new Error("sin Quoter desplegado");
     const q = new ethers.Interface(QUOTER.abi);
     const data = p.kind === "v3" ? q.encodeFunctionData("quoteV3", [p.address, zfo, amountIn])
-      : q.encodeFunctionData("quoteV4", [p.manager, [zfo ? tokenIn : tokenOut, zfo ? tokenOut : tokenIn, Number(p.feePips), p.tickSpacing, ethers.ZeroAddress], zfo, amountIn]);
+      : q.encodeFunctionData("quoteV4", [p.manager, [p.native ? ethers.ZeroAddress : zfo ? tokenIn : tokenOut, zfo ? tokenOut : tokenIn, Number(p.feePips), p.tickSpacing, ethers.ZeroAddress], zfo, amountIn]); // ETH nativo: currency0 = address(0)
     const raw = await sp.call({ to: this.p1.quoter, data, ...(tag ? { blockTag: tag } : {}) });
     return q.decodeFunctionResult(p.kind === "v3" ? "quoteV3" : "quoteV4", raw)[0];
   }
