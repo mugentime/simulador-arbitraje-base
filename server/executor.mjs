@@ -26,6 +26,7 @@ const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", imp
 const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
+const LADDER_RETRY_RE = /transferFrom reverted|InsufficientProfit|IIA|STF|TRANSFER_FROM_FAILED|CurrencyNotSettled|insufficient|BalanceNotSettled/i; // motivos que justifican probar un monto menor
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
 // Alchemy (cuenta de Jose, ALCHEMY_KEY en Railway): solo para ENVIAR transacciones (pocas llamadas, propagación rápida).
 const ALCHEMY_SLUG = { base: "base-mainnet", arbitrum: "arb-mainnet", optimism: "opt-mainnet", polygon: "polygon-mainnet", bsc: "bnb-mainnet", robinhood: "robinhood-mainnet" };
@@ -367,16 +368,7 @@ export class Executor {
         if (!plan0) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
         // El modelo de liquidez virtual (v3/v4) es exacto dentro del tick activo pero optimista si el swap cruza ticks:
         // si el contrato dice que con el monto óptimo no alcanza para devolver el préstamo, se prueba con montos menores.
-        let plan = plan0, rec = null;
-        const ladder = [1n, 2n, 4n, 8n, 16n, 32n];
-        for (let i = 0; i < ladder.length; i++) {
-          const div = ladder[i];
-          plan = { ...plan0, amount: plan0.amount / div, meta: { ...r, amountIn: r.amountIn / div, amountInUsd: r.amountInUsd / Number(div) } };
-          rec = await this.simulate(plan, block, ts, gas, ethUsd, i === ladder.length - 1 ? true : "tentative", sim);
-          if (rec.ok) { rec.sizeDiv = Number(div); break; }
-          if (!/transferFrom reverted|InsufficientProfit|IIA|STF|TRANSFER_FROM_FAILED|CurrencyNotSettled|insufficient|BalanceNotSettled/i.test(rec.reason)) break;
-        }
-        if (!rec.ok && rec.tentative) { rec = await this.simulate(plan, block, ts, gas, ethUsd, true, sim); }
+        const { plan, rec } = await this.ladderSim(plan0, r, block, ts, gas, ethUsd, sim);
         if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito con préstamo $${rec.amountUsd.toFixed(0)}${rec.sizeDiv > 1 ? ` (óptimo del modelo ÷${rec.sizeDiv})` : ""} · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
         else text = `Simulado on-chain: revertiría (${rec.reason})`;
         if (rec.ok && this.mode === "live" && !this.p1.paused) { await this.send(plan, rec, gas, ethUsd); text += ` · envío: ${rec.sent}`; }
@@ -390,12 +382,47 @@ export class Executor {
     return text;
   }
 
+  countLadderOk(rec) {
+    this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd; this.p1.simulated++;
+    bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
+    this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+  }
+
+  /** Escalera de montos (óptimo del modelo ÷1…÷32). El modelo v3/v4 es optimista si el swap cruza ticks, así que se prueban montos menores.
+   *  Antes era secuencial (hasta 6 idas y vueltas de eth_call+estimateGas, ~0.1–0.2 s cada una): para cuando se encontraba un monto válido,
+   *  otro bot ya había cerrado la ruta. Ahora los 6 escalones van en paralelo (1 ida y vuelta) y se toma el mayor que funcione.
+   *  LADDER_PARALLEL=0 vuelve al modo secuencial. */
+  async ladderSim(plan0, r, block, ts, gas, ethUsd, sim) {
+    const ladder = [1n, 2n, 4n, 8n, 16n, 32n];
+    const plans = ladder.map((div) => ({ ...plan0, amount: plan0.amount / div, meta: { ...r, amountIn: r.amountIn / div, amountInUsd: r.amountInUsd / Number(div) } }));
+    const retry = (reason) => LADDER_RETRY_RE.test(reason ?? "");
+    if (process.env.LADDER_PARALLEL === "0") {
+      let plan = plans[0], rec = null;
+      for (let i = 0; i < plans.length; i++) {
+        plan = plans[i];
+        rec = await this.simulate(plan, block, ts, gas, ethUsd, i === plans.length - 1 ? true : "tentative", sim);
+        if (rec.ok) { rec.sizeDiv = Number(ladder[i]); break; }
+        if (!retry(rec.reason)) break;
+      }
+      if (!rec.ok && rec.tentative) rec = await this.simulate(plan, block, ts, gas, ethUsd, true, sim);
+      return { plan, rec };
+    }
+    const t0 = Date.now();
+    const recs = await Promise.all(plans.map((p) => this.simulate(p, block, ts, gas, ethUsd, "quiet", sim)));
+    this.p1.ladderMs = Date.now() - t0;
+    const i = recs.findIndex((x) => x.ok);
+    if (i >= 0) { const rec = recs[i]; delete rec.tentative; rec.sizeDiv = Number(ladder[i]); this.countLadderOk(rec); return { plan: plans[i], rec }; }
+    // ninguno funciona: diagnóstico completo (contabiliza el revert) en el escalón que habría usado la versión secuencial
+    let k = 0; while (k < plans.length - 1 && retry(recs[k].reason)) k++;
+    return { plan: plans[k], rec: await this.simulate(plans[k], block, ts, gas, ethUsd, true, sim) };
+  }
+
   async simulate(plan, block, ts, gas, ethUsd, mode = true, sim = null) {
     const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
     const tx = { to: this.p1.executor, from: this.wallet.address, data };
     const r = plan.meta;
     const rec = { block, ts, route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: false, reason: null, profitUsd: null, gasUsd: null, netUsd: null, sent: null };
-    if (mode === "tentative") { // intento intermedio de la escalera de montos: no se contabiliza salvo que tenga éxito
+    if (mode === "tentative" || mode === "quiet") { // intento de la escalera de montos: no se contabiliza salvo que tenga éxito ("quiet": ni eso; lo contabiliza ladderSim)
       try {
         const sp2 = sim?.sp ?? this.provider, tag2 = sim?.tag;
         const [ret, gasEst] = await Promise.all([sp2.call(tag2 ? { ...tx, blockTag: tag2 } : tx), sp2.estimateGas(tag2 ? { ...tx, blockTag: tag2 } : tx)]);
@@ -404,9 +431,7 @@ export class Executor {
         rec.ok = true; rec.profitUsd = toUsd(profit); rec.gasEst = Number(gasEst);
         rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
         rec.netUsd = rec.profitUsd - rec.gasUsd;
-        this.p1.wouldSucceed++; this.p1.projectedNetUsd += rec.netUsd; this.p1.gasUsdSimulated += rec.gasUsd; this.p1.simulated++;
-        bumpPairs((this.p1.byPair ??= {}), rec.route, "ok");
-        this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+        if (mode === "tentative") this.countLadderOk(rec);
       } catch (e) { rec.reason = decodeRevert(this.iface, e); rec.tentative = true; }
       return rec;
     }
