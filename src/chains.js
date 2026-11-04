@@ -256,14 +256,14 @@ export const CHAINS = {
       // 2026-11-04 09:45
       { sym: "CRV", address: "0x0994206dfE8De6Ec6920FF4D779B0d950605Fb53" }, { sym: "KWENTA", address: "0x920Cf626a271321C151D027030D5d08aF699456b" }, // DOLA verificado pero 0 pools (liquidez en Slipstream)
       // 2026-11-04 10:45
-      { sym: "sETH", address: "0xE405de8F52ba7559f9df3C368500B6E6ae6Cee49" }, { sym: "THALES", address: "0x217D47011b23BB961eB6D93cA9945B7501a5BB11" },
+      { sym: "frxETH", address: "0x6806411765Af15Bddd26f8f544A34cC40cb9838B" }, { sym: "THALES", address: "0x217D47011b23BB961eB6D93cA9945B7501a5BB11" }, // sETH verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
       // 09:45 inactivos (s0: 0 episodios, 0 rutas, 0 ok, 0 envíos; ≥3 h vigilados; métricas acumuladas)
       "AAVE/OP", "AAVE/SNX", "AAVE/USDC", "AAVE/USDT", "DAI/WLD", "LINK/OP", "LINK/SNX", "LINK/USDT", "LINK/WBTC", "OP/weETH",
       // 10:45 inactivos
-      "AAVE/UNI", "DAI/UNI", "LINK/UNI", "PERP/USDC", "rETH/wstETH", "SNX/VELO", "SNX/wstETH", "UNI/USDC", "UNI/USDT", "UNI/WBTC"],
+      "AAVE/UNI", "DAI/UNI", "LINK/UNI", "rETH/wstETH", "SNX/VELO", "SNX/wstETH", "UNI/USDC", "UNI/USDT", "UNI/WBTC", "USDC.e/WLD"], // PERP/USDC no: era el único pool de PERP con token base (sin él, PERP quedaba con 0 pools)
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "Velodrome Slipstream", kind: "v3tick", address: "0xCc0bDDB707055e04e09910ed7D0E70C7D6aD4Ba1", params: [1, 50, 100, 200] },
