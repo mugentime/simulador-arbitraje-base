@@ -256,7 +256,7 @@ export const CHAINS = {
       // 2026-11-04 09:45
       { sym: "CRV", address: "0x0994206dfE8De6Ec6920FF4D779B0d950605Fb53" }, { sym: "KWENTA", address: "0x920Cf626a271321C151D027030D5d08aF699456b" }, // DOLA verificado pero 0 pools (liquidez en Slipstream)
       // 2026-11-04 10:45
-      { sym: "alUSD", address: "0xCB8FA9a76b8e203D8C3797bF438d8FB81Ea3326A" }, { sym: "THALES", address: "0x217D47011b23BB961eB6D93cA9945B7501a5BB11" }, // sETH y frxETH: 0 pools
+      { sym: "THALES", address: "0x217D47011b23BB961eB6D93cA9945B7501a5BB11" }, // sETH, frxETH y alUSD verificados pero 0 pools (liquidez en Slipstream)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
