@@ -70,7 +70,7 @@ export const CHAINS = {
       ETH: { address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", decimals: 18, label: "WETH" },
     },
     extraTokens: [
-      { sym: "USDC.e", address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" }, { sym: "USDT", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F" },
+      { sym: "USDC.e", address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", symbols: ["USDC", "USDCe"] }, { sym: "USDT", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", symbols: ["USDT0", "USD₮0", "USD₮"] },
       { sym: "DAI", address: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063" }, { sym: "WBTC", address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6" },
       { sym: "LINK", address: "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39" }, { sym: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B" },
       { sym: "wstETH", address: "0x03b54A6e9a984069379fae1a4fC4dBAE93B3bCCD" }, { sym: "MaticX", address: "0xfa68FB4628DFF1028CFEc22b4162FCcd0d45efb6" },
@@ -137,7 +137,7 @@ export const CHAINS = {
       WBTC: { address: "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f", decimals: 8, label: "WBTC" },
     },
     extraTokens: [
-      { sym: "USDT", address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9" }, { sym: "USDC.e", address: "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8" },
+      { sym: "USDT", address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbols: ["USDT0", "USD₮0", "USD₮"] }, { sym: "USDC.e", address: "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", symbols: ["USDC", "USDCe"] },
       { sym: "DAI", address: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1" }, { sym: "ARB", address: "0x912CE59144191C1204E64559FE8253a0e49E6548" },
       { sym: "wstETH", address: "0x5979D7b546E38E414F7E9822514be443A4800529" }, { sym: "weETH", address: "0x35751007a407ca6FEFfE80b3cB397736D2cf4dbe" },
       { sym: "GMX", address: "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a" }, { sym: "LINK", address: "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4" },
@@ -175,7 +175,7 @@ export const CHAINS = {
     extraTokens: [
       { sym: "USDT", address: "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58" }, { sym: "DAI", address: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1" },
       { sym: "OP", address: "0x4200000000000000000000000000000000000042" }, { sym: "wstETH", address: "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb" },
-      { sym: "VELO", address: "0x9560e827aF36c94D2Ac33a39bCE1Fe78631088Db" }, { sym: "USDC.e", address: "0x7F5c764cBc14f9669B88837ca1490cCa17c31607" },
+      { sym: "VELO", address: "0x9560e827aF36c94D2Ac33a39bCE1Fe78631088Db" }, { sym: "USDC.e", address: "0x7F5c764cBc14f9669B88837ca1490cCa17c31607", symbols: ["USDC", "USDCe"] },
       { sym: "SNX", address: "0x8700dAec35aF8Ff88c16BdF0418774CB3D7599B4" }, { sym: "rETH", address: "0x9Bcef72be871e61ED4fBbc7630889beE758eb81D" },
       // revisión horaria 2026-11-04: añadidos
       { sym: "weETH", address: "0x5A7fACB970D094B6C7FF1df0eA68D99E6e73CBFF" }, { sym: "LINK", address: "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6" },

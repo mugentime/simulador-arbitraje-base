@@ -144,7 +144,7 @@ export async function buildUniverse(ethers, provider, { ltHours = 2, head, progr
   }
   let extra = extraTokens;
   if (extra === null) {
-    try { extra = await core.verifiedExtraTokens(ethers, provider); await progress(`tokens adicionales verificados: ${extra.map((t) => t.sym).join(", ") || "ninguno"}`); }
+    try { extra = await core.verifiedExtraTokens(ethers, provider); await progress(`tokens adicionales verificados: ${extra.map((t) => t.sym).join(", ") || "ninguno"}${extra.rejected?.length ? ` · rechazados: ${extra.rejected.join(", ")}` : ""}`); }
     catch (e) { extra = []; await progress(`tokens adicionales: no se pudieron verificar (${e.shortMessage || e.message})`); }
   }
   const { foundEntries, metaList } = await core.longTailUniverse(ethers, provider, {
@@ -199,7 +199,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 7; // v7: excludedPairs + tokens añadidos en la revisión horaria
+  const UNIVERSE_FORMAT = 8; // v8: símbolos alternativos (USDT0, USDC bridged) + excludedPairs
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

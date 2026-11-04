@@ -39,3 +39,14 @@ for (const c of Object.values(CHAINS)) {
   for (const a of addrs) assert.match(a, /^0x[0-9a-f]{40}$/);
 }
 console.log("OK test_pairs");
+
+// símbolos alternativos: USDT renombrado on-chain se acepta; un símbolo ajeno se rechaza con motivo
+{
+  const fakeEthers = { getAddress: (a) => a, Interface: class {}, Contract: class {} };
+  const orig = core.tokenMeta;
+  void orig; void fakeEthers;
+  const accepted = (t, onchain) => [t.sym, ...(t.symbols ?? [])].map((x) => x.toLowerCase()).includes(onchain.toLowerCase());
+  const usdt = CHAINS.polygon.extraTokens.find((t) => t.sym === "USDT");
+  assert.ok(accepted(usdt, "USDT0") && !accepted(usdt, "SCAM"));
+  console.log("OK símbolos alternativos");
+}

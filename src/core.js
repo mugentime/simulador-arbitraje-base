@@ -37,9 +37,13 @@ export async function verifiedExtraTokens(ethers, provider, list = EXTRA_TOKENS)
   if (!list.length) return [];
   const meta = await tokenMeta(ethers, provider, list.map((t) => t.address));
   const ok = [];
+  ok.rejected = [];
   for (const t of list) {
     const m = meta.get(t.address.toLowerCase());
-    if (m && m.sym.toLowerCase() === t.sym.toLowerCase()) ok.push({ sym: t.sym, address: ethers.getAddress(t.address), decimals: m.decimals });
+    // `symbols`: símbolos on-chain aceptados además de `sym` (p. ej. USDT renombrado a USDT0 en Polygon/Arbitrum)
+    const accepted = [t.sym, ...(t.symbols ?? [])].map((x) => x.toLowerCase());
+    if (m && accepted.includes(String(m.sym).toLowerCase())) ok.push({ sym: t.sym, address: ethers.getAddress(t.address), decimals: m.decimals });
+    else ok.rejected.push(`${t.sym}${m ? ` (on-chain «${m.sym}»)` : " (sin respuesta)"}`);
   }
   return ok;
 }
