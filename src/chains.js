@@ -326,7 +326,7 @@ export const CHAINS = {
     rpcs: ["https://rpc.mainnet.chain.robinhood.com"], // público con límite; RPC_URL/WS_RPC_URL (Alchemy) van delante
     ws: [],
     fastRpc: "https://rpc.mainnet.chain.robinhood.com", fastMs: 250,
-    publicMempool: false, l1GasOracle: null, blockMs: 100,
+    publicMempool: false, l1GasOracle: null, blockMs: 100, fcfs: true, // orden por llegada: propina inútil
     tokens: {
       WETH: { address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18, label: "WETH" },
       USDC: { address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", decimals: 6, label: "USDG" }, // rol dólar = USDG (stable principal de la cadena)

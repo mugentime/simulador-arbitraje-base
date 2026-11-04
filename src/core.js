@@ -78,7 +78,7 @@ export let LENDERS = [
 export let EXCLUDED_PAIRS = new Set(); // pares excluidos (ver src/pairs.js y excludedPairs en chains.js)
 export function applyChain(cfg) {
   EXCLUDED_PAIRS = excludedSet(cfg.excludedPairs ?? []);
-  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [] };
+  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [], fcfs: !!cfg.fcfs };
   CHAIN_ID = BigInt(cfg.id);
   TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));
   EXTRA_TOKENS = (cfg.extraTokens ?? []).map((t) => ({ ...t }));

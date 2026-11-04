@@ -67,6 +67,9 @@ export class FanoutProvider extends ethers.JsonRpcProvider {
     const hash = ethers.keccak256(raw);
     const tries = this.fanout.map((u) => postRaw(u, raw).then((res) => ({ u, res })));
     try {
+      const t0 = Date.now();
+      this.lastReport = Promise.allSettled(this.fanout.map((u, i) => tries[i].then(() => `${new URL(u).host} ok ${Date.now() - t0} ms`, (e) => `${new URL(u).host} error ${Date.now() - t0} ms (${String(e.message).slice(0, 80)})`)))
+        .then((r) => r.map((x) => x.value).join(" · "));
       const { u, res } = await Promise.any(tries);
       this.lastWinner = new URL(u).host;
       return res ?? hash;
@@ -217,6 +220,13 @@ export class Executor {
     }
     await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ${core.CHAIN.native} · contrato ${this.p1.executor ?? "no desplegado"}`);
     await this.save();
+    const seq = sequencerUrl(core.CHAIN.key);
+    if (seq) {
+      // sonda: tx vacía → el secuenciador debe contestar con un error JSON-RPC (prueba que está alcanzable y cuánto tarda)
+      const t0 = Date.now();
+      postRaw(seq, "0x").then(() => this.diag(`secuenciador ${new URL(seq).host}: responde (${Date.now() - t0} ms)`),
+        (e) => this.diag(`secuenciador ${new URL(seq).host}: ${e.rpcError ? "alcanzable" : "NO alcanzable"} en ${Date.now() - t0} ms (${String(e.message).slice(0, 100)})`));
+    }
     if (process.env.DEPLOY_QUOTER !== "0") await this.ensureQuoter();
   }
 
@@ -431,7 +441,8 @@ export class Executor {
       // la ruta antes. Se ofrece una fracción del neto simulado, con tope.
       // Back-run público (Polygon): comisión fijada para igualar la propina EFECTIVA de la víctima (ver sendBackrunPublic)
       const forced = this.forcedFee;
-      const tipUsd = forced ? 0 : rec.netUsd * this.limits.tipShare;
+      // FCFS (Robinhood): el secuenciador ordena por llegada, la propina no adelanta nada → sin propina extra
+      const tipUsd = forced || core.CHAIN.fcfs ? 0 : rec.netUsd * this.limits.tipShare;
       const tipWei = BigInt(Math.floor((tipUsd / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
       const capWei = BigInt(Math.floor(this.limits.maxTipGwei * 1e9));
       let prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
@@ -444,6 +455,7 @@ export class Executor {
       const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${this.sendProv?.lastWinner ?? new URL(this.sendUrl).host})`);
+      this.sendProv?.lastReport?.then((r) => this.diag(`fase 1: difusión ${tx.hash.slice(0, 10)}: ${r}`)).catch(() => {});
       (this.p1.pending ??= []).push({ hash: tx.hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd, victim: rec.backrun ?? null });
       await this.save();
     } catch (e) { rec.sent = `error al enviar: ${sendErrMsg(e).slice(0, 200)}`; this.p1.lastError = rec.sent; await this.diag(`fase 1: ${rec.sent}`); }
