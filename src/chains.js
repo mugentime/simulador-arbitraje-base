@@ -115,7 +115,7 @@ export const CHAINS = {
       // 2026-11-04 11:45
       { sym: "GRT", address: "0x5fe2B58c013d7601147DcdD68C143A77499f5531" }, // WOO verificado pero 0 pools con liquidez ≥ MIN_LIQ_USD
       // 2026-11-04 12:45
-      { sym: "XSGD", address: "0xDC3326e71D45186F113a2F448984CA0e8D201995" }, { sym: "EURA", address: "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4", symbols: ["agEUR"] }, // SNX 0x50B728D8… verificado pero 0 pools
+      { sym: "XSGD", address: "0xDC3326e71D45186F113a2F448984CA0e8D201995" }, // SNX 0x50B728D8… y EURA 0xE0B52e49… verificados pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -233,7 +233,7 @@ export const CHAINS = {
       // 2026-11-04 11:45
       { sym: "tBTC", address: "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40" }, { sym: "FRAX", address: "0x17FC002b466eEc40DaE837Fc4bE5c67993ddBd6F" },
       // 2026-11-04 12:45
-      { sym: "LUSD", address: "0x93b346b6BC2548dA6A1E7d98E9a421B42541425b" }, { sym: "GRAIL", address: "0x3d9907F9a368ad0a51Be60f7Da3b97cf940982D8" }, // WOO 0xcAFcD85D… verificado pero 0 pools
+      { sym: "LUSD", address: "0x93b346b6BC2548dA6A1E7d98E9a421B42541425b" }, // WOO 0xcAFcD85D… y GRAIL 0x3d9907F9… verificados pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -293,7 +293,7 @@ export const CHAINS = {
       // 2026-11-04 11:45
       { sym: "STG", address: "0x296F55F8Fb28E498B858d0BcDA06D955B2Cb3f97" }, // alETH verificado pero 0 pools con liquidez ≥ MIN_LIQ_USD
       // 2026-11-04 12:45 (sUSD 0x8c6f28f2… retirado: sus transferencias revierten con "sUSD retired")
-      { sym: "PENDLE", address: "0xBC7B1Ff1c6989f006a1185318eD4E7b5796e66E1" }, { sym: "BAL", address: "0xFE8B128bA8C78aabC59d4c64cEE7fF28e9379921" }, // FXS y USDe verificados pero 0 pools
+      // FXS 0x67CCEA5b…, USDe 0x5d3a1Ff2…, PENDLE 0xBC7B1Ff1… y BAL 0xFE8B128b… verificados pero 0 pools (sin pools ≥ MIN_LIQ_USD fuera de Slipstream)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
