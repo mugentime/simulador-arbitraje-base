@@ -238,7 +238,7 @@ export const CHAINS = {
       // 2026-11-04 08:45
       { sym: "tBTC", address: "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40" }, { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
       // 2026-11-04 09:45
-      { sym: "DOLA", address: "0x8aE125E8653821E851F12A49F7765db9a9ce7384" }, { sym: "KWENTA", address: "0x920Cf626a271321C151D027030D5d08aF699456b" },
+      { sym: "CRV", address: "0x0994206dfE8De6Ec6920FF4D779B0d950605Fb53" }, { sym: "KWENTA", address: "0x920Cf626a271321C151D027030D5d08aF699456b" }, // DOLA verificado pero 0 pools (liquidez en Slipstream)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
