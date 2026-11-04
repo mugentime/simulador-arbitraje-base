@@ -67,7 +67,7 @@ export class Executor {
       revertBudgetUsdPerHour: Number(process.env.REVERT_BUDGET_USD_PER_HOUR ?? 0.25),
       // Bundles a builders (BSC): si la tx revertiría, el builder no la incluye → un intento fallido no cuesta gas.
       bundleSend: process.env.BUNDLE_SEND === "1",
-      bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 3), // validez del bundle en bloques
+      bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 6), // validez del bundle en bloques (BSC ~0.75 s/bloque: 3 bloques llegaban vencidos)
       backrunPublic: process.env.BACKRUN_PUBLIC === "1", // back-run sin bundles (mismo gas que la víctima)
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
@@ -409,7 +409,9 @@ export class Executor {
       if (gasPrice > cap) gasPrice = cap;
       const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
       const hash = ethers.keccak256(raw);
-      const maxBlockNumber = head + 2;
+      // el RPC público puede ir unos bloques por detrás (BSC ~0.75 s/bloque): se toma el bloque más alto conocido y
+      // se da margen (BlockSec rechazaba con "maxBlockNumber should be larger than currentBlockNum")
+      const maxBlockNumber = Math.max(head, this.lastChainBlock || 0) + this.limits.bundleBlocks;
       // Dos bundles a la vez con la MISMA tx nuestra (mismo nonce: solo uno puede entrar):
       //  (a) [víctima, nosotros] — back-run en el mismo bloque;
       //  (b) [nosotros] — si la víctima ya se minó (lo vimos tarde), el desajuste que dejó sigue ahí y se captura igual.
@@ -468,7 +470,7 @@ export class Executor {
     if (rec.profitUsd !== null && rec.profitUsd !== undefined && costUsd >= rec.profitUsd) { rec.sent = `omitida: gas del bundle $${costUsd.toFixed(4)} ≥ beneficio $${rec.profitUsd.toFixed(4)}`; return; }
     const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
     const hash = ethers.keccak256(raw);
-    const maxBlockNumber = head + this.limits.bundleBlocks;
+    const maxBlockNumber = Math.max(head, this.lastChainBlock || 0) + this.limits.bundleBlocks; // ver sendBackrun
     const { accepted, errors } = await sendBundle(raw, { maxBlockNumber });
     this.p1.bundles = (this.p1.bundles ?? 0) + 1;
     const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
