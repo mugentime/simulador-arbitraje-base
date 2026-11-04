@@ -85,7 +85,7 @@ export class Executor {
           lastErr = e;
           const m = `${e.shortMessage || e.message}`;
           if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
-          if (!/403|405|Forbidden|Method not|not supported|unsupported|-32601|429/i.test(m)) throw e;
+          if (!/401|403|405|Unauthorized|Forbidden|Method not|not supported|unsupported|-32601|429/i.test(m)) throw e;
           await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 60)}); probando otro`);
           this.rotateSender();
         }

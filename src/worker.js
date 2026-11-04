@@ -198,7 +198,7 @@ export async function runWorker({ ethers, provider, store, deadlineMs, now = () 
 
   let uni;
   const cached = await store.get("universe");
-  const UNIVERSE_FORMAT = 5; // v5: pools v4 con ETH nativo
+  const UNIVERSE_FORMAT = 6; // v6: comisión por par en Biswap
   if (cached && cached.format === UNIVERSE_FORMAT && now() - cached.builtAt < UNIVERSE_TTL_MS && ltHours > 0) {
     await setPhase("cargando universo guardado");
     uni = await fromSpecs(ethers, provider, cached.found, cached.meta);

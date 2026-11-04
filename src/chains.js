@@ -104,7 +104,7 @@ export const CHAINS = {
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
       { name: "PancakeSwap v2", kind: "v2pair", address: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", feeBps: 25 },
-      { name: "Biswap v2", kind: "v2pair", address: "0x858E3312ed3A876947EA49d572A7C42DE08af7EE", feeBps: 10 },
+      { name: "Biswap v2", kind: "v2pair", address: "0x858E3312ed3A876947EA49d572A7C42DE08af7EE", feeBps: 20, pairFee: "swapFee" }, // comisión por par (swapFee/1000)
       { name: "Uniswap v2", kind: "v2pair", address: "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6", feeBps: 30 },
     ],
     lenders: [

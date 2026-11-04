@@ -170,7 +170,7 @@ export async function existingPools(ethers, provider, tokenAddrs, factories = FA
         const sig = f.kind === "v3fee" ? "getPool(address,address,uint24)" : "getPool(address,address,int24)";
         for (const p of f.params) { calls.push([f.address, enc(iface, sig, [a, b, p])]); meta.push({ dex: f.name, kind: "v3" }); }
       } else if (f.kind === "v2pair") {
-        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps });
+        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee });
       } else if (f.kind === "aero") {
         calls.push([f.address, enc(iface, "getPool(address,address,bool)", [a, b, false])]);
         meta.push({ dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -242,7 +242,7 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
         const base = { dex: f.name, createdBlock: lg.blockNumber };
         const t = lg.topics, d = lg.data;
         if (f.kind === "v2pair") {
-          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps });
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee });
         } else if (f.kind === "aero") {
           if (BigInt(t[3]) === 1n) continue; // estable: otra curva
           specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -353,7 +353,7 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
   const calls = [];
   for (const [a, m] of evm) {
     calls.push([a, enc(iface, "token0")], [a, enc(iface, "token1")], [a, "0x3850c7bd"] /* slot0() */, [a, enc(iface, "fee")],
-      [a, enc(iface, "getReserves")], m.aeroFactory ? [m.aeroFactory, enc(iface, "getFee", [a, false])] : [MULTICALL3, "0x"],
+      [a, enc(iface, "getReserves")], m.aeroFactory ? [m.aeroFactory, enc(iface, "getFee", [a, false])] : m.pairFee ? [a, ethers.id(m.pairFee + "()").slice(0, 10)] : [MULTICALL3, "0x"],
       [a, enc(iface, "tickSpacing")]);
   }
   const r = await multicall(ethers, provider, calls);
@@ -374,7 +374,8 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
     } else {
       if (!res) return;
       let bps = m.feeBps ?? m.feeHint ?? 30;
-      if (aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)); // Aerodrome: bps directos
+      if (m.aeroFactory && aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)); // Aerodrome: bps directos
+      else if (m.pairFee && aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)) * 10; // Biswap: comisión por par en milésimas
       p.feeBps = bps;
       p.feePips = BigInt(Math.round(bps * 100));
     }
