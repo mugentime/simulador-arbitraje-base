@@ -409,7 +409,7 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
 
 const MIN_SQRT_RATIO = 4295128739n;
 const MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342n;
-export async function refreshPools(ethers, provider, pools, blockTag = "latest") {
+export async function refreshPools(ethers, provider, pools, blockTag = "latest", { parallel = 4 } = {}) {
   const iface = makeIface(ethers);
   const calls = [];
   for (const p of pools) {
@@ -417,7 +417,7 @@ export async function refreshPools(ethers, provider, pools, blockTag = "latest")
     else if (p.kind === "v4") calls.push([p.stateView, enc(iface, "getSlot0", [p.address])], [p.stateView, enc(iface, "getLiquidity", [p.address])]);
     else calls.push([p.address, enc(iface, "getReserves")]);
   }
-  const r = await multicall(ethers, provider, calls, blockTag);
+  const r = await multicall(ethers, provider, calls, blockTag, { parallel });
   let k = 0;
   for (const p of pools) {
     if (p.kind === "v3" || p.kind === "v4") {

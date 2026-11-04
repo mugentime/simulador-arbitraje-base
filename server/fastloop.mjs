@@ -6,14 +6,14 @@ import { ethers } from "ethers";
 import * as core from "../src/core.js";
 
 export function emptyFast() {
-  return { enabled: false, rpc: null, loops: 0, reads: 0, changedPools: 0, evaluated: 0, profitable: 0, simulated: 0, sent: 0, lastChangeAt: null, lastError: null, avgMs: 0, pendingLag: null };
+  return { enabled: false, rpc: null, loops: 0, reads: 0, changedPools: 0, evaluated: 0, profitable: 0, simulated: 0, sent: 0, lastChangeAt: null, lastError: null, avgMs: 0, readMs: 0, hotPools: 0, totalPools: 0, pendingLag: null };
 }
 
 export class FastLoop {
-  constructor({ url, executor, diag, intervalMs = 250 }) {
-    this.url = url; this.executor = executor; this.diag = diag; this.intervalMs = intervalMs;
-    this.provider = new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
-    this.f = emptyFast(); this.f.enabled = true; this.f.rpc = new URL(url).host;
+  constructor({ url, executor, diag, intervalMs = 250, parallel = Number(process.env.FAST_PARALLEL || 8), provider = null }) {
+    this.url = url; this.executor = executor; this.diag = diag; this.intervalMs = intervalMs; this.parallel = parallel;
+    this.provider = provider ?? new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
+    this.f = emptyFast(); this.f.enabled = true; this.f.rpc = url ? new URL(url).host : "test";
     this.running = false; this.ctx = null;
   }
 
@@ -25,6 +25,11 @@ export class FastLoop {
     this.cycles = cycles.map((c) => ({ ...c, route: c.route.map((p) => byAddr.get(p.address)) }));
     this.index = new Map();
     this.cycles.forEach((c, i) => { for (const p of c.route) (this.index.get(p.address) ?? this.index.set(p.address, []).get(p.address)).push(i); });
+    // Solo se leen en cada sub-bloque los pools que forman parte de algún ciclo: el resto no puede cambiar ninguna
+    // ruta y solo alarga la lectura (en Base ~700 pools → >1 s por lectura).
+    this.mainBy = new Map(pools.map((p) => [p.address, p]));
+    this.hot = this.pools.filter((p) => this.index.has(p.address));
+    this.f.hotPools = this.hot.length; this.f.totalPools = this.pools.length;
   }
 
   /** Contexto del último bloque completo: gas, precio ETH, prestamistas. */
@@ -41,12 +46,16 @@ export class FastLoop {
       try {
         if (!this.pools?.length || !this.ctx) { await sleep(500); continue; }
         // ticks: comparte las tablas que mantiene el bucle principal
-        for (const p of this.pools) { const m = this.main.find((q) => q.address === p.address); if (m?.ticks) { p.ticks = m.ticks; p.tickSpacing = m.tickSpacing; } }
-        const before = this.pools.map((p) => [p.reserve0, p.reserve1, p.sqrtPriceX96, p.liquidity]);
-        await core.refreshPools(ethers, this.provider, this.pools, "pending");
+        const hot = this.hot;
+        for (const p of hot) { const m = this.mainBy.get(p.address); if (m?.ticks) { p.ticks = m.ticks; p.tickSpacing = m.tickSpacing; } }
+        const before = hot.map((p) => [p.reserve0, p.reserve1, p.sqrtPriceX96, p.liquidity]);
+        const tr = Date.now();
+        // todos los tramos del multicall a la vez (una sola ida y vuelta)
+        await core.refreshPools(ethers, this.provider, hot, "pending", { parallel: this.parallel });
+        this.f.readMs = Math.round(this.f.readMs * 0.95 + (Date.now() - tr) * 0.05);
         this.f.reads++;
         const changed = [];
-        this.pools.forEach((p, i) => { const b = before[i]; if (b[0] !== p.reserve0 || b[1] !== p.reserve1 || b[2] !== p.sqrtPriceX96 || b[3] !== p.liquidity) changed.push(p.address); });
+        hot.forEach((p, i) => { const b = before[i]; if (b[0] !== p.reserve0 || b[1] !== p.reserve1 || b[2] !== p.sqrtPriceX96 || b[3] !== p.liquidity) changed.push(p.address); });
         if (changed.length) {
           this.f.changedPools += changed.length; this.f.lastChangeAt = Date.now();
           const idx = new Set(); for (const a of changed) for (const i of this.index.get(a) ?? []) idx.add(i);

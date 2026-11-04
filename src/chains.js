@@ -44,9 +44,11 @@ export const CHAINS = {
       { sym: "ZORA", address: "0x1111111111166b7FE7bd91427724B487980aFc69" }, { sym: "USDe", address: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34" }, // LBTC verificado pero 0 pools en estas factories
       // 2026-11-04 07:45
       { sym: "cbXRP", address: "0xcb585250f852C6c6bf90434AB21A00f02833a4af" }, { sym: "KAITO", address: "0x98d0baa52b2D063E780DE12F615f963Fe8537553" },
+      // 2026-11-04 08:45
+      { sym: "wrsETH", address: "0xEDfa23602D0EC14714057867A78d01e94176BEA0" }, { sym: "PRIME", address: "0xfA980cEd6895AC314E7dE34Ef1bFAE90a5AdD21b" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
-    excludedPairs: ["AERO/BRETT", "AERO/cbETH"], // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
+    excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL"], // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -88,6 +90,8 @@ export const CHAINS = {
       { sym: "UNI", address: "0xb33EaAd8d922B1083446DC23f610c2567fB5180f" }, { sym: "SUSHI", address: "0x0b3F868E0BE5597D5DB7fEB59E1CADBb0fdDa50a" },
       // 2026-11-04 07:45
       { sym: "BAL", address: "0x9a71012B13CA4d3D0Cdc72A177DF3ef03b0E76A3" }, { sym: "TEL", address: "0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32" },
+      // 2026-11-04 08:45
+      { sym: "GNS", address: "0xE5417Af564e4bFDA1c483642db72007871397896" }, { sym: "MANA", address: "0xA1c57f48F0Deb89f569dFbE6E2B7f46D33606fD4" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH"], // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -127,9 +131,11 @@ export const CHAINS = {
       { sym: "ADA", address: "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47" }, { sym: "DOT", address: "0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402" },
       // 2026-11-04 07:45
       { sym: "AVAX", address: "0x1CE0c2827e2eF14D5C4f29a091d735A204794041" }, { sym: "UNI", address: "0xBf5140A22578168FD562DCcF235E5D43A02ce9B1" },
+      // 2026-11-04 08:45
+      { sym: "TRX", address: "0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3" }, { sym: "LTC", address: "0x4338665CBB7B2485A8855A139b75D5e34AB0DB94" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
-    excludedPairs: ["BTCB/DAI", "CAKE/DAI"], // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
+    excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE"], // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -168,9 +174,11 @@ export const CHAINS = {
       { sym: "GRT", address: "0x9623063377AD1B27544C965cCd7342f7EA7e88C7" }, { sym: "UNI", address: "0xFa7F8980b0f1E64A2062791cc3b0871572f1F7f0" },
       // 2026-11-04 07:45
       { sym: "CRV", address: "0x11cDb42B0EB46D95f990BeDD4695A6e3fA034978" }, { sym: "AAVE", address: "0xba5DdD1f9d7F570dc94a51479a000E3BCE967196" },
+      // 2026-11-04 08:45
+      { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" }, { sym: "GNS", address: "0x18c11FD286C5EC11c3b683Caa813B77f5163A122" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
-    excludedPairs: ["ARB/PENDLE", "DAI/wstETH"], // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
+    excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE"], // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -210,6 +218,8 @@ export const CHAINS = {
       { sym: "UNI", address: "0x6fd9d7AD17242c41f7131d257212c54A0e816691" }, { sym: "PERP", address: "0x9e1028F5F1D5eDE59748FFceE5532509976840E0" }, // LDO verificado pero 0 pools (liquidez en Slipstream)
       // 2026-11-04 07:45
       { sym: "sUSD", address: "0x8c6f28f2F1A3C87F0f938b96d27520d9751ec8d9" }, { sym: "LUSD", address: "0xc40F949F8a4e094D1b49a23ea9241D289B7b2819" },
+      // 2026-11-04 08:45
+      { sym: "tBTC", address: "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40" }, { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH"], // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
