@@ -115,6 +115,18 @@ export function backrunFee(victimTx, baseFee = 0n) {
   return { fee: { gasPrice: gp, type: 0 }, effective: gp, desc: `legacy ${Number(gp) / 1e9} gwei` };
 }
 
+/** Valor de P1_RESUME a aplicar ahora, o null si no hay o ya se aplicó (estado.resumedWith). */
+export function resumeTag(env, p1) {
+  const tag = String(env ?? "").trim();
+  if (!tag || tag === "0") return null;
+  return p1?.resumedWith === tag ? null : tag;
+}
+
+/** Back-run público: el beneficio bruto (tras comisión del préstamo) debe cubrir `margin` veces el gas; si revierte, se pierde el gas. */
+export function backrunWorthIt(profitUsd, costUsd, margin = 2) {
+  return profitUsd - costUsd > 0 && profitUsd >= margin * costUsd;
+}
+
 export class Executor {
   constructor({ provider, store, diag, mode = "simulate", autoDeploy = false }) {
     this.provider = provider; this.store = store; this.diag = diag; this.mode = mode; this.autoDeploy = autoDeploy;
@@ -200,6 +212,14 @@ export class Executor {
       const keep = { executor: this.p1.executor, artifact: this.p1.artifact, deployedAt: this.p1.deployedAt, deployTx: this.p1.deployTx, previousExecutor: this.p1.previousExecutor };
       this.p1 = { ...emptyPhase1(), ...keep, modelVersion: 2, resetAt: Date.now() };
       await this.diag("fase 1: contadores reiniciados (modelo v2, ticks exactos)");
+    }
+    // Reanudar fase 1 tras una pausa: P1_RESUME=<etiqueta>. Se consume una vez por valor (queda en el estado), así un
+    // redeploy posterior con la misma variable no quita una pausa nueva.
+    const resume = resumeTag(process.env.P1_RESUME, this.p1);
+    if (resume) {
+      const was = this.p1.paused ? this.p1.pausedReason : null;
+      this.p1.paused = false; this.p1.pausedReason = null; this.p1.resumedWith = resume;
+      await this.diag(`fase 1: reanudada (P1_RESUME=${resume}${was ? `; estaba pausada por ${was}` : "; no estaba pausada"})`);
     }
     if (!this.p1.executor && process.env.EXECUTOR_ADDRESS) this.p1.executor = process.env.EXECUTOR_ADDRESS; // respaldo si se perdiera el volumen
     this.p1.mode = this.wallet ? this.mode : "sin llave";
@@ -528,6 +548,8 @@ export class Executor {
     const costUsd = (Number(gp) * gasEst / 1e18) * ethUsd;
     const rec = { block: this.lastChainBlock, ts: Math.floor(Date.now() / 1000), route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, backrun: victimTx.hash, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: costUsd, netUsd: r.grossUsd - r.flashFeeUsd - costUsd, gasEst, sent: null };
     if (rec.netUsd <= 0) return `omitido: gas al precio de la víctima $${costUsd.toFixed(4)} ≥ beneficio`;
+    const margin = Number(process.env.BACKRUN_MIN_MARGIN ?? 2);
+    if (!backrunWorthIt(rec.profitUsd, costUsd, margin)) return `omitido: beneficio $${rec.profitUsd.toFixed(4)} < ${margin}× gas $${costUsd.toFixed(4)}`;
     // send() aplica topes, presupuesto de reverts y una sola tx en vuelo; se fija el precio exacto de la víctima
     this.forcedFee = fx.fee;
     try { await this.send(plan, rec, { ...gas, baseFee: 0n, priority: 0n }, ethUsd); } finally { this.forcedFee = null; }
