@@ -30,6 +30,39 @@ export class FastLoop {
     this.mainBy = new Map(pools.map((p) => [p.address, p]));
     this.hot = this.pools.filter((p) => this.index.has(p.address));
     this.f.hotPools = this.hot.length; this.f.totalPools = this.pools.length;
+    // índice para el estado por eventos: dirección (o poolId v4) en minúsculas → pool en memoria
+    this.byKey = new Map(this.hot.map((p) => [String(p.address).toLowerCase(), p]));
+  }
+
+  /**
+   * Re-evalúa las rutas que tocan `changed` contra el estado en memoria y, si hay ganadoras, ejecuta la Fase 1.
+   * Lo llaman el bucle de lectura y el feed de eventos; nunca dos a la vez (la segunda espera a la primera).
+   */
+  async evaluateChanged(changed, source = "poll") {
+    if (!changed.length || !this.ctx || !this.cycles) return null;
+    const prev = this.evalLock ?? Promise.resolve();
+    const run = async () => {
+      // ticks: comparte las tablas que mantiene el bucle principal
+      for (const a of changed) { const p = this.byKey?.get(String(a).toLowerCase()); const m = p && this.mainBy.get(p.address); if (m?.ticks) { p.ticks = m.ticks; p.tickSpacing = m.tickSpacing; } }
+      this.f.changedPools += changed.length; this.f.lastChangeAt = Date.now();
+      const idx = new Set(); for (const a of changed) for (const i of this.index.get(a) ?? []) idx.add(i);
+      if (!idx.size) return null;
+      const subset = [...idx].map((i) => this.cycles[i]);
+      this.f.evaluated += subset.length;
+      const { gas, ethUsd, lenders } = this.ctx;
+      const results = core.evaluateAll({ pools: this.pools, cycles: subset, lenders, gas, ethUsd, maxOptimize: 60 });
+      const winners = results.filter((r) => r.profitable && !r.suspicious && !core.PHANTOM_ROUTES.has(core.routeId(r.route)));
+      if (!winners.length) return { profitable: 0 };
+      this.f.profitable += winners.length;
+      if (source === "events") this.f.fromEvents = (this.f.fromEvents ?? 0) + winners.length;
+      const r = await this.executor.onBlock({ block: "pending", ts: Math.floor(Date.now() / 1000), results, lenders, gas, ethUsd, pools: this.pools, fast: this.provider });
+      const sent = !!(r && /envío: 0x/.test(r));
+      if (r) { this.f.simulated++; if (sent) this.f.sent++; }
+      return { profitable: winners.length, sent };
+    };
+    const p = prev.then(run, run);
+    this.evalLock = p.catch(() => {});
+    return p;
   }
 
   /** Contexto del último bloque completo: gas, precio ETH, prestamistas. */
@@ -56,21 +89,7 @@ export class FastLoop {
         this.f.reads++;
         const changed = [];
         hot.forEach((p, i) => { const b = before[i]; if (b[0] !== p.reserve0 || b[1] !== p.reserve1 || b[2] !== p.sqrtPriceX96 || b[3] !== p.liquidity) changed.push(p.address); });
-        if (changed.length) {
-          this.f.changedPools += changed.length; this.f.lastChangeAt = Date.now();
-          const idx = new Set(); for (const a of changed) for (const i of this.index.get(a) ?? []) idx.add(i);
-          const subset = [...idx].map((i) => this.cycles[i]);
-          this.f.evaluated += subset.length;
-          const { gas, ethUsd, lenders } = this.ctx;
-          const results = core.evaluateAll({ pools: this.pools, cycles: subset, lenders, gas, ethUsd, maxOptimize: 60 });
-          const winners = results.filter((r) => r.profitable && !r.suspicious && !core.PHANTOM_ROUTES.has(core.routeId(r.route)));
-          if (winners.length) {
-            this.f.profitable += winners.length;
-            // Fase 1 contra el estado pending: simula y envía en el mismo sub-bloque
-            const r = await this.executor.onBlock({ block: "pending", ts: Math.floor(Date.now() / 1000), results, lenders, gas, ethUsd, pools: this.pools, fast: this.provider });
-            if (r) { this.f.simulated++; if (/envío: 0x/.test(r)) this.f.sent++; }
-          }
-        }
+        if (changed.length) await this.evaluateChanged(changed, "poll");
       } catch (e) {
         this.f.lastError = (e.shortMessage || e.message).slice(0, 100);
         if (Date.now() - lastWarn > 300_000) { lastWarn = Date.now(); await this.diag(`flashblocks: ${this.f.lastError}`); }
@@ -79,7 +98,7 @@ export class FastLoop {
       this.f.loops++;
       const took = Date.now() - t0;
       this.f.avgMs = Math.round(this.f.avgMs * 0.95 + took * 0.05);
-      await sleep(Math.max(0, this.intervalMs - took));
+      await sleep(Math.max(0, (this.events?.e.connected ? Number(process.env.FAST_BACKUP_MS ?? 1000) : this.intervalMs) - took)); // con eventos, la lectura solo es respaldo
     }
   }
 }
