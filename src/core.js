@@ -3,7 +3,8 @@ import * as CL from "./clmath.js";
 // Funciona en el navegador (ethers global) y en Node (ethers importado). Todo con BigInt.
 
 export let CHAIN_ID = 8453n;
-export let CHAIN = { key: "base", name: "Base", id: 8453, native: "ETH", blockMs: 2000, publicMempool: false };
+export let CHAIN = { key: "base", name: "Base", id: 8453, native: "ETH", blockMs: 2000, publicMempool: false, beefy: "base", morphoApiChainId: 8453,
+  aavePool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5", morpho: "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", rpcs: [] };
 
 export let TOKENS = {
   WETH: { address: "0x4200000000000000000000000000000000000006", decimals: 18 },
@@ -70,7 +71,7 @@ export let LENDERS = [
  * Los importadores que usan `core.X` ven el cambio al instante (enlaces vivos de ESM).
  */
 export function applyChain(cfg) {
-  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250 };
+  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [] };
   CHAIN_ID = BigInt(cfg.id);
   TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));
   EXTRA_TOKENS = (cfg.extraTokens ?? []).map((t) => ({ ...t }));
@@ -180,6 +181,17 @@ export async function existingPools(ethers, provider, tokenAddrs, factories = FA
           const [t0, t1] = a.toLowerCase() < b.toLowerCase() ? [a, b] : [b, a];
           meta.push({ dex: f.name, kind: "v4", id, feeBps: fee / 100, tickSpacing: ts, token0: t0, token1: t1, stateView: f.stateView, manager: f.address });
         }
+        // pools con ETH nativo (currency0 = address(0)): en v4 son los más profundos. En el modelo el lado nativo es WETH
+        // (el contrato envuelve/desenvuelve dentro del salto); token0 = WETH porque address(0) siempre es currency0.
+        const W = TOKENS.WETH?.address;
+        if (W && (a.toLowerCase() === W.toLowerCase() || b.toLowerCase() === W.toLowerCase())) {
+          const other = a.toLowerCase() === W.toLowerCase() ? b : a;
+          for (const [fee, ts] of f.combos) {
+            const id = v4PoolId(ethers, ZERO, other, fee, ts);
+            calls.push([f.stateView, enc(iface, "getSlot0", [id])]);
+            meta.push({ dex: f.name + " (ETH nativo)", kind: "v4", id, feeBps: fee / 100, tickSpacing: ts, token0: W, token1: other, native: true, stateView: f.stateView, manager: f.address });
+          }
+        }
       }
     }
   }
@@ -242,8 +254,10 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
           const fee = Number(word(d, 0)), hooks = ethers.getAddress("0x" + d.slice(2 + 128 + 24, 2 + 192));
           const tsRaw = word(d, 1), tickSpacing = Number(tsRaw > 2n ** 255n ? tsRaw - 2n ** 256n : tsRaw);
           const t0 = ethers.getAddress("0x" + t[2].slice(-40)), t1 = ethers.getAddress("0x" + t[3].slice(-40));
-          if (hooks !== ZERO || fee & V4_DYNAMIC_FEE || t0 === ZERO) continue; // hooks, fee dinámica o ETH nativo
-          specs.set(t[1], { ...base, kind: "v4", id: t[1], feeBps: fee / 100, tickSpacing, token0: t0, token1: t1, stateView: f.stateView, manager: f.address });
+          if (hooks !== ZERO || fee & V4_DYNAMIC_FEE) continue; // hooks o fee dinámica
+          const native = t0 === ZERO; // ETH nativo: se modela como WETH (el contrato envuelve/desenvuelve)
+          if (native && !TOKENS.WETH) continue;
+          specs.set(t[1], { ...base, kind: "v4", id: t[1], dex: native ? f.name + " (ETH nativo)" : f.name, feeBps: fee / 100, tickSpacing, token0: native ? TOKENS.WETH.address : t0, token1: t1, native, stateView: f.stateView, manager: f.address });
         }
       }
       onProgress?.({ factory: f.name, from, to, head, found: specs.size });
@@ -371,7 +385,7 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
     const tok0 = byAddr.get(m.token0.toLowerCase()), tok1 = byAddr.get(m.token1.toLowerCase());
     if (!tok0 || !tok1) continue;
     pools.push({ address: id, dex: m.dex, kind: "v4", token0: tok0, token1: tok1, reserve0: 0n, reserve1: 0n, feeBps: m.feeBps,
-      feePips: BigInt(Math.round(m.feeBps * 100)), tickSpacing: m.tickSpacing ?? 0, stateView: m.stateView, manager: m.manager, createdBlock: m.createdBlock ?? 0 });
+      feePips: BigInt(Math.round(m.feeBps * 100)), tickSpacing: m.tickSpacing ?? 0, stateView: m.stateView, manager: m.manager, native: !!m.native, createdBlock: m.createdBlock ?? 0 });
   }
   await refreshPools(ethers, provider, pools);
   return pools;

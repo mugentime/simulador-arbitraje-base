@@ -21,7 +21,9 @@ const SOURCE = { "Morpho Blue": 0, "Balancer v3": 1, "Aave v3": 2 };
 const ART_ID = (ART.version ?? "v1") + "-" + ethers.keccak256(ART.bytecode).slice(2, 10); // cambia cuando cambia el contrato
 const MAX_RECENT = 80;
 // RPCs para ENVIAR transacciones (eth_sendRawTransaction). Algunos nodos públicos de solo lectura devuelven 403 al enviar.
-const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"] : (core.CHAIN.sendRpcs ?? [core.CHAIN.fastRpc]));
+const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]
+  // publicnode rechaza eth_sendRawTransaction (403): va al final
+  : [...(core.CHAIN.rpcs ?? [])].sort((a, b) => /publicnode/.test(a) - /publicnode/.test(b)));
 
 export function emptyPhase1() {
   return {
@@ -127,7 +129,7 @@ export class Executor {
         if (this.autoDeploy) { this.p1.previousExecutor = this.p1.executor; this.p1.executor = null; await this.deploy(); }
       }
     }
-    await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ETH · contrato ${this.p1.executor ?? "no desplegado"}`);
+    await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ${core.CHAIN.native} · contrato ${this.p1.executor ?? "no desplegado"}`);
     await this.save();
     if (process.env.DEPLOY_QUOTER !== "0") await this.ensureQuoter();
   }
@@ -162,7 +164,7 @@ export class Executor {
     const hops = [];
     for (const p of r.route) {
       const tokenOut = core.other(p, tokenIn).address;
-      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing, "0x"]);
+      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing, p.native ? ethers.AbiCoder.defaultAbiCoder().encode(["address"], [core.TOKENS.WETH.address]) : "0x"]);
       else hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0, "0x"]);
       tokenIn = tokenOut;
     }
