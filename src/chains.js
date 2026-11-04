@@ -63,7 +63,7 @@ export const CHAINS = {
       // 2026-11-04 16:45
       { sym: "AAVE", address: "0x63706e401c06ac8513145b7687A14804d17f814b" }, { sym: "GHST", address: "0xcD2F22236DD9Dfe2356D7C543161D4d260FD9BcB" },
       // 2026-11-04 17:45 (agentes de Virtuals y memecoin con pools en Uniswap/Aerodrome)
-      { sym: "LUNA", address: "0x55cD6469F597452B5A7536e2CD98fDE4c1247ee4" }, { sym: "TYBG", address: "0x0d97F261b1e88845184f678e2d1e7a98D9FD38dE" },
+      { sym: "BENJI", address: "0xBC45647eA894030a4E9801Ec03479739FA2485F0" }, { sym: "TYBG", address: "0x0d97F261b1e88845184f678e2d1e7a98D9FD38dE" }, // LUNA 0x55cD6469… verificado pero 0 pools (liquidez contra VIRTUAL)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -148,7 +148,7 @@ export const CHAINS = {
       // 2026-11-04 16:45
       { sym: "AVAX", address: "0x2C89bbc92BD86F8075d1DEcc58C7F4E0107f286b" }, { sym: "SOL", address: "0xd93f7E271cB87c23AaA73edC008A79646d1F9912" },
       // 2026-11-04 17:45
-      { sym: "APE", address: "0xB7b31a6BC18e48888545CE79e83E06003bE70930" }, { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" },
+      { sym: "ORBS", address: "0x614389EaAE0A6821DC49062D56BDA3d9d45Fa2ff" }, { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" }, // APE 0xB7b31a6B… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -383,7 +383,7 @@ export const CHAINS = {
       // 2026-11-04 16:45
       { sym: "FRAX", address: "0x2E3D870790dC77A83DD1d18184Acc7439A53f475" }, { sym: "USDGLO", address: "0x4F604735c1cF31399C6E711D5962b2B3E0225AD3" },
       // 2026-11-04 17:45 (pools WETH/ACX y WETH/WCT en Velodrome)
-      { sym: "ACX", address: "0xFf733b2A3557a7ed6697007ab5D11B79FdD1b76B" }, { sym: "WCT", address: "0xeF4461891DfB3AC8572cCf7C794664A8DD927945" },
+      { sym: "WCT", address: "0xeF4461891DfB3AC8572cCf7C794664A8DD927945" }, // ACX 0xFf733b2A… verificado pero 0 pools fuera de Slipstream
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
