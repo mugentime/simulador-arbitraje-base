@@ -35,7 +35,7 @@ for (const fn of ["log", "warn", "error"]) { const orig = console[fn].bind(conso
 const CHAIN_CFG = chainByKey(process.env.CHAIN || "base");
 // NodeReal (cuenta gratuita de Jose): solo el WebSocket de mempool (más rápido que los nodos públicos). Las lecturas
 // de cada bloque siguen en los RPC públicos para no agotar los CU mensuales del plan gratuito.
-const NODEREAL_SLUG = { bsc: "bsc-mainnet", polygon: "polygon-mainnet" }[CHAIN_CFG.key];
+const NODEREAL_SLUG = { bsc: "bsc-mainnet" }[CHAIN_CFG.key]; // polygon-mainnet.nodereal.io no resuelve (ENOTFOUND)
 const NODEREAL_WS = process.env.NODEREAL_KEY && NODEREAL_SLUG ? `wss://${NODEREAL_SLUG}.nodereal.io/ws/v1/${process.env.NODEREAL_KEY}` : null;
 core.applyChain(CHAIN_CFG);
 const RPCS = [process.env.RPC_URL, ...CHAIN_CFG.rpcs].filter(Boolean);
