@@ -485,6 +485,10 @@ export class Executor {
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
     // Una tx que revierte cuesta ~1 gas completo; solo compensa enviar si el neto simulado cubre varias fallas.
     if (rec.netUsd < this.limits.minSendNetUsd) { rec.sent = `omitida: neto simulado $${rec.netUsd.toFixed(4)} < mínimo de envío $${this.limits.minSendNetUsd}`; return; }
+    // valor esperado: con probabilidad de ganar p, enviar compensa si neto·p > gas·(1−p). Con p desconocida y baja,
+    // se exige neto ≥ EV_MULT × gas del intento (en bundle un intento perdido no cuesta: no aplica)
+    const evMult = Number(process.env.EV_MULT ?? 3);
+    if (!this.limits.bundleSend && rec.gasUsd > 0 && rec.netUsd < evMult * rec.gasUsd) { rec.sent = `omitida: neto $${rec.netUsd.toFixed(4)} < ${evMult}× gas $${rec.gasUsd.toFixed(4)} (valor esperado negativo)`; return; }
     // una sola transacción en vuelo: si la anterior aún no tiene recibo, no se envía otra (evita nonces repetidos y
     // reenviar una oportunidad que ya se tomó otro en el mismo bloque)
     if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
