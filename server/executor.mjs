@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
+import { sendBundle, MIN_BUNDLE_GAS_PRICE } from "./bundler.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/ArbExecutor.json", import.meta.url)));
 const QUOTER = JSON.parse(fs.readFileSync(new URL("./artifacts/Quoter.json", import.meta.url)));
@@ -56,6 +57,9 @@ export class Executor {
       directSend: process.env.DIRECT_SEND === "1",
       directMinModelUsd: Number(process.env.DIRECT_MIN_MODEL_USD ?? 0.02), // neto del modelo mínimo para enviar sin simular
       revertBudgetUsdPerHour: Number(process.env.REVERT_BUDGET_USD_PER_HOUR ?? 0.25),
+      // Bundles a builders (BSC): si la tx revertiría, el builder no la incluye → un intento fallido no cuesta gas.
+      bundleSend: process.env.BUNDLE_SEND === "1",
+      bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 3), // validez del bundle en bloques
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
     this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
@@ -327,8 +331,9 @@ export class Executor {
     // una sola transacción en vuelo: si la anterior aún no tiene recibo, no se envía otra (evita nonces repetidos y
     // reenviar una oportunidad que ya se tomó otro en el mismo bloque)
     if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
-    // presupuesto de pérdidas por hora: aplica a TODO envío (directo o simulado), no solo al directo
-    {
+    // presupuesto de pérdidas por hora: aplica a TODO envío (directo o simulado), no solo al directo.
+    // Con bundles no hay pérdida por revert (no se incluyen), así que no aplica.
+    if (!this.limits.bundleSend) {
       this.revertGas = this.revertGas.filter((x) => now - x.t < 3600e3);
       const spent = this.revertGas.reduce((a, x) => a + x.usd, 0);
       if (spent >= this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: presupuesto de reverts agotado ($${spent.toFixed(3)}/h)`; return; }
@@ -337,6 +342,7 @@ export class Executor {
     this.sending = true;
     try {
       const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
+      if (this.limits.bundleSend) { await this.sendAsBundle(plan, rec, gas, ethUsd, data, now); return; }
       // Propina: Base ordena por propina dentro de cada flashblock; con la mínima vamos al final y otro bot se lleva
       // la ruta antes. Se ofrece una fracción del neto simulado, con tope.
       const tipUsd = rec.netUsd * this.limits.tipShare;
@@ -356,6 +362,43 @@ export class Executor {
     finally { this.sending = false; }
   }
 
+  /**
+   * Envío como bundle de una transacción a varios builders. La tx se firma con el nonce actual ("latest": un bundle
+   * no incluido no consume nonce) y un gasPrice ≥ 0.05 gwei + una parte del neto como pago al builder.
+   */
+  async sendAsBundle(plan, rec, gas, ethUsd, data, now) {
+    const w = this.wallet.connect(this.provider);
+    const [nonce, netGp, head] = await Promise.all([
+      this.provider.getTransactionCount(this.wallet.address, "latest"),
+      this.provider.send("eth_gasPrice", []).then(BigInt).catch(() => MIN_BUNDLE_GAS_PRICE),
+      this.provider.getBlockNumber(),
+    ]);
+    const gasLimit = BigInt(Math.floor(rec.gasEst * 1.25));
+    // pago al builder: hasta tipShare del neto simulado, repartido en el gas de la tx
+    const tipWei = BigInt(Math.floor(((rec.netUsd * this.limits.tipShare) / ethUsd) * 1e18 / Math.max(1, Number(gasLimit))));
+    let gasPrice = (netGp > MIN_BUNDLE_GAS_PRICE ? netGp : MIN_BUNDLE_GAS_PRICE) + tipWei;
+    const cap = BigInt(Math.floor(this.limits.maxTipGwei * 1e9)) + MIN_BUNDLE_GAS_PRICE;
+    if (gasPrice > cap) gasPrice = cap;
+    const costUsd = (Number(gasPrice * BigInt(rec.gasEst)) / 1e18) * ethUsd;
+    if (rec.profitUsd !== null && rec.profitUsd !== undefined && costUsd >= rec.profitUsd) { rec.sent = `omitida: gas del bundle $${costUsd.toFixed(4)} ≥ beneficio $${rec.profitUsd.toFixed(4)}`; return; }
+    const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
+    const hash = ethers.keccak256(raw);
+    const maxBlockNumber = head + this.limits.bundleBlocks;
+    const { accepted, errors } = await sendBundle(raw, { maxBlockNumber });
+    this.p1.bundles = (this.p1.bundles ?? 0) + 1;
+    const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    if (!accepted.length) {
+      rec.sent = `bundle rechazado por todos los builders (${errTxt.slice(0, 200)})`;
+      this.p1.lastError = rec.sent;
+      await this.diag(`fase 1: ${rec.sent}`);
+      return;
+    }
+    this.sentTimes.push(now); this.p1.sent++; rec.sent = hash;
+    await this.diag(`fase 1: bundle ${hash} enviado a ${accepted.join(", ")} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, gasPrice ${Number(gasPrice) / 1e9} gwei, válido hasta el bloque ${maxBlockNumber}, nonce ${nonce})${errTxt ? ` · rechazos: ${errTxt.slice(0, 200)}` : ""}`);
+    (this.p1.pending ??= []).push({ hash, sentAt: now, route: rec.route, startSym: plan.meta.startTok.sym, startDecimals: plan.meta.startTok.decimals, netSimUsd: rec.netUsd, bundle: true, maxBlock: maxBlockNumber });
+    await this.save();
+  }
+
   /** Resuelve el resultado de las transacciones enviadas (recibo), aunque el proceso se haya reiniciado. */
   async reconcile(ethUsd) {
     const pend = this.p1.pending ?? [];
@@ -365,6 +408,19 @@ export class Executor {
       let rcpt = null;
       try { rcpt = await this.provider.getTransactionReceipt(t.hash); } catch { /* red */ }
       if (!rcpt) {
+        if (t.bundle) {
+          // bundle no incluido: si ya pasó su último bloque válido, se descarta sin costo
+          let head = this.lastChainBlock;
+          try { head = await this.provider.getBlockNumber(); } catch { /* red */ }
+          if (head > t.maxBlock + 1) {
+            this.p1.bundlesMissed = (this.p1.bundlesMissed ?? 0) + 1; this.p1.sent = Math.max(0, this.p1.sent - 1);
+            this.routeCooldown.set(t.route, head + 3);
+            const rec = this.p1.recent.find((r) => typeof r.sent === "string" && r.sent.startsWith(t.hash));
+            if (rec) rec.sent = `${t.hash} · bundle no incluido (sin costo)`;
+            await this.diag(`fase 1: bundle ${t.hash.slice(0, 12)}… no incluido hasta el bloque ${t.maxBlock} (sin costo) · ${t.route}`);
+          } else keep.push(t);
+          continue;
+        }
         if (Date.now() - t.sentAt > 15 * 60_000) { await this.diag(`fase 1: ${t.hash} no fue minada en 15 min (descartada por la red; sin costo)`); this.p1.dropped = (this.p1.dropped ?? 0) + 1; }
         else keep.push(t);
         continue;
