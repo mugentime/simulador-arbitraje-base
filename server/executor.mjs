@@ -48,9 +48,16 @@ export class Executor {
       tipShare: Number(process.env.TIP_SHARE ?? 0.4), // fracción del neto simulado que se ofrece como propina (orden dentro del bloque)
       maxTipGwei: Number(process.env.MAX_TIP_GWEI ?? 0.2),
       routeCooldownBlocks: Number(process.env.ROUTE_COOLDOWN_BLOCKS ?? 30), // tras un revert, esa ruta no se reenvía hasta pasados N bloques
+      // Envío directo: sin eth_call ni estimateGas antes de enviar (ahorra 150–400 ms: la tx entra en el mismo bloque/flashblock
+      // en que se vio la ineficiencia). El contrato revierte si no hay beneficio, así que el riesgo es solo el gas del revert,
+      // limitado por un presupuesto por hora.
+      directSend: process.env.DIRECT_SEND === "1",
+      directMinModelUsd: Number(process.env.DIRECT_MIN_MODEL_USD ?? 0.02), // neto del modelo mínimo para enviar sin simular
+      revertBudgetUsdPerHour: Number(process.env.REVERT_BUDGET_USD_PER_HOUR ?? 0.25),
     };
     this.sentTimes = []; this.consecutiveReverts = 0; this.inflight = false; this.lastSimBlock = 0;
     this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
+    this.revertGas = []; // [{t, usd}] gas perdido en reverts (presupuesto por hora del envío directo)
     this.lastChainBlock = 0;
     this.sendIdx = 0; this.sendRpcs = sendRpcs();
   }
@@ -180,6 +187,22 @@ export class Executor {
     this.inflight = true; if (typeof block === "number") this.lastSimBlock = block;
     let text = null;
     try {
+      // envío directo (mismo bloque): la mejor ruta se envía sin simular; la simulación corre después solo como diagnóstico
+      if (this.limits.directSend && this.mode === "live" && !this.p1.paused && fast) {
+        const r = cands[0];
+        if (r.netUsd >= this.limits.directMinModelUsd) {
+          const plan = this.buildPlan(r, lenders, ethUsd);
+          if (plan) {
+            const rec = { block, ts, route: label(r), start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: r.gasUsd, netUsd: r.netUsd, gasEst: Number(core.GAS_BASE + core.GAS_PER_HOP * BigInt(r.hops)) * 1.3, sent: null };
+            this.p1.direct = (this.p1.direct ?? 0) + 1;
+            await this.send(plan, rec, gas, ethUsd);
+            this.p1.recent.unshift(rec); if (this.p1.recent.length > MAX_RECENT) this.p1.recent.length = MAX_RECENT;
+            text = `Envío directo (sin simular, neto modelo $${r.netUsd.toFixed(4)}): ${rec.sent}`;
+            await this.save();
+            return text;
+          }
+        }
+      }
       for (const r of cands) {
         const plan0 = this.buildPlan(r, lenders, ethUsd);
         if (!plan0) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
@@ -301,6 +324,11 @@ export class Executor {
     // una sola transacción en vuelo: si la anterior aún no tiene recibo, no se envía otra (evita nonces repetidos y
     // reenviar una oportunidad que ya se tomó otro en el mismo bloque)
     if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
+    if (rec.direct) {
+      this.revertGas = this.revertGas.filter((x) => now - x.t < 3600e3);
+      const spent = this.revertGas.reduce((a, x) => a + x.usd, 0);
+      if (spent >= this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: presupuesto de reverts agotado ($${spent.toFixed(3)}/h)`; return; }
+    }
     if (this.sending) { rec.sent = "omitida: envío en curso"; return; }
     this.sending = true;
     try {
@@ -349,10 +377,12 @@ export class Executor {
         await this.diag(`fase 1: confirmada ${t.hash} · bruto $${realized.toFixed(4)} − gas $${paid.toFixed(4)} = ${realized - paid >= 0 ? "+" : ""}$${(realized - paid).toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
       } else {
         this.p1.reverted++; this.consecutiveReverts++;
+        this.revertGas.push({ t: Date.now(), usd: paid });
         this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
         await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
-        if (this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
+        if (!this.limits.directSend && this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; // en envío directo manda el presupuesto por hora, no la racha
+           this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
     }
     this.p1.pending = keep;
