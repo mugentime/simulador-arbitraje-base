@@ -128,8 +128,7 @@ export const CHAINS = {
       { sym: "XSGD", address: "0xDC3326e71D45186F113a2F448984CA0e8D201995" }, // SNX 0x50B728D8… y EURA 0xE0B52e49… verificados pero 0 pools
       // 2026-11-04 13:45
       // PAXG descartado (comisión por transferencia); STG 0x2F6F07CD… y FRAX 0x45c32fA6… verificados pero 0 pools
-      // 2026-11-04 14:45 (MAI = miMATIC on-chain)
-      { sym: "MAI", address: "0xa3Fa99A148fA48D14Ed51d610c367C61876997F1", symbols: ["miMATIC"] }, { sym: "VOXEL", address: "0xd0258a3fD00f38aa8090dfee343f10A9D4d30D3F" },
+      // 2026-11-04 14:45: MAI 0xa3Fa99A1… y VOXEL 0xd0258a3f… probados, 0 pools ≥ MIN_LIQ_USD → retirados
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -335,8 +334,7 @@ export const CHAINS = {
       // FXS 0x67CCEA5b…, USDe 0x5d3a1Ff2…, PENDLE 0xBC7B1Ff1… y BAL 0xFE8B128b… verificados pero 0 pools (sin pools ≥ MIN_LIQ_USD fuera de Slipstream)
       // 2026-11-04 13:45 (pools en Velodrome v2: OP/EXTRA, EXTRA/VELO, USDC/EXTRA)
       { sym: "EXTRA", address: "0x2dAD3a13ef0C6366220f989157009e501e7938F8" },
-      // 2026-11-04 14:45 (estables con pools en Velodrome v2)
-      { sym: "USD+", address: "0x73cb180bf0521828d8849bc8CF2B920918e23032" }, { sym: "MAI", address: "0xdFA46478F9e5EA86d57387849598dbFB2e964b02" },
+      // 2026-11-04 14:45: USD+ 0x73cb180b… y MAI 0xdFA46478… probados, 0 pools fuera de Slipstream → retirados
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
