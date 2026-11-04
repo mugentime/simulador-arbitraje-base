@@ -327,7 +327,8 @@ export class Executor {
     // una sola transacción en vuelo: si la anterior aún no tiene recibo, no se envía otra (evita nonces repetidos y
     // reenviar una oportunidad que ya se tomó otro en el mismo bloque)
     if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
-    if (rec.direct) {
+    // presupuesto de pérdidas por hora: aplica a TODO envío (directo o simulado), no solo al directo
+    {
       this.revertGas = this.revertGas.filter((x) => now - x.t < 3600e3);
       const spent = this.revertGas.reduce((a, x) => a + x.usd, 0);
       if (spent >= this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: presupuesto de reverts agotado ($${spent.toFixed(3)}/h)`; return; }
@@ -384,7 +385,7 @@ export class Executor {
         this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
         await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}`);
-        if (!this.limits.directSend && this.consecutiveReverts >= this.limits.pauseAfterReverts) { this.p1.paused = true; // en envío directo manda el presupuesto por hora, no la racha
+        if (this.consecutiveReverts >= this.limits.pauseAfterReverts * (this.limits.directSend ? 4 : 1)) { this.p1.paused = true; // en envío directo manda el presupuesto por hora, no la racha
            this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
     }
