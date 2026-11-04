@@ -109,7 +109,7 @@ export const CHAINS = {
       // 2026-11-04 10:45
       { sym: "KNC", address: "0x1C954E8fe737F99f68Fa1CCda3e51ebDB291948C" }, { sym: "LDO", address: "0xC3C7d422809852031b44ab29EEC9F1EfF2A58756" },
       // 2026-11-04 11:45
-      { sym: "WOO", address: "0x1B815d120B3eF02039Ee11dC2d33DE7aA4a8C603" }, { sym: "GRT", address: "0x5fe2B58c013d7601147DcdD68C143A77499f5531" },
+      { sym: "GRT", address: "0x5fe2B58c013d7601147DcdD68C143A77499f5531" }, // WOO verificado pero 0 pools con liquidez ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -275,7 +275,7 @@ export const CHAINS = {
       // 2026-11-04 10:45
       { sym: "THALES", address: "0x217D47011b23BB961eB6D93cA9945B7501a5BB11" }, // sETH, frxETH y alUSD verificados pero 0 pools (liquidez en Slipstream)
       // 2026-11-04 11:45
-      { sym: "alETH", address: "0x3E29D3A9316dAB217754d13b28646B76607c5f04" }, { sym: "STG", address: "0x296F55F8Fb28E498B858d0BcDA06D955B2Cb3f97" },
+      { sym: "STG", address: "0x296F55F8Fb28E498B858d0BcDA06D955B2Cb3f97" }, // alETH verificado pero 0 pools con liquidez ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
