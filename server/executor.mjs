@@ -535,10 +535,11 @@ export class Executor {
     if ((this.p1.pending ?? []).length) { rec.sent = `omitida: ${this.p1.pending.length} tx en vuelo sin recibo`; return; }
     // presupuesto de pérdidas por hora: aplica a TODO envío (directo o simulado), no solo al directo.
     // Con bundles no hay pérdida por revert (no se incluyen), así que no aplica.
+    let spentHour = 0;
     if (!this.limits.bundleSend) {
       this.revertGas = this.revertGas.filter((x) => now - x.t < 3600e3);
-      const spent = this.revertGas.reduce((a, x) => a + x.usd, 0);
-      if (spent >= this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: presupuesto de reverts agotado ($${spent.toFixed(3)}/h)`; return; }
+      spentHour = this.revertGas.reduce((a, x) => a + x.usd, 0);
+      if (spentHour >= this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: presupuesto de reverts agotado ($${spentHour.toFixed(3)}/h)`; return; }
     }
     if (this.sending) { rec.sent = "omitida: envío en curso"; return; }
     this.sending = true;
@@ -557,6 +558,13 @@ export class Executor {
       if (!forced && tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
       if (!forced) rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
       if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
+      // lo que costaría si revierte (gas completo con la propina ofrecida): no puede pasar del presupuesto que queda en la hora.
+      // Antes solo se miraba lo ya gastado: a las 15:56 un intento con propina de 0.31 gwei perdió $0.38 con presupuesto de $0.25/h.
+      if (!this.limits.bundleSend) {
+        const priceWei = forced ? BigInt(forced.maxFeePerGas ?? forced.gasPrice ?? 0n) : gas.baseFee + prio;
+        const riskUsd = (Number(priceWei * BigInt(Math.ceil(rec.gasEst ?? 0)) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd;
+        if (spentHour + riskUsd > this.limits.revertBudgetUsdPerHour) { rec.sent = `omitida: si revierte perdería $${riskUsd.toFixed(3)} y quedan $${Math.max(0, this.limits.revertBudgetUsdPerHour - spentHour).toFixed(3)} del presupuesto de la hora`; return; }
+      }
       let maxFee = gas.baseFee * 3n + prio; // margen para 2–3 bloques de subida de base fee
       const txData = forced ? data : this.encodeWithCost(plan, (Number((gas.baseFee + prio) * BigInt(rec.gasEst) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd, ethUsd);
       const fee = forced ?? { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
