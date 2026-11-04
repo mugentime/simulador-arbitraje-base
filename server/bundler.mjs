@@ -6,7 +6,6 @@ export const BSC_BUILDERS = [
   { name: "BlockRazor", url: "https://bsc.blockrazor.xyz", method: "eth_sendBundle" },
   { name: "BlockSec", url: "https://bsc.rpc.blocksec.com", method: "eth_sendBundle" },
   { name: "48 Club", url: "https://puissant-builder.48.club/", method: "eth_sendBundle" },
-  { name: "BlockRazor (48)", url: "https://blockrazor-builder-virginia.48.club", method: "eth_sendBundle" },
 ];
 
 export const MIN_BUNDLE_GAS_PRICE = 50_000_000n; // 0.05 gwei: precio medio mínimo que exigen los builders de BSC

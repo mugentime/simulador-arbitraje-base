@@ -394,7 +394,12 @@ export class Executor {
       const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
       const hash = ethers.keccak256(raw);
       const maxBlockNumber = head + 2;
-      const { accepted, errors } = await sendBundle([victimRaw, raw], { maxBlockNumber });
+      // Dos bundles a la vez con la MISMA tx nuestra (mismo nonce: solo uno puede entrar):
+      //  (a) [víctima, nosotros] — back-run en el mismo bloque;
+      //  (b) [nosotros] — si la víctima ya se minó (lo vimos tarde), el desajuste que dejó sigue ahí y se captura igual.
+      const [ra, rb] = await Promise.all([sendBundle([victimRaw, raw], { maxBlockNumber }), sendBundle([raw], { maxBlockNumber })]);
+      const accepted = [...new Set([...ra.accepted.map((x) => x + " (tras víctima)"), ...rb.accepted.map((x) => x + " (sola)")])];
+      const errors = Object.fromEntries([...Object.entries(ra.errors).map(([k, v]) => [k + " (tras víctima)", v]), ...Object.entries(rb.errors).map(([k, v]) => [k + " (sola)", v])]);
       this.p1.bundles = (this.p1.bundles ?? 0) + 1; this.p1.backruns = (this.p1.backruns ?? 0) + 1;
       const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
       const route = label(r);
