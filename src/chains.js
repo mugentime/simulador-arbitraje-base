@@ -41,7 +41,7 @@ export const CHAINS = {
       // 2026-11-04 05:50
       { sym: "TOSHI", address: "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4" }, { sym: "tBTC", address: "0x236aa50979D5f3De3Bd1Eeb40E81137F22ab794b" },
       // 2026-11-04 06:45
-      { sym: "ZORA", address: "0x1111111111166b7FE7bd91427724B487980aFc69" }, { sym: "LBTC", address: "0xecAc9C5F704e954931349Da37F60E39f515c11c1" },
+      { sym: "ZORA", address: "0x1111111111166b7FE7bd91427724B487980aFc69" }, { sym: "USDe", address: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34" }, // LBTC verificado pero 0 pools en estas factories
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT"], // 06:45: 3 corridas seguidas entre los 3 peores
@@ -199,7 +199,7 @@ export const CHAINS = {
       // cbETH y ezETH verificados pero con 0 pools fuera de Slipstream (factory sin código): sustituidos por WLD y AAVE
       { sym: "WLD", address: "0xdC6fF44d5d932Cbd77B52E5612Ba0529DC6226F1" }, { sym: "AAVE", address: "0x76FB31fb4af56892A25e32cFC43De717950c9278" },
       // 2026-11-04 06:45
-      { sym: "UNI", address: "0x6fd9d7AD17242c41f7131d257212c54A0e816691" }, { sym: "LDO", address: "0xFdb794692724153d1488CcdBE0C56c252596735F" },
+      { sym: "UNI", address: "0x6fd9d7AD17242c41f7131d257212c54A0e816691" }, { sym: "PERP", address: "0x9e1028F5F1D5eDE59748FFceE5532509976840E0" }, // LDO verificado pero 0 pools (liquidez en Slipstream)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO"], // 06:45: 3 corridas seguidas entre los 3 peores
