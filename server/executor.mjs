@@ -97,6 +97,14 @@ export function modelStillOpen(route, startAddr, amount) {
   } catch { return null; }
 }
 
+/** Prefetch de nonce/gasPrice/bloque para bundles: vale mientras no pase más de ~3 bloques (mín. 1.5 s) desde la lectura.
+ *  Ahorra una ida y vuelta RPC (3 lecturas) justo antes de firmar el bundle; un nonce viejo solo hace que el builder
+ *  lo rechace (sin costo). */
+export function bundlePreFresh(pre, now, blockMs = 450) {
+  if (!pre || typeof pre.nonce !== "number" || typeof pre.gasPrice !== "bigint" || typeof pre.head !== "number") return null;
+  return now - pre.at <= Math.max(1500, 3 * blockMs) ? pre : null;
+}
+
 export class FanoutProvider extends ethers.JsonRpcProvider {
   constructor(readUrl, fanout, chainId) { super(typeof readUrl === "string" ? noRetryRequest(readUrl) : readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
   async send(method, params) {
@@ -432,6 +440,7 @@ export class Executor {
 
   /** Llamado por el worker en cada bloque con los resultados ya evaluados. */
   async onBlock({ block, ts, results, lenders, gas, ethUsd, fast = null }) {
+    if (this.limits.bundleSend && typeof block === "number" && this.wallet && this.mode === "live") this.refreshBundlePre(block);
     const sim = { sp: fast ?? this.provider, tag: fast ? "pending" : undefined };
     if (this.wallet && (this.p1.pending ?? []).length && !this.reconciling) { this.reconciling = true; try { await this.reconcile(ethUsd); } catch (e) { this.p1.lastError = `reconcile: ${e.shortMessage || e.message}`; } finally { this.reconciling = false; } }
     if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
@@ -766,13 +775,26 @@ export class Executor {
    * Envío como bundle de una transacción a varios builders. La tx se firma con el nonce actual ("latest": un bundle
    * no incluido no consume nonce) y un gasPrice ≥ 0.05 gwei + una parte del neto como pago al builder.
    */
+  /** Lee en segundo plano (una vez por bloque) nonce, gasPrice y bloque para que el envío del bundle no espere al RPC. */
+  refreshBundlePre(block) {
+    if (this.bundlePreBusy || (this.bundlePre && this.bundlePre.block >= block)) return;
+    this.bundlePreBusy = true;
+    Promise.all([
+      this.provider.getTransactionCount(this.wallet.address, "latest"),
+      this.provider.send("eth_gasPrice", []).then(BigInt).catch(() => MIN_BUNDLE_GAS_PRICE),
+    ]).then(([nonce, gasPrice]) => { this.bundlePre = { block, head: block, nonce, gasPrice, at: Date.now() }; })
+      .catch(() => {}).finally(() => { this.bundlePreBusy = false; });
+  }
+
   async sendAsBundle(plan, rec, gas, ethUsd, data, now) {
     const w = this.wallet.connect(this.provider);
-    const [nonce, netGp, head] = await Promise.all([
+    const pre = process.env.BUNDLE_PREFETCH === "0" ? null : bundlePreFresh(this.bundlePre, Date.now(), core.CHAIN.blockMs);
+    const [nonce, netGp, head] = pre ? [pre.nonce, pre.gasPrice, Math.max(pre.head, this.lastChainBlock || 0)] : await Promise.all([
       this.provider.getTransactionCount(this.wallet.address, "latest"),
       this.provider.send("eth_gasPrice", []).then(BigInt).catch(() => MIN_BUNDLE_GAS_PRICE),
       this.provider.getBlockNumber(),
     ]);
+    if (pre) this.p1.bundlesPrefetched = (this.p1.bundlesPrefetched ?? 0) + 1;
     const gasLimit = BigInt(Math.floor(rec.gasEst * 1.25));
     // pago al builder: hasta tipShare del neto simulado, repartido en el gas de la tx
     // el builder ordena por lo que le pagamos (gasPrice × gas): se ofrece bundleTipShare del neto; si el bundle no entra no cuesta
@@ -858,6 +880,7 @@ export class Executor {
            this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }
     }
+    if (keep.length !== pend.length) this.bundlePre = null; // una tx propia se resolvió: el nonce pudo cambiar
     this.p1.pending = keep;
     await this.save();
   }

@@ -79,13 +79,15 @@ export const CHAINS = {
       // 2026-11-05 00:45 (GHO de Aave con pools USDC/WETH/USDS en Aerodrome/Uniswap; Coinbase Wrapped ADA con pools USDC/uADA)
       { sym: "GHO", address: "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee" }, /* cbADA 0xcbADA732… retirado 2026-11-05 04:45 (sin WETH/cbADA s0 quedó en 0 pools: trampa 1) */
       // 2026-11-05 01:45 (Autonolas OLAS con pools WETH/USDC; FLock.io FLOCK con pools USDC/cbBTC/USDT/VVV)
-      { sym: "OLAS", address: "0x54330d28ca3357F294334BDC454a032e7f353416" }, { sym: "FLOCK", address: "0x5aB3D4c385B400F3aBB49e80DE2fAF6a88A7B691" },
+      /* OLAS 0x54330d28… retirado 2026-11-05 05:45 (único pool OLAS/USDC s0) */ { sym: "FLOCK", address: "0x5aB3D4c385B400F3aBB49e80DE2fAF6a88A7B691" },
       // 2026-11-05 02:45 (Horizen ZEN, migrado a Base, con pools ZRO/WETH/USDC en Aerodrome/Uniswap; Talent Protocol TALENT con pools cbBTC/AERO/WETH)
       { sym: "ZEN", address: "0xf43eB8De897Fbc7F2502483B2Bef7Bb9EA179229" }, // TALENT 0x9a334061… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 03:45 (Reserve Rights RSR con pools WETH/USDC en Aerodrome/Uniswap; Wrapped BTC WBTC (OFT de BitGo) con pools cbBTC/WETH/USDC)
       { sym: "RSR", address: "0xaB36452DbAC151bE02b16Ca17d8919826072f64a" }, { sym: "WBTC", address: "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c" },
       // 2026-11-05 04:45 (Pendle PENDLE y Curve CRV puenteados, con pools WETH/USDC en Aerodrome/Uniswap)
       { sym: "PENDLE", address: "0xA99F6e6785Da0F5d6fB42495Fe424BCE029Eeb3E" }, { sym: "CRV", address: "0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415" },
+      // 2026-11-05 05:45 (Uniswap UNI y Compound COMP puenteados, con pools WETH/USDC en Uniswap/Aerodrome)
+      { sym: "UNI", address: "0xc3De830EA07524a0761646a6a4e4be0e114a3C83" }, { sym: "COMP", address: "0x9e1028F5F1D5eDE59748FFceE5532509976840E0" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -125,7 +127,10 @@ export const CHAINS = {
       // 2026-11-05 00:45 inactivo (entra al ranking ya en s0; uSOL sigue con WETH/uSOL y uSOL/uSUI)
       "cbBTC/uSOL",
       // 2026-11-05 04:45 inactivos (entran al ranking ya en s0; GHO sigue con GHO/USDC p3, cbADA con cbADA/cbBTC p2)
-      "GHO/USDT", "WETH/cbADA"],
+      "GHO/USDT", "WETH/cbADA",
+      // 2026-11-05 05:45: peor 3 corridas (03:45, 04:45, 05:45; MORPHO sigue con MORPHO/WETH p5) + inactivo (FLOCK sigue con FLOCK/WETH y FLOCK/USDC, p2 cada uno)
+      "AERO/MORPHO",
+      "AERO/FLOCK"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -209,6 +214,8 @@ export const CHAINS = {
       { sym: "RNDR", address: "0x61299774020dA444Af134c82fa83E3810b309991" }, { sym: "SHIB", address: "0x6f8a06447Ff6FcF75d803135a7de15CE88C1d4ec" },
       // 2026-11-05 04:45 (Fetch.ai FET (PoS) con pools WPOL en QuickSwap)
       // FET 0x7583FEDD… verificado pero 0 pools ≥ MIN_LIQ_USD
+      // 2026-11-05 05:45 (Ocean Token (PoS) con pools en QuickSwap/Sushi)
+      { sym: "OCEAN", address: "0x282d8efCe846A88B159800bd4130ad77443Fa1A1", symbols: ["mOCEAN"] },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -240,7 +247,9 @@ export const CHAINS = {
       // 23:45: peor 3 corridas (21:45, 22:45, 23:45; s0 p3, también inactivo; WBTC sigue con WBTC/WPOL, USDT/WBTC, USDC/WBTC…)
       "USDC.e/WBTC",
       // 2026-11-05 00:45: peor 3 corridas (22:45, 23:45, 00:45; NAKA sigue con NAKA/WPOL, 2 pools)
-      "NAKA/USDC.e"],
+      "NAKA/USDC.e",
+      // 2026-11-05 05:45: peor 4 corridas (02:45 → 05:45; UNI sigue con UNI/WPOL, UNI/USDC.e y LINK/UNI)
+      ["0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", "0xb33EaAd8d922B1083446DC23f610c2567fB5180f"]],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "QuickSwap v2", kind: "v2pair", address: "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32", feeBps: 30 },
@@ -319,6 +328,8 @@ export const CHAINS = {
       { sym: "ALICE", address: "0xAC51066d7bEC65Dc4589368da368b212745d63E8" }, { sym: "DODO", address: "0x67ee3Cb086F8a16f34beE3ca72FAD36F7Db929e2" },
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
+      // 2026-11-05 05:45 (Binance-Peg EOS y Tezos XTZ con pools WBNB/USDT en PancakeSwap)
+      { sym: "EOS", address: "0x56b6fB708fC5732DEC1Afc8D8556423A2EDcCbD6" }, { sym: "XTZ", address: "0x16939ef78684453bfDFb47825F8a5F714f12623a" },
       // TUSD 0x40af3827… verificado pero 0 pools (liquidez contra BUSD) // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
@@ -414,7 +425,7 @@ export const CHAINS = {
       // 2026-11-04 15:45
       /* ATH 0xc87B37a5… retirado 19:45 (ATH/WETH y ATH/USDC s0, 1 pool cada uno) */ { sym: "SOL", address: "0x2bcC6D6CdBbDC0a4071e48bb3B969b06B3330c07" },
       // 2026-11-04 16:45
-      { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, // COMP 0x354A6dA3… retirado 20:45 (único pool COMP/WETH s0)
+      /* PEPE 0x25d887Ce… retirado 2026-11-05 05:45 (PEPE/WETH peor 3 corridas 03:45–05:45; su único par) */ // COMP 0x354A6dA3… retirado 20:45 (único pool COMP/WETH s0)
       // 2026-11-04 17:45 (stable de Aave y OHM)
       { sym: "GHO", address: "0x7dfF72693f6A4149b17e7C6314655f6A9F7c8B33" }, /* OHM 0xf0cb2dc0… retirado 21:45 (único pool OHM/WETH s0) */
       // 2026-11-04 18:45 (Sanko DMT con pools WETH/DMT en Camelot y Uni v3; RPL de Rocket Pool)
@@ -439,6 +450,8 @@ export const CHAINS = {
       // SolvBTC 0x3647c54c… y sUSDe 0x211Cc4DD… verificados pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Inverse DOLA con pools USDC en Balancer/Uni v3)
       { sym: "DOLA", address: "0x6A7661795C374c0bFC635934efAddFf3A7Ee23b6" },
+      // 2026-11-05 05:45 (Curve crvUSD con pools USDC/USDT; yearn YFI con pools WETH)
+      { sym: "crvUSD", address: "0x498Bf2B1e120FeD3ad3D42EA2165E9b73f99C1e5" }, { sym: "YFI", address: "0x82e3A8F066a6989666b031d916c43672085b1582" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -540,6 +553,8 @@ export const CHAINS = {
       // ENA 0x58538e6A… verificado pero 0 pools fuera de Slipstream
       // 2026-11-05 01:45 (CyberConnect CYBER con pools OP/USDC/WETH en Velodrome/Uni v3; Ethena sUSDe, OFT)
       // CYBER 0x14778860… y sUSDe 0x211Cc4DD… verificados pero 0 pools fuera de Slipstream
+      // 2026-11-05 05:45 (Lyra LYRA con pools OP/USDC.e/VELO en Velodrome)
+      { sym: "LYRA", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
