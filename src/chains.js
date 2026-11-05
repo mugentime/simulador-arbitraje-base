@@ -77,7 +77,7 @@ export const CHAINS = {
       // 2026-11-04 23:45 (Coinbase Wrapped LTC con pools USDC/cbBTC/WETH en Aerodrome/Uniswap; Resolv USR con pools USDC/WETH)
       /* cbLTC 0xcb17C9Db… retirado 2026-11-05 03:45 (WETH/cbLTC y cbBTC/cbLTC s0, 1 pool cada uno) */ // USR 0x35E5dB67… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 00:45 (GHO de Aave con pools USDC/WETH/USDS en Aerodrome/Uniswap; Coinbase Wrapped ADA con pools USDC/uADA)
-      { sym: "GHO", address: "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee" }, { sym: "cbADA", address: "0xcbADA732173e39521CDBE8bf59a6Dc85A9fc7b8c" },
+      { sym: "GHO", address: "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee" }, /* cbADA 0xcbADA732… retirado 2026-11-05 04:45 (sin WETH/cbADA s0 quedó en 0 pools: trampa 1) */
       // 2026-11-05 01:45 (Autonolas OLAS con pools WETH/USDC; FLock.io FLOCK con pools USDC/cbBTC/USDT/VVV)
       { sym: "OLAS", address: "0x54330d28ca3357F294334BDC454a032e7f353416" }, { sym: "FLOCK", address: "0x5aB3D4c385B400F3aBB49e80DE2fAF6a88A7B691" },
       // 2026-11-05 02:45 (Horizen ZEN, migrado a Base, con pools ZRO/WETH/USDC en Aerodrome/Uniswap; Talent Protocol TALENT con pools cbBTC/AERO/WETH)
@@ -208,7 +208,7 @@ export const CHAINS = {
       // 2026-11-05 03:45 (Render RNDR con pools WPOL/WETH en QuickSwap/Uniswap; SHIBA INU (PoS) con pools WPOL/WETH/USDC)
       { sym: "RNDR", address: "0x61299774020dA444Af134c82fa83E3810b309991" }, { sym: "SHIB", address: "0x6f8a06447Ff6FcF75d803135a7de15CE88C1d4ec" },
       // 2026-11-05 04:45 (Fetch.ai FET (PoS) con pools WPOL en QuickSwap)
-      { sym: "FET", address: "0x7583FEDDbceFA813dc18259940F76a02710A8905" },
+      // FET 0x7583FEDD… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
