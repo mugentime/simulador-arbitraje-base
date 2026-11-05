@@ -140,7 +140,7 @@ export class Liquidator {
 
   async _attempt(cand, { block, gas, ethUsd }) {
     const wallet = this.executor.wallet, exec = this.executor.p1.executor;
-    let loanTok, colTok, hop0, amount, label, valueUsd, expectedCol = 0n, morphoSize = null;
+    let loanTok, colTok, hop0, amount, label, valueUsd, expectedCol = 0n, morphoSize = null, bonus = 0;
     if (cand.proto === "aave") {
       const { debts, cols } = await this.aavePosition(cand.user);
       if (!debts.length || !cols.length) return;
@@ -152,13 +152,14 @@ export class Liquidator {
       amount = BigInt(Math.floor(coverUnits * 10 ** d.decimals));
       hop0 = [3, AAVE_POOL_OF(), d.address, c.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["address"], [cand.user])];
       label = `Aave · ${d.symbol} deuda → ${c.symbol} colateral (bono ${(c.bonusBps / 100 - 100).toFixed(1)}%)`;
-      valueUsd = coverUnits * d.price;
+      valueUsd = coverUnits * d.price; bonus = Math.max(0, c.bonusBps / 10000 - 1);
       expectedCol = BigInt(Math.floor((valueUsd * (c.bonusBps / 10000) / c.price) * 10 ** c.decimals));
     } else {
       const m = cand.raw; // de la API: market + posición
       loanTok = { sym: m.market.loanAsset.symbol, address: ethers.getAddress(m.market.loanAsset.address), decimals: Number(m.market.loanAsset.decimals) };
       colTok = { sym: m.market.collateralAsset.symbol, address: ethers.getAddress(m.market.collateralAsset.address), decimals: Number(m.market.collateralAsset.decimals) };
       const lif = cand.lif, price = cand.price; // price ×1e36 (colateral → préstamo)
+      bonus = Math.max(0, lif - 1);
       const collateral = BigInt(cand.collateralRaw), borrowed = BigInt(cand.borrowedRaw);
       // máximo incautable: todo el colateral o el que cubre toda la deuda·LIF
       if (price === 0n) return;
@@ -180,6 +181,13 @@ export class Liquidator {
       ({ amount, hop0, valueUsd } = morphoSize(fullSeized)); expectedCol = fullSeized;
     }
     if (amount <= 0n) return;
+    // polvo: si el bono máximo posible (valor pagado × bono) no cubre el gas de la última simulación de esta cadena, no se simula
+    // (Polygon: 3 posiciones Morpho WETH/WPOL de $0.00–0.01 se simulaban cada ~45 s: 5876 sims ok, todas con neto < 0)
+    if (isDust(valueUsd, bonus, this.x.lastGasUsd)) {
+      this.x.dust = (this.x.dust ?? 0) + 1;
+      this.backoff.set(cand.proto + ":" + cand.user, Date.now() + 30 * 60_000);
+      this.note(cand, label, `polvo: bono máx. $${(valueUsd * bonus).toFixed(4)} < gas $${this.x.lastGasUsd.toFixed(4)}`); return;
+    }
     // ruta de venta del colateral (cantidad esperada ≈ valor/precio; se usa la salida real del salto en la cadena)
     let route = await this.sellRoute(colTok, loanTok, expectedCol > 0n ? expectedCol : 1n);
     if (!route) { this.note(cand, label, "sin pool para vender el colateral"); return; }
@@ -214,6 +222,7 @@ export class Liquidator {
       rec.profitUsd = (Number(profit) / 10 ** loanTok.decimals) * unitUsd;
       rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
       rec.netUsd = rec.profitUsd - rec.gasUsd; rec.ok = true; rec.gasEst = Number(gasEst);
+      this.x.lastGasUsd = rec.gasUsd; // referencia para descartar polvo sin simular
       this.x.wouldSucceed++;
       if (this.liqs?.badUsers.has(cand.user)) { this.liqs.badUsers.delete(cand.user); this.store.set("liqBad", [...this.liqs.badUsers]).catch(() => {}); }
       await this.diag(`liquidación: simulada ${label} · ${cand.user.slice(0, 10)}… · paga $${valueUsd.toFixed(2)} · beneficio on-chain $${rec.profitUsd.toFixed(4)} − gas $${rec.gasUsd.toFixed(4)} = $${rec.netUsd.toFixed(4)}`);
@@ -281,6 +290,13 @@ function decodeRevert(iface, e) {
 
 // Tamaño de liquidación Morpho: prueba 1, 1/2, … 1/64 del máximo incautable y se queda con el que deja más
 // margen (salida de la venta − deuda pagada con su margen de redondeo); null si ninguno lo cubre.
+// true si el bono máximo de la liquidación (valor pagado × bono) no alcanza el gas de referencia
+// (sin referencia todavía → false: se simula para obtenerla)
+export function isDust(valueUsd, bonus, refGasUsd) {
+  if (!(refGasUsd > 0) || !(valueUsd >= 0)) return false;
+  return valueUsd * bonus < refGasUsd;
+}
+
 export function pickMorphoSize(sizeOf, fullSeized, quote) {
   let best = null;
   for (let k = 0n; k <= 6n; k++) {
