@@ -410,6 +410,33 @@ async function logBeefyWallets() {
   }
 }
 setTimeout(logBeefyWallets, 2 * 60_000);
+// inspección de vaults concretos de Beefy (BEEFY_INSPECT=id1,id2): datos de la API + profundidad de sus pools si la cadena coincide
+async function logBeefyInspect() {
+  const ids = (process.env.BEEFY_INSPECT || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!ids.length) return;
+  const get = async (path) => { try { return await (await fetch(`https://api.beefy.finance${path}`, { signal: AbortSignal.timeout(20_000) })).json(); } catch { return null; } };
+  const [vaults, govs, cows, apy, tvl, lps, prices] = await Promise.all(["/vaults", "/gov-vaults", "/cow-vaults", "/apy/breakdown", "/tvl", "/lps", "/prices"].map(get));
+  const all = [...(vaults ?? []), ...(govs ?? []), ...(cows ?? [])];
+  const tvlById = {}; for (const b of Object.values(tvl ?? {})) for (const [k, v] of Object.entries(b ?? {})) tvlById[k] = Number(v) || 0;
+  for (const id of ids) {
+    const v = all.find((x) => x.id === id);
+    if (!v) { console.log(`${new Date().toISOString()} beefy inspect ${id}: no está en la API`); continue; }
+    const base = all.filter((x) => x.chain === v.chain && (x.earnContractAddress?.toLowerCase() === v.tokenAddress?.toLowerCase() || x.tokenAddress?.toLowerCase() === v.tokenAddress?.toLowerCase()));
+    const fam = [...new Map([v, ...base].map((x) => [x.id, x])).values()];
+    const cow = fam.find((x) => x.type === "cowcentrated") ?? v;
+    const toks = cow.depositTokenAddresses ?? [];
+    const f = (o) => o ? Object.entries(o).filter(([k, x]) => typeof x === "number").map(([k, x]) => `${k} ${(x * (/apy|apr/i.test(k) ? 100 : 1)).toFixed(2)}`).join(", ") : "—";
+    let depth = "par no vigilado en esta cadena";
+    if (live.pools && v.chain === CHAIN_CFG.beefy && toks.length === 2) {
+      const ethUsd = core.referenceEthUsd(live.pools);
+      const rows = poolDepth(live.pools, ethUsd).filter((r) => toks.some((t) => t.toLowerCase() === r.token.toLowerCase() || t.toLowerCase() === r._s.b.address.toLowerCase()));
+      if (rows.length) depth = rows.sort((a, b) => b.sellUsd["2%"] - a.sellUsd["2%"]).slice(0, 5).map((r) => `${r.pair} ${r.dex} ${r.feeBps}bps TVL virtual $${r.virtualTvlUsd} venta 1/2/5 % $${r.sellUsd["1%"]}/$${r.sellUsd["2%"]}/$${r.sellUsd["5%"]}`).join(" | ");
+    }
+    console.log(`${new Date().toISOString()} beefy inspect ${id}: ${v.name} [${v.chain}/${v.platformId ?? cow.platformId}] estado ${v.status} · creado ${v.createdAt ? new Date(v.createdAt * 1000).toISOString().slice(0, 16) : "?"} · tokens ${(cow.assets ?? []).join("/")} ${toks.join(",")} · precio CLM ${lps?.[cow.oracleId] ?? "?"} · familia: ${fam.map((x) => `${x.id} (${x.type ?? "standard"}) TVL $${Math.round(tvlById[x.id] ?? 0)} APY {${f(apy?.[x.id])}}`).join(" ; ")} · riesgos ${(v.risks ?? cow.risks ?? []).join(",") || "—"} · pools: ${depth}`);
+  }
+}
+setTimeout(logBeefyInspect, 3 * 60_000);
+setTimeout(logBeefyInspect, 12 * 60_000);
 setInterval(logBeefyWallets, 6 * 3600_000);
 setInterval(logCashIn, 6 * 3600_000);
 // resumen periódico en los logs de Railway
