@@ -341,6 +341,7 @@ export class Executor {
     if (resume) {
       const was = this.p1.paused ? this.p1.pausedReason : null;
       this.p1.paused = false; this.p1.pausedReason = null; this.p1.resumedWith = resume;
+      this.p1.consecutiveReverts = 0; // si no, la racha vieja (p. ej. 7) vuelve a pausar con el primer revert tras reanudar
       await this.diag(`fase 1: reanudada (P1_RESUME=${resume}${was ? `; estaba pausada por ${was}` : "; no estaba pausada"})`);
     }
     if (!this.p1.executor && process.env.EXECUTOR_ADDRESS) this.p1.executor = process.env.EXECUTOR_ADDRESS; // respaldo si se perdiera el volumen
