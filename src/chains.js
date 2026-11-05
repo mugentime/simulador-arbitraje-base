@@ -420,7 +420,7 @@ export const CHAINS = {
       // 2026-11-05 02:45 (Tether Gold XAUt0, OFT, con pools USDC/USDT0/PAXG en Uni v3/v4)
       { sym: "XAUt0", address: "0x40461291347e1eCbb09499F3371D3f17f10d7159" },
       // 2026-11-05 03:45 (Morpho MORPHO, OFT de LayerZero, con pools WETH en Uni v3)
-      { sym: "MORPHO", address: "0x40BD670A58238e6E230c430BBb5cE6ec0d40df48" },
+      // MORPHO 0x40BD670A… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 23:45 (Animecoin ANIME con pools WETH/USDT0 en Uni v3/Camelot; Frax frxUSD con pools USDC)
       // ANIME 0x37a64564… y frxUSD 0x80Eede49… verificados pero 0 pools (ANIME: liquidez en Camelot v3/contra USDT0)
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH en Uni v3; cbETH de Coinbase con pools WETH en Uni v3/Balancer)
