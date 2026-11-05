@@ -870,6 +870,36 @@ export class Executor {
     await this.save();
   }
 
+  /**
+   * Diagnóstico de un envío revertido: se repite la misma llamada (from/to/data) sobre el estado ANTERIOR a su bloque.
+   * - si ahí pasa → la ruta seguía abierta al empezar el bloque y la cerró otra tx ordenada antes que la nuestra
+   *   ("mismo bloque": problema de orden/propina);
+   * - si ahí ya revierte → la ruta se cerró antes de nuestro bloque ("tarde": problema de latencia), con el motivo.
+   * Contadores en p1.lostWhy {sameBlock, late, unknown}; REVERT_WHY=0 lo apaga. Una o dos llamadas RPC por revert (raros).
+   */
+  async revertWhy(hash, rcpt) {
+    if (process.env.REVERT_WHY === "0") return "";
+    const lw = (this.p1.lostWhy ??= { sameBlock: 0, late: 0, unknown: 0 });
+    const pos = rcpt.index ?? rcpt.transactionIndex;
+    const posTxt = pos !== undefined && pos !== null ? `posición ${pos} en el bloque` : "";
+    try {
+      const tx = await this.provider.getTransaction(hash);
+      if (!tx || rcpt.blockNumber == null) throw new Error("sin tx");
+      const call = { from: tx.from, to: tx.to, data: tx.data, gasLimit: tx.gasLimit, blockTag: Number(rcpt.blockNumber) - 1 };
+      try {
+        await this.provider.call(call);
+        lw.sameBlock++;
+        return `antes del bloque pasaba: la cerró otra tx del mismo bloque (orden/propina)${posTxt ? ", " + posTxt : ""}`;
+      } catch (e) {
+        lw.late++;
+        return `antes del bloque ya revertía (${decodeRevert(this.iface, e).slice(0, 60)}): llegamos tarde${posTxt ? ", " + posTxt : ""}`;
+      }
+    } catch {
+      lw.unknown++;
+      return posTxt;
+    }
+  }
+
   /** Resuelve el resultado de las transacciones enviadas (recibo), aunque el proceso se haya reiniciado. */
   async reconcile(ethUsd) {
     const pend = this.p1.pending ?? [];
@@ -913,7 +943,8 @@ export class Executor {
         this.revertGas.push({ t: Date.now(), usd: paid });
         this.routeCooldown.set(t.route, (rcpt.blockNumber ?? this.lastChainBlock) + this.limits.routeCooldownBlocks);
         if (rec) rec.sent = `${t.hash} · revertida (gas $${paid.toFixed(4)})`;
-        await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}${t.victim ? " · " + await this.backrunOrder(t.victim, rcpt) : ""}`);
+        const why = t.bundle ? "" : await this.revertWhy(t.hash, rcpt);
+        await this.diag(`fase 1: revertida ${t.hash} · gas perdido $${paid.toFixed(4)} · bloque ${rcpt.blockNumber} · ${t.route}${why ? " · " + why : ""}${t.victim ? " · " + await this.backrunOrder(t.victim, rcpt) : ""}`);
         if (this.consecutiveReverts >= this.limits.pauseAfterReverts * (this.limits.directSend ? 4 : 1)) { this.p1.paused = true; // en envío directo manda el presupuesto por hora, no la racha
            this.p1.pausedReason = `${this.consecutiveReverts} reverts seguidos`; await this.diag(`fase 1: PAUSADA · ${this.p1.pausedReason}`); }
       }

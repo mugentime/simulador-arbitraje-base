@@ -89,16 +89,18 @@ export const CHAINS = {
       // 2026-11-05 05:45 (Uniswap UNI y Compound COMP puenteados, con pools WETH/USDC en Uniswap/Aerodrome)
       { sym: "UNI", address: "0xc3De830EA07524a0761646a6a4e4be0e114a3C83" }, { sym: "COMP", address: "0x9e1028F5F1D5eDE59748FFceE5532509976840E0" },
       // 2026-11-05 06:45 (Inverse DOLA con pools USDC/USDbC/USD+ en Aerodrome; Wormhole W (NTT) con pools WETH/ZRO)
-      { sym: "DOLA", address: "0x4621b7A9c75199271F773Ebd9A499dbd165c3191" }, { sym: "W", address: "0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91" },
+      { sym: "DOLA", address: "0x4621b7A9c75199271F773Ebd9A499dbd165c3191" }, /* W 0xB0fFa800… retirado 2026-11-05 10:45 (token de 1 pool, W/WETH s0 al entrar al ranking) */
       // 2026-11-05 07:45 (Sky sUSDS, ERC-4626 sin rebase, con pools USDC en Aerodrome/Uniswap; Origin wsuperOETHb, envoltorio sin rebase, con pools WETH/superOETHb)
       { sym: "sUSDS", address: "0x5875eEE11Cf8398102FdAd704C9E96607675467a" }, // wsuperOETHb 0x7FcD174E… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 08:45 (TN100x memecoin con pools WETH/USDC/HAMFREN; ResearchCoin RSC con pools WETH/BIO/REI en Uniswap/Aerodrome)
       { sym: "TN100x", address: "0x5B5dee44552546ECEA05EDeA01DCD7Be7aa6144A" }, { sym: "RSC", address: "0xFbB75A59193A3525a8825BeBe7D4b56899E2f7e1" },
       // 2026-11-05 09:45 (Mamo MAMO con pools en Aerodrome/Uniswap contra WETH/VIRTUAL/AIXBT/cbXRP; Ethena sUSDe OFT con pool sUSDe/USDC)
       { sym: "MAMO", address: "0x7300B37DfdfAb110d83290A29DfB31B1740219fE" }, { sym: "sUSDe", address: "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2" },
+      // 2026-11-05 10:45 (Extra Finance EXTRA con pools USDC/USDbC/cbBTC en Aerodrome; Stargate STG con pools WETH/USDC)
+      { sym: "EXTRA", address: "0x2dAD3a13ef0C6366220f989157009e501e7938F8" }, { sym: "STG", address: "0xE3B53AF74a4BF62Ae5511055290838050bf764Df" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
-    excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
+    excludedPairs: ["DOLA/WETH", /* 2026-11-05 10:45 inactivo (s0 p1 al entrar al ranking; DOLA sigue con DOLA/USDC) */ "AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
       // 09:45 inactivos (s0: 0 episodios, 0 rutas, 0 ok, 0 envíos; ≥3 h vigilados; métricas acumuladas)
       "AERO/ezETH", "AERO/tBTC", "AIXBT/MORPHO", "AIXBT/USDT", "BRETT/cbBTC", "BRETT/MORPHO", "BRETT/USDT", "DAI/cbBTC", "DAI/EURC", "DAI/weETH",
       // 10:45 inactivos
@@ -212,7 +214,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (QiDao QI con pools QI/DAI/WPOL en QuickSwap; PolyDoge con pools contra WPOL en QuickSwap v2/v3)
       /* QI 0x580A84C7… y PolyDoge 0x8A953CfE… retirados 2026-11-05 01:45 (único pool QI/WPOL y PolyDoge/WPOL s0) */
       // 2026-11-04 22:45 (PlanetIX IXT con pools WPOL/USDT en QuickSwap; Monerium EURe con pools USDC/USDC.e/USDT)
-      { sym: "stMATIC", address: "0x3A58a54C066FdC0f2D55FC9C89F0415C92eBf3C4" }, /* EURe 0x18ec0A6E… retirado 2026-11-05 02:45 (EURe/USDC s0 p1 era su único enlace base) */ // IXT 0xE06Bd4F5… verificado pero 0 pools
+      /* stMATIC 0x3A58a54C… retirado 2026-11-05 10:45 (WPOL/stMATIC s0 p1, peor 3 corridas; su único par) */ /* EURe 0x18ec0A6E… retirado 2026-11-05 02:45 (EURe/USDC s0 p1 era su único enlace base) */ // IXT 0xE06Bd4F5… verificado pero 0 pools
       // 2026-11-04 23:45 (Glo Dollar USDGLO con pools USDC en Uniswap; MANTRA OM con pools WPOL/WETH/USDC.e en QuickSwap/Sushi)
       // 2026-11-05 02:45 (Longinus LGNS con pools DAI/USDT en QuickSwap)
       // LGNS 0xeB51D9A3… verificado pero 0 pools (liquidez contra DAI, que no es token base en Polygon)
@@ -226,7 +228,7 @@ export const CHAINS = {
       // 2026-11-05 07:45 (Agora AUSD con pools USDC/USDT; GensoKishi MV con pools WPOL/WETH en QuickSwap)
       // AUSD 0x00000000eFE302BE… y MV 0xA3c322Ad… verificados pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 06:45 (STASIS EURS (PoS) con pools USDC/WPOL en Uniswap/QuickSwap)
-      { sym: "EURS", address: "0xE111178A87A3BFf0c8d18DECBa5798827539Ae99" },
+      /* EURS 0xE111178A… retirado 2026-11-05 10:45 (EURS/USDC s0 p1 al entrar al ranking: su único enlace base; EURS/USDC.e sin sims ni rutas) */
       // 2026-11-05 04:45 (Fetch.ai FET (PoS) con pools WPOL en QuickSwap)
       // FET 0x7583FEDD… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 05:45 (Ocean Token (PoS) con pools en QuickSwap/Sushi)
@@ -350,6 +352,8 @@ export const CHAINS = {
       { sym: "SOLV", address: "0xabE8E5CabE24Cb36df9540088fD7cE1175b9bc52" }, { sym: "ZKJ", address: "0xC71B5F631354BE6853eFe9C3Ab6b9590F8302e81", symbols: ["ZK"] },
       // 2026-11-05 09:45 (MYX Finance MYX con pools WBNB/USDT en PancakeSwap; Lorenzo BANK con pools WBNB)
       { sym: "MYX", address: "0xD82544bf0dfe8385eF8FA34D67e6e4940CC63e16" }, { sym: "BANK", address: "0x3AeE7602b612de36088F3ffEd8c8f10E86EbF2bF" },
+      // 2026-11-05 10:45 (Stargate STG con pools WBNB/USDT en PancakeSwap; Tutorial TUT con pools WBNB y memecoins de four.meme)
+      { sym: "STG", address: "0xB0D502E938ed5f4df2E681fE6E419ff29631d62b" }, { sym: "TUT", address: "0xCAAE2A2F939F51d97CdFa9A86e79e3F085b799f3" },
       { sym: "KOGE", address: "0xe6DF05CE8C8301223373CF5B969AFCb1498c5528" }, // FORM 0x5b73A93b… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
