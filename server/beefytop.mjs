@@ -51,3 +51,19 @@ export async function beefyTop({ n = 10, minTvl = 50_000, chain = null, includeE
 export function beefyTopLine(r) {
   return r.top.map((x, i) => `${i + 1}) ${x.name} [${x.chain}/${x.platform}${x.type !== "standard" ? "/" + x.type : ""}] ${x.apyPct}% TVL $${x.tvlUsd.toLocaleString("en-US")}`).join(" | ");
 }
+
+// Tokens de los CLM de Beefy en una cadena (símbolo → dirección), para alimentar extraTokens.
+export async function beefyClmTokens(chain) {
+  const { all, apy, tvlById } = await load();
+  const out = {};
+  for (const v of all.values()) {
+    if (v.chain !== chain || v.type !== "cowcentrated" || !Array.isArray(v.depositTokenAddresses)) continue;
+    v.depositTokenAddresses.forEach((addr, i) => {
+      const sym = v.assets?.[i] ?? "?";
+      const reward = [...all.values()].find((g) => g.type === "gov" && g.tokenAddress?.toLowerCase() === v.earnContractAddress?.toLowerCase());
+      const o = (out[sym] ??= { symbol: sym, address: addr, vaults: [] });
+      o.vaults.push({ name: v.name, status: v.status, apyPct: +(((apy[reward?.id ?? v.id]?.totalApy) ?? 0) * 100).toFixed(1), tvlUsd: Math.round((tvlById[v.id] ?? 0) + (tvlById[reward?.id] ?? 0)) });
+    });
+  }
+  return Object.values(out);
+}

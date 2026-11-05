@@ -18,7 +18,7 @@ import { addrCapFromError, callCapped } from "./logcap.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
 import { pairTable, pairLine } from "../src/pairs.js";
-import { beefyTop, beefyTopLine } from "./beefytop.mjs";
+import { beefyTop, beefyTopLine, beefyClmTokens } from "./beefytop.mjs";
 
 // Histograma de motivos agrupado (los contadores persistidos traen claves antiguas con argumentos) y ordenado de mayor a menor.
 function reasonsText(byReason) {
@@ -287,6 +287,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, headers);
     return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
+  if (req.url.startsWith("/api/beefy-tokens")) {
+    const q = new URL(req.url, "http://x").searchParams;
+    try { res.writeHead(200, headers); return res.end(JSON.stringify(await beefyClmTokens(q.get("chain") || "robinhood"))); }
+    catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/api/beefy-top")) {
     const q = new URL(req.url, "http://x").searchParams;
     try {
@@ -325,6 +330,10 @@ if (CHAIN_CFG.key === "base") {
       try { const r = await beefyTop({ n: 10, minTvl }); console.log(`${new Date().toISOString()} beefy top APY (TVL ≥ $${minTvl}, ${r.eligible} elegibles): ${beefyTopLine(r)}`); }
       catch (e) { console.log(`${new Date().toISOString()} beefy top APY: error ${e.message}`); }
     }
+    try {
+      const toks = await beefyClmTokens("robinhood");
+      console.log(`${new Date().toISOString()} beefy tokens CLM robinhood (${toks.length}): ${toks.map((t) => `${t.symbol} ${t.address} [${t.vaults.filter((v) => v.status === "active").map((v) => `${v.name} ${v.apyPct}% $${v.tvlUsd}`).join("; ")}]`).join(" | ")}`);
+    } catch (e) { console.log(`${new Date().toISOString()} beefy tokens: error ${e.message}`); }
   };
   setTimeout(logBeefy, 15_000); setInterval(logBeefy, 6 * 3600_000);
 }
