@@ -81,7 +81,7 @@ export const CHAINS = {
       // 2026-11-05 01:45 (Autonolas OLAS con pools WETH/USDC; FLock.io FLOCK con pools USDC/cbBTC/USDT/VVV)
       { sym: "OLAS", address: "0x54330d28ca3357F294334BDC454a032e7f353416" }, { sym: "FLOCK", address: "0x5aB3D4c385B400F3aBB49e80DE2fAF6a88A7B691" },
       // 2026-11-05 02:45 (Horizen ZEN, migrado a Base, con pools ZRO/WETH/USDC en Aerodrome/Uniswap; Talent Protocol TALENT con pools cbBTC/AERO/WETH)
-      { sym: "ZEN", address: "0xf43eB8De897Fbc7F2502483B2Bef7Bb9EA179229" }, { sym: "TALENT", address: "0x9a33406165f562E16C3abD82fd1185482E01b49a" },
+      { sym: "ZEN", address: "0xf43eB8De897Fbc7F2502483B2Bef7Bb9EA179229" }, // TALENT 0x9a334061… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -193,7 +193,7 @@ export const CHAINS = {
       { sym: "stMATIC", address: "0x3A58a54C066FdC0f2D55FC9C89F0415C92eBf3C4" }, /* EURe 0x18ec0A6E… retirado 2026-11-05 02:45 (EURe/USDC s0 p1 era su único enlace base) */ // IXT 0xE06Bd4F5… verificado pero 0 pools
       // 2026-11-04 23:45 (Glo Dollar USDGLO con pools USDC en Uniswap; MANTRA OM con pools WPOL/WETH/USDC.e en QuickSwap/Sushi)
       // 2026-11-05 02:45 (Longinus LGNS con pools DAI/USDT en QuickSwap)
-      { sym: "LGNS", address: "0xeB51D9A39AD5EEF215dC0Bf39a8821ff804A0F01" },
+      // LGNS 0xeB51D9A3… verificado pero 0 pools (liquidez contra DAI, que no es token base en Polygon)
       { sym: "USDGLO", address: "0x4F604735c1cF31399C6E711D5962b2B3E0225AD3" }, // OM 0xC3Ec8034… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 00:45 (BRZ, stable del real brasileño con pools USDT/USDC/WPOL; BNB puenteado PoS con pools WPOL/WETH/AAVE)
       // BRZ 0x4eD14111… y BNB 0xA649325A… verificados pero 0 pools ≥ MIN_LIQ_USD
@@ -304,7 +304,7 @@ export const CHAINS = {
       // 2026-11-05 01:45 (memecoins de four.meme con pools WBNB/USDT/USDC en PancakeSwap: Test TST y CZ'S DOG Broccoli)
       { sym: "TST", address: "0x86Bb94DdD16Efc8bc58e6b056e8df71D9e666429" }, { sym: "BROCCOLI", address: "0x6d5AD1592ed9D6D1dF9b93c793AB759573Ed6714", symbols: ["Broccoli"] },
       // 2026-11-05 02:45 (memecoins con pools WBNB/USDT en PancakeSwap: Mubarak y Banana For Scale BANANAS31)
-      { sym: "MUBARAK", address: "0x5C85D6C6825aB4032337F11Ee92a72DF936b46F6", symbols: ["mubarak"] }, { sym: "BANANAS31", address: "0x3d4f0513E8a29669B960f9dBcA61861548A9A760" },
+      { sym: "MUBARAK", address: "0x5C85D6C6825aB4032337F11Ee92a72DF936b46F6", symbols: ["mubarak"] }, { sym: "BANANAS31", address: "0x3d4f0513E8a29669B960f9dBcA61861548A9A760", symbols: ["$BANANA"] },
       // TUSD 0x40af3827… verificado pero 0 pools (liquidez contra BUSD) // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
