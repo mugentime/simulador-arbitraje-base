@@ -1,6 +1,8 @@
 import { skipKey } from "../server/executor.mjs";
 const cases = [
   ["omitida: tope por hora", "tope/h"],
+  ["omitida: tope por hora (0/0)", "tope/h(0)"],
+  ["omitida: tope por hora (3/3)", "tope/h(3)"],
   ["omitida: neto $0.0100 < 3× gas $0.0160 (valor esperado negativo)", "EV<mult×gas"],
   ["omitida: neto tras propina $0.0100 < 3× lo que perdería si revierte $0.0200", "EV tras propina"],
   ["omitida: neto simulado ≤ 0", "neto≤0"],

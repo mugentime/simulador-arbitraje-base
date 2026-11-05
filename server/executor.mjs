@@ -109,7 +109,7 @@ export function bundlePreFresh(pre, now, blockMs = 450) {
 // categoría corta de un motivo de omisión ("omitida: neto $0.01 < 3× gas …" → "EV<3×gas")
 export function skipKey(sent) {
   const t = String(sent).replace(/^omitida: /, "");
-  if (t.startsWith("tope por hora")) return "tope/h";
+  if (t.startsWith("tope por hora")) { const m = t.match(/\/(\d+)\)/); return m ? `tope/h(${m[1]})` : "tope/h"; }
   if (t.startsWith("gas ")) return "gas>tope";
   if (t.startsWith("neto simulado ≤ 0")) return "neto≤0";
   if (t.startsWith("neto simulado")) return "neto<mín";
@@ -380,7 +380,7 @@ export class Executor {
         if (this.autoDeploy) { this.p1.previousExecutor = this.p1.executor; this.p1.executor = null; await this.deploy(); }
       }
     }
-    await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ${core.CHAIN.native} · contrato ${this.p1.executor ?? "no desplegado"}`);
+    await this.diag(`fase 1: modo ${this.p1.mode} · wallet ${this.wallet.address} · ${this.p1.balanceEth.toFixed(5)} ${core.CHAIN.native} · contrato ${this.p1.executor ?? "no desplegado"} · límites: ${this.limits.maxTxPerHour} tx/h, reverts $${this.limits.revertBudgetUsdPerHour}/h, en la última hora ${this.sentTimes.filter((t) => Date.now() - t < 3600e3).length} envíos`);
     await this.save();
     const seq = sequencerUrl(core.CHAIN.key);
     if (seq) {
@@ -682,7 +682,7 @@ export class Executor {
     rec.route ??= label(plan.meta);
     const now = Date.now();
     this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
-    if (this.sentTimes.length >= this.limits.maxTxPerHour) { rec.sent = "omitida: tope por hora"; return; }
+    if (this.sentTimes.length >= this.limits.maxTxPerHour) { rec.sent = `omitida: tope por hora (${this.sentTimes.length}/${this.limits.maxTxPerHour})`; return; }
     if (rec.gasUsd > this.limits.maxGasUsd) { rec.sent = `omitida: gas ${rec.gasUsd.toFixed(3)} > tope`; return; }
     if (rec.netUsd <= 0) { rec.sent = "omitida: neto simulado ≤ 0"; return; }
     // Una tx que revierte cuesta ~1 gas completo; solo compensa enviar si el neto simulado cubre varias fallas.
