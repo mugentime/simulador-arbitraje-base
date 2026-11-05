@@ -462,7 +462,18 @@ export const CHAINS = {
     },
     // Stock Tokens (NVDA, TSLA…) NO: el contrato revisa cada transferencia contra un registro de wallets aprobadas;
     // nuestro ArbExecutor no puede recibirlos → rutas fantasma (transferFrom reverted). Se excluyen sus pools.
-    extraTokens: [],
+    // 2026-11-04: tokens de los CLM de Beefy con más APY/TVL (direcciones de api.beefy.finance/cow-vaults).
+    extraTokens: [
+      { sym: "AI", address: "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18" }, { sym: "BONER", address: "0x98096d17e191B3dA1d5f99a6D7b3584351b11E18" },
+      { sym: "CASHCAT", address: "0x020bfC650A365f8BB26819deAAbF3E21291018b4" }, { sym: "PONS", address: "0x39dBED3a2bd333467115dE45665cC57F813C4571" },
+      { sym: "TENDIES", address: "0x45242320DBB855EeA8Fd36804C6487E10E97FCF9" }, { sym: "ORBIO", address: "0xAa07A0e9209e16aC99708C3EC70159c6eF3128A3" },
+      { sym: "UP", address: "0x57C0E45cB534413D1C20A4240955d6bB250BB4F1", symbols: ["UP33"] },
+      // Stock Tokens: solo observación (desajustes entre pools alrededor de la apertura/cierre de NY); no entran a ciclos
+      { sym: "AMD", address: "0x86923f96303D656E4aa86D9d42D1e57ad2023fdC", symbols: ["AMDrh"] }, { sym: "META", address: "0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35", symbols: ["METArh"] },
+      { sym: "AMC", address: "0x05a3d1Cd21d0C88145E82600E62e7E496e0F222B", symbols: ["AMCrh"] }, { sym: "CRCL", address: "0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5", symbols: ["CRCLrh"] },
+      { sym: "SPCX", address: "0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa", symbols: ["SPCXrh"] },
+    ],
+    observeTokens: ["0x86923f96303D656E4aa86D9d42D1e57ad2023fdC", "0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35", "0x05a3d1Cd21d0C88145E82600E62e7E496e0F222B", "0xdF0992E440dD0be65BD8439b609d6D4366bf1CB5", "0x4a0E65A3EcceC6dBe60AE065F2e7bb85Fae35eEa"],
     blockedTokens: ["0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC", "0x322F0929c4625eD5bAd873c95208D54E1c003b2d"],
     excludedPairs: [],
     factories: [
