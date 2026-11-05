@@ -51,6 +51,18 @@ const SEQUENCER_URL = {
 };
 export const sequencerUrl = (key) => (process.env.SEQUENCER_SEND === "0" ? null : process.env.SEQUENCER_URL || SEQUENCER_URL[key] || null);
 
+/** Petición JSON-RPC SIN reintentos por 429: ethers reintenta hasta 12 veces con espera exponencial (minutos en el peor
+ * caso) y con Alchemy en "Monthly capacity limit exceeded" cada envío de Base esperaba esos reintentos antes de pasar
+ * al siguiente RPC (00:42 UTC del 2026-11-05: la ruta ya estaba cerrada al enviar). */
+export function noRetryRequest(url, timeoutMs = 4000) {
+  const req = new ethers.FetchRequest(url);
+  req.setThrottleParams({ maxAttempts: 1 });
+  req.timeout = timeoutMs;
+  return req;
+}
+/** Errores de cuota/límite del nodo (no de la tx): el RPC se salta durante un rato. */
+export const RATE_LIMIT_RE = /429|capacity limit|too many requests|exceeded maximum retry|rate limit|compute units/i;
+
 async function postRaw(url, raw, timeoutMs = 4000) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
@@ -67,7 +79,7 @@ async function postRaw(url, raw, timeoutMs = 4000) {
  * Gana la primera respuesta válida; "already known"/"nonce too low" de los más lentos se ignoran.
  */
 export class FanoutProvider extends ethers.JsonRpcProvider {
-  constructor(readUrl, fanout, chainId) { super(readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
+  constructor(readUrl, fanout, chainId) { super(typeof readUrl === "string" ? noRetryRequest(readUrl) : readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
   async send(method, params) {
     if (method !== "eth_sendRawTransaction") return super.send(method, params);
     const raw = params[0];
@@ -164,15 +176,18 @@ export class Executor {
     this.routeCooldown = new Map(); // ruta -> bloque hasta el que no se reenvía
     this.lastChainBlock = 0;
     this.sendIdx = 0; this.sendRpcs = sendRpcs();
+    this.sendBad = new Map(); // url -> ms hasta el que se salta (429 / cuota agotada)
   }
 
   /** Wallet conectada al RPC de envío actual; `rotateSender` pasa al siguiente si uno rechaza el envío. */
   sender() {
+    // salta los RPC marcados por cuota agotada (si todos lo están, usa el actual)
+    for (let k = 0; k < this.sendRpcs.length && (this.sendBad.get(this.sendRpcs[this.sendIdx % this.sendRpcs.length]) ?? 0) > Date.now(); k++) this.sendIdx++;
     const url = this.sendRpcs[this.sendIdx % this.sendRpcs.length];
     if (!this.sendProv || this.sendUrl !== url) {
       this.sendUrl = url;
       const seq = sequencerUrl(core.CHAIN.key);
-      this.sendProv = seq ? new FanoutProvider(url, [seq, url], Number(core.CHAIN_ID)) : new ethers.JsonRpcProvider(url, Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
+      this.sendProv = seq ? new FanoutProvider(url, [seq, url], Number(core.CHAIN_ID)) : new ethers.JsonRpcProvider(noRetryRequest(url), Number(core.CHAIN_ID), { staticNetwork: true, batchMaxCount: 1 });
       this.sendSigner = new ethers.NonceManager(this.wallet.connect(this.sendProv)); // nonces consecutivos aunque haya envíos seguidos
     }
     return this.sendSigner;
@@ -185,13 +200,16 @@ export class Executor {
       let lastErr;
       for (let i = 0; i < this.sendRpcs.length; i++) {
         const w = this.sender();
+        const t0 = Date.now();
         try { return await fn(w); } catch (e) {
           lastErr = e;
           const m = sendErrMsg(e);
           if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
           // errores propios de la tx (no del nodo): no tiene sentido probar otro RPC
           if (/insufficient funds|execution reverted|CALL_EXCEPTION|underpriced|already known|tip cap|fee cap|below minimum|exceeds block gas limit|intrinsic gas/i.test(m)) throw e;
-          await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío (${m.slice(0, 160)}); probando otro`);
+          const limited = RATE_LIMIT_RE.test(m), backoffMin = Number(process.env.SEND_RPC_BACKOFF_MIN ?? 30);
+          if (limited) this.sendBad.set(this.sendUrl, Date.now() + backoffMin * 60e3);
+          await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío en ${Date.now() - t0} ms (${m.slice(0, 160)})${limited ? `; se salta ${backoffMin} min` : ""}; probando otro`);
           this.rotateSender();
         }
       }
