@@ -18,6 +18,7 @@ import { addrCapFromError, callCapped } from "./logcap.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
 import { pairTable, pairLine } from "../src/pairs.js";
+import { beefyTop, beefyTopLine } from "./beefytop.mjs";
 
 // Histograma de motivos agrupado (los contadores persistidos traen claves antiguas con argumentos) y ordenado de mayor a menor.
 function reasonsText(byReason) {
@@ -286,6 +287,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, headers);
     return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
+  if (req.url.startsWith("/api/beefy-top")) {
+    const q = new URL(req.url, "http://x").searchParams;
+    try {
+      const r = await beefyTop({ n: Math.min(100, Number(q.get("n")) || 10), minTvl: q.has("minTvl") ? Number(q.get("minTvl")) : 50_000, chain: q.get("chain") || null, includeEol: q.get("includeEol") === "1" });
+      res.writeHead(200, headers); return res.end(JSON.stringify(r));
+    } catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
   if (req.url === "/" || req.url.startsWith("/index.html") || req.url.startsWith("/?")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -310,6 +318,16 @@ if (PUBLIC) setTimeout(async () => {
     } catch (e) { console.log(`${new Date().toISOString()} autocomprobación ${path}: falló ${e.message}`); }
   }
 }, 8_000);
+// top de vaults de Beefy por APY en los logs (al arrancar y cada 6 h), solo en el servicio de Base
+if (CHAIN_CFG.key === "base") {
+  const logBeefy = async () => {
+    for (const minTvl of [50_000, 0]) {
+      try { const r = await beefyTop({ n: 10, minTvl }); console.log(`${new Date().toISOString()} beefy top APY (TVL ≥ $${minTvl}, ${r.eligible} elegibles): ${beefyTopLine(r)}`); }
+      catch (e) { console.log(`${new Date().toISOString()} beefy top APY: error ${e.message}`); }
+    }
+  };
+  setTimeout(logBeefy, 15_000); setInterval(logBeefy, 6 * 3600_000);
+}
 // resumen periódico en los logs de Railway
 setInterval(async () => {
   const st = await store.get("stats");
