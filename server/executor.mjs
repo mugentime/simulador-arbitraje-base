@@ -675,6 +675,14 @@ export class Executor {
 
   async sendBackrunPublic(victimTx, r, lenders, gas, ethUsd) {
     if (!victimTx) return null;
+    // Polygon 2026-11-05: 7/7 back-runs públicos revertidos; el último cayó un bloque DESPUÉS de la víctima (la vimos
+    // tarde y otro bot cerró el desajuste). Si la víctima ya está minada, el back-run público no tiene ventaja de orden:
+    // no se envía (la ruta normal por bloque la evalúa con el estado real).
+    if (victimTx.blockNumber != null) { this.p1.backrunLate = (this.p1.backrunLate ?? 0) + 1; return "omitido: víctima ya minada al recibirla"; }
+    try {
+      const vr = await this.provider.getTransactionReceipt(victimTx.hash);
+      if (vr) { this.p1.backrunLate = (this.p1.backrunLate ?? 0) + 1; return `omitido: víctima ya minada (bloque ${vr.blockNumber})`; }
+    } catch { /* red: se sigue */ }
     const plan = this.buildPlan(r, lenders, ethUsd);
     if (!plan) return null;
     const fx = backrunFee(victimTx, gas.baseFee);
@@ -798,6 +806,15 @@ export class Executor {
 
   /** Cotización exacta on-chain de un salto (v2 por reservas; v3/v4 por el contrato Quoter sin tokens). */
   async quote(p, tokenIn, amountIn, sp = this.provider, tag = undefined) {
+    if (p.kind === "split") {
+      // salto repartido entre varios pools del mismo par: misma asignación que el contrato (la última parte, el resto)
+      let left = amountIn, out = 0n;
+      for (let i = 0; i < p.parts.length; i++) {
+        const a = i === p.parts.length - 1 ? left : (amountIn * BigInt(p.bps[i])) / 10000n; left -= a;
+        out += await this.quote(p.parts[i], tokenIn, a, sp, tag);
+      }
+      return out;
+    }
     const tokenOut = core.other(p, tokenIn).address;
     const zfo = BigInt(tokenIn) < BigInt(tokenOut);
     if (p.kind === "v2") {
