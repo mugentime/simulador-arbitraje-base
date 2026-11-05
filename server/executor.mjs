@@ -124,6 +124,25 @@ export function emptyPhase1() {
 const routeKey = (r) => label(r);
 
 /**
+ * Último bloque válido de un bundle. El RPC público (y el bloque que procesa el worker, que salta bloques) pueden ir
+ * varios bloques por detrás de la punta real; los builders rechazaban con "maxBlockNumber should not be less than
+ * currentBlockNum". Se estima la punta también por tiempo: último bloque visto + tiempo transcurrido / blockMs.
+ * `seen` ({ n, at }) se actualiza en sitio con el bloque más alto visto.
+ */
+export function bundleMaxBlock({ head = 0, lastChainBlock = 0, seen, now = Date.now(), blockMs = 750, blocks = 10 }) {
+  const known = Math.max(Number(head) || 0, Number(lastChainBlock) || 0);
+  if (seen && known > (seen.n ?? 0)) { seen.n = known; seen.at = now; }
+  const est = seen?.n ? seen.n + Math.floor(Math.max(0, now - (seen.at ?? now)) / Math.max(1, blockMs)) : 0;
+  return Math.max(known, est) + blocks;
+}
+
+/** ¿Todos los builders rechazaron porque la tx revierte en su simulación? (la ruta ya se cerró) */
+export function bundleAllReverted(errors) {
+  const v = Object.values(errors ?? {});
+  return v.length > 0 && v.some((e) => /execution reverted|execution failed/i.test(String(e))) && v.every((e) => /execution reverted|execution failed|HTTP 429|rate|limit|timeout|abort/i.test(String(e)));
+}
+
+/**
  * Comisión de un back-run público: debe igualar la propina EFECTIVA de la víctima para quedar justo detrás de ella
  * (a igual propina, los nodos ordenan por orden de llegada). Antes se mandaba una tx legacy con gasPrice = maxFeePerGas
  * de la víctima: si la víctima es EIP-1559 con propina < maxFee − baseFee, nuestra propina efectiva era MAYOR y el
@@ -178,7 +197,7 @@ export class Executor {
       revertBudgetUsdPerHour: Number(process.env.REVERT_BUDGET_USD_PER_HOUR ?? 0.25),
       // Bundles a builders (BSC): si la tx revertiría, el builder no la incluye → un intento fallido no cuesta gas.
       bundleSend: process.env.BUNDLE_SEND === "1",
-      bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 6), // validez del bundle en bloques (BSC ~0.75 s/bloque: 3 bloques llegaban vencidos)
+      bundleBlocks: Number(process.env.BUNDLE_BLOCKS ?? 10), // validez del bundle en bloques (BSC ~0.45–0.75 s/bloque: 3 y a veces 6 llegaban vencidos)
       backrunPublic: process.env.BACKRUN_PUBLIC === "1", // back-run sin bundles (mismo gas que la víctima)
     };
     this.inflight = false; this.lastSimBlock = 0; // sentTimes, revertGas y consecutiveReverts: en el estado persistente (getters abajo)
@@ -653,7 +672,7 @@ export class Executor {
       const hash = ethers.keccak256(raw);
       // el RPC público puede ir unos bloques por detrás (BSC ~0.75 s/bloque): se toma el bloque más alto conocido y
       // se da margen (BlockSec rechazaba con "maxBlockNumber should be larger than currentBlockNum")
-      const maxBlockNumber = Math.max(head, this.lastChainBlock || 0) + this.limits.bundleBlocks;
+      const maxBlockNumber = bundleMaxBlock({ head, lastChainBlock: this.lastChainBlock, seen: (this.headSeen ??= { n: 0, at: 0 }), now: Date.now(), blockMs: core.CHAIN.blockMs, blocks: this.limits.bundleBlocks });
       // Dos bundles a la vez con la MISMA tx nuestra (mismo nonce: solo uno puede entrar):
       //  (a) [víctima, nosotros] — back-run en el mismo bloque;
       //  (b) [nosotros] — si la víctima ya se minó (lo vimos tarde), el desajuste que dejó sigue ahí y se captura igual.
@@ -725,13 +744,15 @@ export class Executor {
     data = this.encodeWithCost(plan, costUsd, ethUsd); // si el beneficio real no cubre lo pagado al builder, revierte → no se incluye
     const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
     const hash = ethers.keccak256(raw);
-    const maxBlockNumber = Math.max(head, this.lastChainBlock || 0) + this.limits.bundleBlocks; // ver sendBackrun
+    const maxBlockNumber = bundleMaxBlock({ head, lastChainBlock: this.lastChainBlock, seen: (this.headSeen ??= { n: 0, at: 0 }), now: Date.now(), blockMs: core.CHAIN.blockMs, blocks: this.limits.bundleBlocks }); // ver bundleMaxBlock
     const { accepted, errors } = await sendBundle(raw, { maxBlockNumber });
     this.p1.bundles = (this.p1.bundles ?? 0) + 1;
     const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
     if (!accepted.length) {
       rec.sent = `bundle rechazado por todos los builders (${errTxt.slice(0, 200)})`;
       this.p1.lastError = rec.sent;
+      // la tx revierte en la simulación de los builders: la ruta ya se cerró; no se reenvía la misma en los próximos bloques
+      if (bundleAllReverted(errors)) { this.routeCooldown.set(rec.route, Math.max(head, this.lastChainBlock || 0) + 3); this.p1.bundlesReverted = (this.p1.bundlesReverted ?? 0) + 1; }
       await this.diag(`fase 1: ${rec.sent}`);
       return;
     }
