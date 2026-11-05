@@ -5,6 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
+import { enterClm, exitClm } from "./beefyclm.mjs";
 
 export const BASE = {
   WETH: "0x4200000000000000000000000000000000000006",
@@ -79,14 +80,24 @@ export class Strategy {
     try {
       this.run = this.s.runs[this.label] ??= { kind: this.kind, startedAt: Date.now(), txs: [], status: "pendiente" };
       if (this.run.status === "hecho" || this.run.status === "error") { this.done = true; return; }
+      if (this.retryAt && Date.now() < this.retryAt) return;
       if (this.kind === "revert-usdc") await this.enter(ctx);
       else if (this.kind === "revert-usdc-exit") await this.exit(ctx);
+      else if (this.kind === "beefy-clm") await enterClm(this, ctx);
+      else if (this.kind === "beefy-clm-exit") await exitClm(this, ctx);
       else throw new Error(`STRATEGY desconocida: ${this.kind}`);
-      this.run.status = "hecho"; this.run.endedAt = Date.now();
+      this.run.status = "hecho"; this.run.endedAt = Date.now(); this.done = true;
     } catch (e) {
-      this.run.status = "error"; this.run.error = (e.shortMessage || e.message).slice(0, 300);
-      await this.diag(`estrategia ${this.kind}: detenida · ${this.run.error}`);
-    } finally { this.done = true; this.busy = false; await this.save().catch(() => {}); }
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
+      if (e.retry && (this.run.retries = (this.run.retries ?? 0) + 1) <= 60) {
+        // p. ej. el CLM no está "calm": se reintenta en 1 min sin repetir los pasos ya hechos
+        this.retryAt = Date.now() + 60_000; this.run.lastRetry = msg;
+        if (this.run.retries === 1 || this.run.retries % 10 === 0) await this.diag(`estrategia ${this.kind}: reintento ${this.run.retries} en 1 min · ${msg}`);
+      } else {
+        this.run.status = "error"; this.run.error = msg; this.done = true;
+        await this.diag(`estrategia ${this.kind}: detenida · ${msg}`);
+      }
+    } finally { this.busy = false; await this.save().catch(() => {}); }
   }
 
   async enter(ctx) {
