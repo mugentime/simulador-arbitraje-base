@@ -87,6 +87,16 @@ async function postRaw(url, raw, timeoutMs = 4000) {
  * Proveedor que lee por `readUrl` y difunde cada tx firmada a la vez a todos los `fanout` (secuenciador primero).
  * Gana la primera respuesta válida; "already known"/"nonce too low" de los más lentos se ignoran.
  */
+/** Recorre la ruta con el estado actual de los objetos de pool. Devuelve true si la salida supera al monto prestado,
+ *  false si no, y null si el modelo no puede calcularla (en ese caso no se omite nada). */
+export function modelStillOpen(route, startAddr, amount) {
+  try {
+    let a = amount, t = startAddr;
+    for (const p of route) { a = core.swapOut(p, t, a); if (typeof a !== "bigint") return null; t = core.other(p, t).address; }
+    return a > amount;
+  } catch { return null; }
+}
+
 export class FanoutProvider extends ethers.JsonRpcProvider {
   constructor(readUrl, fanout, chainId) { super(typeof readUrl === "string" ? noRetryRequest(readUrl) : readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
   async send(method, params) {
@@ -453,6 +463,14 @@ export class Executor {
       for (const r of cands) {
         const plan0 = this.buildPlan(r, lenders, ethUsd);
         if (!plan0) { text = `${label(r)}: ruta v4 sin tickSpacing en el universo guardado; se reintenta cuando se reconstruya`; continue; }
+        // Re-chequeo local antes de gastar llamadas RPC: el estado de los pools pudo cambiar entre la evaluación y este punto
+        // (bucle rápido/eventos actualizan los mismos objetos). Si con el estado actual el modelo ya no devuelve el préstamo,
+        // la simulación revertiría seguro (`transferFrom reverted`/`InsufficientProfit`): se omite y se cuenta.
+        if (process.env.PRESIM_RECHECK !== "0" && modelStillOpen(r.route, r.startTok.address, plan0.amount) === false) {
+          this.p1.staleAtSim = (this.p1.staleAtSim ?? 0) + 1;
+          text = `${label(r)}: cerrada en el modelo al simular; no se simula`;
+          continue;
+        }
         // El modelo de liquidez virtual (v3/v4) es exacto dentro del tick activo pero optimista si el swap cruza ticks:
         // si el contrato dice que con el monto óptimo no alcanza para devolver el préstamo, se prueba con montos menores.
         const { plan, rec } = await this.ladderSim(plan0, r, block, ts, gas, ethUsd, sim);

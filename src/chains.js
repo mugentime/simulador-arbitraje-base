@@ -84,6 +84,8 @@ export const CHAINS = {
       { sym: "ZEN", address: "0xf43eB8De897Fbc7F2502483B2Bef7Bb9EA179229" }, // TALENT 0x9a334061… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 03:45 (Reserve Rights RSR con pools WETH/USDC en Aerodrome/Uniswap; Wrapped BTC WBTC (OFT de BitGo) con pools cbBTC/WETH/USDC)
       { sym: "RSR", address: "0xaB36452DbAC151bE02b16Ca17d8919826072f64a" }, { sym: "WBTC", address: "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c" },
+      // 2026-11-05 04:45 (Pendle PENDLE y Curve CRV puenteados, con pools WETH/USDC en Aerodrome/Uniswap)
+      { sym: "PENDLE", address: "0xA99F6e6785Da0F5d6fB42495Fe424BCE029Eeb3E" }, { sym: "CRV", address: "0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -121,7 +123,9 @@ export const CHAINS = {
       "WETH/ZORA",
       "COOKIE/VIRTUAL",
       // 2026-11-05 00:45 inactivo (entra al ranking ya en s0; uSOL sigue con WETH/uSOL y uSOL/uSUI)
-      "cbBTC/uSOL"],
+      "cbBTC/uSOL",
+      // 2026-11-05 04:45 inactivos (entran al ranking ya en s0; GHO sigue con GHO/USDC p3, cbADA con cbADA/cbBTC p2)
+      "GHO/USDT", "WETH/cbADA"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -169,7 +173,7 @@ export const CHAINS = {
       // 2026-11-04 09:45
       /* COMP 0x8505b9d2… retirado 13:45: único par COMP/WPOL s0 */ { sym: "1INCH", address: "0x9c2C5fd7b07E95EE044DDeba0E97a665F142394f" },
       // 2026-11-04 10:45
-      { sym: "KNC", address: "0x1C954E8fe737F99f68Fa1CCda3e51ebDB291948C" }, { sym: "LDO", address: "0xC3C7d422809852031b44ab29EEC9F1EfF2A58756" },
+      { sym: "KNC", address: "0x1C954E8fe737F99f68Fa1CCda3e51ebDB291948C" }, /* LDO 0xC3C7d422… retirado 2026-11-05 04:45 (LDO/WPOL peor 3 corridas, su único par) */
       // 2026-11-04 11:45
       /* GRT 0x5fe2B58c… retirado 20:45 (GRT/WPOL peor 3 corridas; WETH/GRT s−0.3 quedaba solo) */ // WOO verificado pero 0 pools con liquidez ≥ MIN_LIQ_USD
       // 2026-11-04 12:45
@@ -203,6 +207,8 @@ export const CHAINS = {
       // KLIMA 0x4e78011C… y PYR 0x430EF926… verificados pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 03:45 (Render RNDR con pools WPOL/WETH en QuickSwap/Uniswap; SHIBA INU (PoS) con pools WPOL/WETH/USDC)
       { sym: "RNDR", address: "0x61299774020dA444Af134c82fa83E3810b309991" }, { sym: "SHIB", address: "0x6f8a06447Ff6FcF75d803135a7de15CE88C1d4ec" },
+      // 2026-11-05 04:45 (Fetch.ai FET (PoS) con pools WPOL en QuickSwap)
+      { sym: "FET", address: "0x7583FEDDbceFA813dc18259940F76a02710A8905" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -311,6 +317,8 @@ export const CHAINS = {
       { sym: "MUBARAK", address: "0x5C85D6C6825aB4032337F11Ee92a72DF936b46F6", symbols: ["mubarak"] }, { sym: "BANANAS31", address: "0x3d4f0513E8a29669B960f9dBcA61861548A9A760", symbols: ["$BANANA"] },
       // 2026-11-05 03:45 (My Neighbor Alice ALICE con pools WBNB/USDT/CAKE en PancakeSwap; DODO con pools WBNB/CAKE/USDT en PancakeSwap/DODO)
       { sym: "ALICE", address: "0xAC51066d7bEC65Dc4589368da368b212745d63E8" }, { sym: "DODO", address: "0x67ee3Cb086F8a16f34beE3ca72FAD36F7Db929e2" },
+      // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
+      { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
       // TUSD 0x40af3827… verificado pero 0 pools (liquidez contra BUSD) // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
@@ -345,7 +353,9 @@ export const CHAINS = {
       // 22:45 inactivos (ASTER sigue con ASTER/USDT, 8 pools, y ASTER/WBNB, 6; + token LISTA retirado)
       "ASTER/USDC", "ASTER/BTCB", "ASTER/CAKE", "ASTER/TRX",
       // 23:45 inactivo (SFP sigue con SFP/WBNB, 3 pools)
-      "SFP/USDT"],
+      "SFP/USDT",
+      // 2026-11-05 04:45 inactivos (entran al ranking ya en s0; ZEC sigue con WBNB/ZEC p4, USDT/ZEC p5, BTCB/ZEC p3)
+      "DOGE/ZEC", "ETH/ZEC", "SOL/ZEC"],
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -424,9 +434,11 @@ export const CHAINS = {
       // 2026-11-04 23:45 (Animecoin ANIME con pools WETH/USDT0 en Uni v3/Camelot; Frax frxUSD con pools USDC)
       // ANIME 0x37a64564… y frxUSD 0x80Eede49… verificados pero 0 pools (ANIME: liquidez en Camelot v3/contra USDT0)
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH en Uni v3; cbETH de Coinbase con pools WETH en Uni v3/Balancer)
-      { sym: "cbETH", address: "0x1DEBd73E752bEaF79865Fd6446b0c970EaE7732f" }, // ENA 0x58538e6A… verificado pero 0 pools ≥ MIN_LIQ_USD
+      /* cbETH 0x1DEBd73E… retirado 2026-11-05 04:45 (único pool WETH/cbETH s0) */ // ENA 0x58538e6A… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 01:45 (SolvBTC con pools WBTC/WETH en Uni v3/Camelot; Ethena sUSDe, OFT, con pools USDC/USDe)
       // SolvBTC 0x3647c54c… y sUSDe 0x211Cc4DD… verificados pero 0 pools ≥ MIN_LIQ_USD
+      // 2026-11-05 04:45 (Inverse DOLA con pools USDC en Balancer/Uni v3)
+      { sym: "DOLA", address: "0x6A7661795C374c0bFC635934efAddFf3A7Ee23b6" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
