@@ -72,8 +72,8 @@ export const CHAINS = {
       { sym: "GAME", address: "0x1C4CcA7C5DB003824208aDDA61Bd749e55F463a3" }, { sym: "uSOL", address: "0x9B8Df6E244526ab5F6e6400d331DB28C8fdDdb55" },
       // 2026-11-04 21:45 (memecoins con pools WETH en Uniswap/Aerodrome: Mister Miggles y mfercoin, éste también contra VIRTUAL/Mog)
       { sym: "MIGGLES", address: "0xB1a03EdA10342529bBF8EB700a06C60441fEf25d" }, { sym: "mfer", address: "0xE3086852A4B125803C815a158249ae468A3254Ca", symbols: ["$mfer", "MFER"] },
-      // 2026-11-04 22:45 (Spectral SPEC con pools WETH/PRIME en Uniswap/Aerodrome; ODOS del agregador con pools WETH/USDC)
-      { sym: "SPEC", address: "0x96419929d7949D6A801A6909c145C8EEf6A40431" }, { sym: "ODOS", address: "0xca73ed1815e5915489570014e024b7EbE65dE679" },
+      // 2026-11-04 22:45 (Freysa FAI con pools WETH; uSUI de Universal con pools WETH/USDC/uSOL)
+      { sym: "FAI", address: "0xb33Ff54b9F7242EF1593d2C9Bcd8f9df46c77935" }, { sym: "uSUI", address: "0xb0505e5a99abd03d94a1169e638B78EDfEd26ea4" }, // SPEC 0x96419929… y ODOS 0xca73ed18… verificados pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -177,7 +177,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (QiDao QI con pools QI/DAI/WPOL en QuickSwap; PolyDoge con pools contra WPOL en QuickSwap v2/v3)
       { sym: "QI", address: "0x580A84C73811E1839F75d86d75d88cCa0c241fF4" }, { sym: "PolyDoge", address: "0x8A953CfE442c5E8855cc6c61b1293FA648BAE472" },
       // 2026-11-04 22:45 (PlanetIX IXT con pools WPOL/USDT en QuickSwap; Monerium EURe con pools USDC/USDC.e/USDT)
-      { sym: "IXT", address: "0xE06Bd4F5aAc8D0aA337D13eC88dB6defC6eAEefE" }, { sym: "EURe", address: "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6" },
+      { sym: "stMATIC", address: "0x3A58a54C066FdC0f2D55FC9C89F0415C92eBf3C4" }, { sym: "EURe", address: "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6" }, // IXT 0xE06Bd4F5… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -271,7 +271,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (AXS con pools WBNB/CAKE en PancakeSwap; WOO con pools WBNB/USDT)
       { sym: "AXS", address: "0x715D400F88C167884bbCc41C5FeA407ed4D2f8A0" }, { sym: "WOO", address: "0x4691937a7508860F876c9c0a2a617E7d9E945D4B" },
       // 2026-11-04 22:45 (Thena THE con pools WBNB/USDT/ETH/BTCB; STEPN GMT con pools WBNB/USDT en PancakeSwap)
-      { sym: "THE", address: "0xF4C8E32EaDEC4BFe97E0F595AdD0f4450a863a11" }, { sym: "GMT", address: "0x3019BF2a2eF8040C242C9a4c5c4BD4C81678b2A1" },
+      { sym: "ID", address: "0x2dfF88A56767223A5529eA5960Da7A3F5f766406" }, { sym: "GMT", address: "0x3019BF2a2eF8040C242C9a4c5c4BD4C81678b2A1" }, // THE 0xF4C8E32E… verificado pero 0 pools (liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -466,7 +466,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (dHEDGE DHT con pools WETH/OP en Velodrome; KNC con pools WETH/USDT/OP)
       { sym: "DHT", address: "0xAF9fE3B5cCDAe78188B1F8b9a49Da7ae9510F151" }, // KNC 0xa00E3A35… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 22:45 (PoolTogether POOL con pools WETH en Velodrome/Uni v3; Wormhole W con pools WETH)
-      { sym: "POOL", address: "0x395Ae52bB17aef68C2888d941736A71dC6d4e125" }, { sym: "W", address: "0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91" },
+      { sym: "POOL", address: "0x395Ae52bB17aef68C2888d941736A71dC6d4e125" }, { sym: "SUSHI", address: "0x3eaEb77b03dBc0F6321AE1b72b2E9aDb0F60112B" }, // W 0xB0fFa800… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
