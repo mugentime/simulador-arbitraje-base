@@ -618,8 +618,7 @@ export const CHAINS = {
       // 2026-11-05 12:45 (con Slipstream ya activo en OP: USDT0 con pools USDC/WETH/USDT y Renzo ezETH con pools WETH, antes 0 pools solo por la factory sin código)
       { sym: "USDT0", address: "0x01bFF41798a0BcF287b996046Ca68b395DbC1071", symbols: ["USD₮0"] }, // ezETH 0x2416092f… 0 pools también con Slipstream
       // 2026-11-05 13:45 (reintento con Slipstream activo: Kelp wrsETH con pools WETH; Kraken kBTC con pools WBTC/WETH)
-      // wrsETH 0x87eEE96D… y kBTC 0x73E0C0d4… verificados pero 0 pools también con Slipstream y Uniswap v2 → se prueban Across ACX y Ethena ENA (OFT)
-      { sym: "ACX", address: "0xFf733b2A3557a7ed6697007ab5D11B79FdD1b76B" }, { sym: "ENA", address: "0x58538e6A46E07434d7E7375Bc268D3cb839C0133" },
+      // wrsETH 0x87eEE96D…, kBTC 0x73E0C0d4…, ACX 0xFf733b2A… y ENA 0x58538e6A… verificados pero 0 pools ≥ MIN_LIQ_USD también con Slipstream y Uniswap v2
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
