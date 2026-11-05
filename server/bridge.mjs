@@ -91,3 +91,104 @@ export class Bridger {
     else if (Date.now() - r.sentAt > 30 * 60_000) { r.status = "hecho"; r.note = `sin confirmación de destino tras 30 min (estado ${st ?? "?"})`; this.done = true; await this.diag(`bridge: ${r.note}`); }
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Recarga periódica de otra cadena desde Base (orden de Jose 2026-11-05 16:39: también $10 diarios en ZEC-USDT de BSC).
+// Corre en el worker de Base. Cada TOPUP_CHECK_MIN minutos lee en la cadena destino el saldo del token (TOPUP_TOKEN) y del
+// nativo; si el token está por debajo de TOPUP_TARGET_USD, puentea la diferencia (+2 %) desde el USDC de Base (o desde ETH si
+// no alcanza); si el nativo vale menos de TOPUP_GAS_MIN_USD, puentea TOPUP_GAS_USD a nativo. Máximo TOPUP_MAX_PER_DAY envíos/día.
+import { CHAINS } from "../src/chains.js";
+const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"]);
+
+/** Cuánto hace falta en destino (unidades humanas) para llegar al objetivo, con 2 % de margen; 0 si ya alcanza. */
+export function topupNeed(haveUsd, targetUsd) { return haveUsd >= targetUsd ? 0 : +((targetUsd - haveUsd) * 1.02).toFixed(2); }
+
+export class Topup {
+  constructor({ executor, provider, store, diag }) {
+    this.x = executor; this.provider = provider; this.store = store; this.diag = diag;
+    this.chainKey = process.env.TOPUP_CHAIN || "";
+    this.token = process.env.TOPUP_TOKEN || "";
+    this.targetUsd = Number(process.env.TOPUP_TARGET_USD ?? 10);
+    this.gasMinUsd = Number(process.env.TOPUP_GAS_MIN_USD ?? 0.5);
+    this.gasUsd = Number(process.env.TOPUP_GAS_USD ?? 1);
+    this.everyMs = Number(process.env.TOPUP_CHECK_MIN ?? 60) * 60_000;
+    this.maxPerDay = Number(process.env.TOPUP_MAX_PER_DAY ?? 3);
+    this.busy = false; this.nextAt = 0;
+  }
+  get wanted() { return !!this.chainKey && ethers.isAddress(this.token) && core.CHAIN.id === BASE_ID && this.x?.wallet && this.x.mode === "live"; }
+  async init() { this.s = (await this.store.get("topup")) ?? { sends: [] }; }
+  async save() { await this.store.set("topup", this.s); }
+
+  destProvider() {
+    if (this.dp) return this.dp;
+    const c = CHAINS[this.chainKey]; if (!c) throw new Error(`cadena ${this.chainKey} desconocida`);
+    this.destId = c.id;
+    this.dp = new ethers.FallbackProvider(c.rpcs.slice(0, 3).map((u, i) => ({ provider: new ethers.JsonRpcProvider(u, c.id, { staticNetwork: true }), priority: i + 1, weight: 1, stallTimeout: 2500 })), c.id, { quorum: 1 });
+    return this.dp;
+  }
+
+  async onBlock(ctx) {
+    if (!this.wanted || this.busy || Date.now() < this.nextAt) return;
+    this.busy = true; this.nextAt = Date.now() + this.everyMs;
+    try {
+      const me = this.x.wallet.address, dp = this.destProvider();
+      const [rawTok, rawDec, nat] = await Promise.all([dp.call({ to: this.token, data: ERC20.encodeFunctionData("balanceOf", [me]) }), dp.call({ to: this.token, data: ERC20.encodeFunctionData("decimals") }), dp.getBalance(me)]);
+      const dec = Number(ERC20.decodeFunctionResult("decimals", rawDec)[0]);
+      const haveUsd = Number(ethers.formatUnits(ERC20.decodeFunctionResult("balanceOf", rawTok)[0], dec)); // estable ≈ $1
+      const natUsd = await this.nativeUsd();
+      const natHaveUsd = natUsd ? Number(ethers.formatEther(nat)) * natUsd : null;
+      this.s.last = { at: new Date().toISOString(), tokenUsd: haveUsd, nativeUsd: natHaveUsd };
+      const today = new Date().toISOString().slice(0, 10);
+      const sentToday = this.s.sends.filter((x) => x.at.startsWith(today)).length;
+      const jobs = [];
+      if (natHaveUsd !== null && natHaveUsd < this.gasMinUsd) jobs.push({ kind: "gas", usd: this.gasUsd, currency: NATIVE });
+      const need = topupNeed(haveUsd, this.targetUsd);
+      if (need > 0) jobs.push({ kind: "token", usd: need, currency: this.token });
+      for (const j of jobs) {
+        if (sentToday + 1 > this.maxPerDay) { await this.diag(`recarga ${this.chainKey}: tope de ${this.maxPerDay} envíos hoy; pendiente ${j.kind} $${j.usd}`); break; }
+        await this.send(j, ctx);
+      }
+    } catch (e) { this.s.lastError = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`recarga ${this.chainKey}: error ${this.s.lastError}`); }
+    finally { this.busy = false; await this.save().catch(() => {}); }
+  }
+
+  async nativeUsd() {
+    try { const r = await fetch(`https://api.beefy.finance/prices`, { signal: AbortSignal.timeout(15_000) }); const j = await r.json(); return Number(j[{ bsc: "BNB", polygon: "POL", arbitrum: "ETH", optimism: "ETH" }[this.chainKey] ?? "ETH"]) || null; } catch { return null; }
+  }
+
+  /** Puentea `usd` dólares desde Base (USDC; si no alcanza, ETH) hacia `currency` en la cadena destino. */
+  async send(j, ctx) {
+    const me = this.x.wallet.address;
+    const usdcBal = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) }));
+    const amtUsdc = ethers.parseUnits(j.usd.toFixed(6), 6);
+    let originCurrency = BASE_USDC, amount = amtUsdc;
+    if (usdcBal < amtUsdc) {
+      const ethBal = await this.provider.getBalance(me);
+      const reserve = ethers.parseEther(process.env.STRATEGY_RESERVE_ETH || "0.002");
+      const need = ctx?.ethUsd ? ethers.parseEther((j.usd / ctx.ethUsd).toFixed(18)) : 0n;
+      if (!need || ethBal - need < reserve) { await this.diag(`recarga ${this.chainKey}: sin fondos en Base para $${j.usd} (${ethers.formatUnits(usdcBal, 6)} USDC, ${ethers.formatEther(ethBal)} ETH)`); return; }
+      originCurrency = NATIVE; amount = need;
+    }
+    const body = { user: me, recipient: me, originChainId: BASE_ID, destinationChainId: this.destId, originCurrency, destinationCurrency: j.currency, amount: amount.toString(), tradeType: "EXACT_INPUT" };
+    const res = await fetch(`${RELAY}/quote/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+    const q = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`Relay ${res.status}: ${(q?.message ?? JSON.stringify(q ?? {})).slice(0, 160)}`);
+    const p = parseQuote(q);
+    if (!p.txs.length || p.txs.some((t) => t.chainId !== BASE_ID)) throw new Error("cotización de Relay inesperada");
+    const feePct = Number.isFinite(p.inUsd) && Number.isFinite(p.outUsd) && p.inUsd > 0 ? (1 - p.outUsd / p.inUsd) * 100 : null;
+    if (feePct !== null && feePct > Number(process.env.BRIDGE_MAX_FEE_PCT ?? 5)) throw new Error(`comisión ${feePct.toFixed(1)} %`);
+    const hashes = [];
+    for (const t of p.txs) { // p. ej. approve + depósito
+      const tx = { from: me, to: t.to, data: t.data, value: t.value };
+      await this.provider.call(tx);
+      const gasLimit = (await this.provider.estimateGas(tx)) * 13n / 10n;
+      const sent = await this.x.withSender((w) => w.sendTransaction({ to: t.to, data: t.data, value: t.value, gasLimit }));
+      const rc = await this.provider.waitForTransaction(sent.hash, 1, 120_000);
+      if (!rc || rc.status !== 1) throw new Error(`${t.step} ${sent.hash} ${rc ? "revertida" : "sin recibo"}`);
+      hashes.push(sent.hash);
+    }
+    const rec = { at: new Date().toISOString(), kind: j.kind, usd: j.usd, from: originCurrency === NATIVE ? "ETH" : "USDC", outUsd: p.outUsd, feePct, requestId: p.requestId, txs: hashes };
+    this.s.sends.push(rec); if (this.s.sends.length > 100) this.s.sends.shift();
+    await this.diag(`recarga ${this.chainKey}: ${j.kind === "gas" ? "gas" : "token"} $${j.usd} desde ${rec.from} de Base → ~$${p.outUsd?.toFixed?.(2) ?? "?"} en ${this.chainKey} (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · txs ${hashes.join(", ")}`);
+  }
+}

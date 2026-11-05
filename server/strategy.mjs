@@ -5,7 +5,8 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf } from "./beefyclm.mjs";
+import * as core from "../src/core.js";
 
 export const BASE = {
   WETH: "0x4200000000000000000000000000000000000006",
@@ -49,6 +50,7 @@ export class Strategy {
     this.reserve = ethers.parseEther(process.env.STRATEGY_RESERVE_ETH || "0.002");
     this.slipBps = Number(process.env.STRATEGY_SLIP_BPS ?? 50);
     this.busy = false; this.done = false;
+    this.net = netOf(core.CHAIN?.key);
   }
   get wanted() { return !!this.kind && !!this.label && this.x?.wallet && this.x.mode === "live"; }
 

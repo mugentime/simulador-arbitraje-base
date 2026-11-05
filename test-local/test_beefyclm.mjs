@@ -58,7 +58,7 @@ const nBefore = sent.length;
 s.retryAt = 0; await s.onBlock({ ethUsd: 3300 }); s.retryAt = 0; await s.onBlock({ ethUsd: 3300 });
 const run = mem.strategy.runs.c1;
 ok(run.status === "hecho", `estado ${run.status} ${run.error ?? ""}`);
-ok(run.txs.filter((t) => t.step === "swap ETH→USDC").length === 1, "el swap ETH→USDC no se repite tras los reintentos");
+ok(run.txs.filter((t) => t.step === "swap nativo→USDC").length === 1, "el swap ETH→USDC no se repite tras los reintentos");
 ok(B(VAULT) > 0n && B(CLM) === 0n, `participaciones en el vault ${B(VAULT)}`);
 ok(B(BASE.USDC) < 1_000_000n && B(X) < 10n ** 16n, `sobrante USDC ${B(BASE.USDC)} X ${B(X)}`);
 ok(st.eth >= ethers.parseEther("0.002"), `reserva ${ethers.formatEther(st.eth)}`);

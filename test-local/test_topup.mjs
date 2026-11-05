@@ -1,0 +1,34 @@
+// Recarga de BSC desde Base: lee saldos en destino, puentea USDT faltante (+2 %) y gas si hace falta; approve + depósito.
+import { ethers } from "ethers";
+import * as core from "../src/core.js";
+import { chainByKey } from "../src/chains.js";
+import { Topup, topupNeed, BASE_USDC } from "../server/bridge.mjs";
+let fails = 0; const ok = (c, m) => { console.log((c ? "OK " : "FALLA ") + m); if (!c) fails++; };
+ok(topupNeed(12, 10) === 0 && topupNeed(0, 10) === 10.2 && topupNeed(4, 10) === 6.12, "faltante con 2 %");
+core.applyChain(chainByKey("base"));
+const USDT = "0x55d398326f99059fF775485246999027B3197955";
+const E = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"]);
+const me = ethers.Wallet.createRandom().address;
+let destUsdt = 0n, destBnb = ethers.parseEther("0.0005"); let baseUsdc = 30_000_000n;
+const sent = []; const bodies = [];
+const provider = { call: async (tx) => tx.to === BASE_USDC && tx.data?.startsWith("0x70a08231") ? E.encodeFunctionResult("balanceOf", [baseUsdc]) : "0x", estimateGas: async () => 100_000n, getBalance: async () => ethers.parseEther("0.02"), waitForTransaction: async () => ({ status: 1 }) };
+const executor = { wallet: { address: me }, mode: "live", withSender: async (fn) => fn({ sendTransaction: async (tx) => { sent.push(tx); return { hash: "0x" + String(sent.length).padStart(64, "0") }; } }) };
+const dp = { call: async (tx) => tx.data.startsWith("0x70a08231") ? E.encodeFunctionResult("balanceOf", [destUsdt]) : E.encodeFunctionResult("decimals", [18]), getBalance: async () => destBnb };
+globalThis.fetch = async (url, o) => {
+  if (String(url).includes("/prices")) return { json: async () => ({ BNB: 650 }) };
+  const b = JSON.parse(o.body); bodies.push(b);
+  const items = b.originCurrency === BASE_USDC ? [{ id: "approve", kind: "transaction", items: [{ data: { to: BASE_USDC, data: "0x095e", value: "0", chainId: 8453 } }] }] : [];
+  return { ok: true, json: async () => ({ steps: [...items, { id: "deposit", kind: "transaction", requestId: "0xr", items: [{ data: { to: "0x00000000000000000000000000000000000000dd", data: "0x01", value: "0", chainId: 8453 } }] }], details: { currencyIn: { amountUsd: "10" }, currencyOut: { amountUsd: "9.95" } } }) };
+};
+const mem = {}; const store = { get: async (k) => mem[k], set: async (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); } };
+const diags = [];
+Object.assign(process.env, { TOPUP_CHAIN: "bsc", TOPUP_TOKEN: USDT, TOPUP_TARGET_USD: "10", TOPUP_GAS_MIN_USD: "0.5", TOPUP_GAS_USD: "1" });
+const t = new Topup({ executor, provider, store, diag: async (m) => diags.push(m) }); t.dp = dp; t.destId = 56; await t.init();
+await t.onBlock({ ethUsd: 2230 });
+ok(bodies.length === 2 && bodies[0].destinationCurrency === "0x0000000000000000000000000000000000000000" && bodies[1].destinationCurrency === USDT && bodies[1].amount === "10200000", `gas ($1) y USDT ($10.20): ${bodies.map((b) => b.destinationCurrency.slice(0, 6) + ":" + b.amount).join(", ")}`);
+ok(sent.length === 4, `approve + depósito por cada envío (${sent.length} tx)`);
+destUsdt = 10n ** 19n; destBnb = ethers.parseEther("0.002"); t.nextAt = 0; bodies.length = 0;
+await t.onBlock({ ethUsd: 2230 }); ok(bodies.length === 0, "con saldo suficiente no envía");
+destUsdt = 0n; t.nextAt = 0; baseUsdc = 0n; await t.onBlock({ ethUsd: 2230 });
+ok(bodies.length === 1 && bodies[0].originCurrency === "0x0000000000000000000000000000000000000000", "sin USDC en Base → usa ETH");
+console.log(fails ? "HAY FALLAS" : "todo OK"); process.exit(fails ? 1 : 0);

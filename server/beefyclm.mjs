@@ -40,6 +40,13 @@ const C = new ethers.Interface([
 // Uniswap v3 en Base: fábrica y QuoterV2 (docs.uniswap.org/contracts/v3/reference/deployments/base-deployments)
 export const UNI_FACTORY = "0x33128a8fc17869897dce68ed026d694621f6fdfd";
 export const UNI_QUOTER = "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a";
+// Parámetros por cadena: estable de referencia, nativo envuelto, Uniswap v3 (fábrica, QuoterV2, SwapRouter02) y comisión del par nativo/estable.
+// BNB Chain: docs.uniswap.org/contracts/v3/reference/deployments/bnb-deployments. En BSC no se vende nativo (nativeFee null): se usa el USDT de la wallet.
+const netsTable = () => ({
+  base: { beefy: "base", stable: BASE.USDC, stableSym: "USDC", stableDec: 6, wnative: BASE.WETH, router: BASE.ROUTER, quoter: UNI_QUOTER, uniFactory: UNI_FACTORY, nativeFee: BASE.FEE },
+  bsc: { beefy: "bsc", stable: "0x55d398326f99059fF775485246999027B3197955", stableSym: "USDT", stableDec: 18, wnative: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", router: "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2", quoter: "0x78D78E420Da98ad378D7799bE8f4AF69033EB077", uniFactory: "0xdb1d10011ad0ff90774d0c6bb92e5c5c8b4461f7", nativeFee: null },
+});
+export const netOf = (key) => { const t = netsTable(); return t[key] ?? t.base; };
 const U = new ethers.Interface([
   "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)",
   "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
@@ -70,20 +77,21 @@ async function resolve(s) {
   const [list, govs] = await Promise.all([get("/vaults"), get("/gov-vaults")]);
   const v = [...(Array.isArray(list) ? list : []), ...(Array.isArray(govs) ? govs.map((g) => ({ ...g, type: "gov" })) : [])].find((x) => x.id === id);
   if (!v) throw new Error(`vault ${id} no está en la API de Beefy`);
-  if (v.chain !== "base" || v.status !== "active") throw new Error(`vault ${id}: cadena ${v.chain}, estado ${v.status}`);
+  const N = s.net;
+  if (v.chain !== N.beefy || v.status !== "active") throw new Error(`vault ${id}: cadena ${v.chain} (worker ${N.beefy}), estado ${v.status}`);
   const vault = ethers.getAddress(v.earnContractAddress), clm = ethers.getAddress(v.tokenAddress);
   const gov = v.type === "gov";
   if (!gov) { const [want] = await call(s, vault, "want"); if (lc(want) !== lc(clm)) throw new Error(`want del vault ${want} ≠ CLM ${clm}`); }
   const [t0, t1] = await call(s, clm, "wants");
-  if (lc(t0) !== lc(BASE.USDC) && lc(t1) !== lc(BASE.USDC)) throw new Error("el CLM no tiene USDC");
+  if (lc(t0) !== lc(N.stable) && lc(t1) !== lc(N.stable)) throw new Error(`el CLM no tiene ${N.stableSym}`);
   const [strat] = await call(s, clm, "strategy");
   const [pool] = await call(s, strat, "pool");
   const [factory] = await call(s, pool, "factory");
   let dex, router, tickSpacing = null, fee = null;
-  if (lc(factory) === UNI_FACTORY) { dex = "uni"; router = BASE.ROUTER; fee = Number((await call(s, pool, "fee"))[0]); }
+  if (lc(factory) === lc(N.uniFactory)) { dex = "uni"; router = N.router; fee = Number((await call(s, pool, "fee"))[0]); }
   else if (SLIP_ROUTERS[lc(factory)]) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)]; tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
-  Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(BASE.USDC) ? t1 : t0, usdcIs0: lc(t0) === lc(BASE.USDC), pool, dex, router, tickSpacing, fee });
+  Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee });
   await s.save();
   await s.diag(`estrategia ${s.kind}: ${id} · ${gov ? "reward pool" : "vault"} ${vault} · CLM ${clm} · pool ${pool} (${dex === "uni" ? `Uniswap v3 fee ${fee}` : `Slipstream tickSpacing ${tickSpacing}`}) · router ${router}`);
 }
@@ -92,7 +100,7 @@ const slipParams = (s, tokenIn, tokenOut, amountIn, min = 0n) => ({ tokenIn, tok
 const uniParams = (s, tokenIn, tokenOut, amountIn, min = 0n) => ({ tokenIn, tokenOut, fee: s.run.fee, recipient: s.me, amountIn, amountOutMinimum: min, sqrtPriceLimitX96: 0n });
 /** Cotización en el pool del CLM: QuoterV2 en Uniswap v3 (no necesita allowance); en Slipstream, llamada estática al router (requiere allowance previo). */
 async function slipQuote(s, tokenIn, tokenOut, amountIn) {
-  if (s.run.dex === "uni") return (await call(s, UNI_QUOTER, "quoteExactInputSingle", [{ tokenIn, tokenOut, amountIn, fee: s.run.fee, sqrtPriceLimitX96: 0n }]))[0];
+  if (s.run.dex === "uni") return (await call(s, s.net.quoter, "quoteExactInputSingle", [{ tokenIn, tokenOut, amountIn, fee: s.run.fee, sqrtPriceLimitX96: 0n }]))[0];
   return (await call(s, s.run.router, "exactInputSingle", [slipParams(s, tokenIn, tokenOut, amountIn)]))[0];
 }
 /** Swap en el pool del CLM con salida mínima = cotización simulada − deslizamiento; rechaza si el impacto vs una cotización chica > 2 %. */
@@ -108,38 +116,39 @@ async function slipSwap(s, tokenIn, tokenOut, amountIn, small, step) {
 }
 
 /** ETH a cambiar para obtener `needUsdc` (crudo, 6 dec.) al precio ethUsd, con 1 % de margen. */
-export function ethForUsdc(needUsdc, ethUsd) {
+export function ethForUsdc(needUsdc, ethUsd, dec = 6) {
   if (!(ethUsd > 0) || needUsdc <= 0n) return 0n;
-  return ethers.parseEther((Number(needUsdc) / 1e6 / ethUsd * 1.01).toFixed(18));
+  return ethers.parseEther((Number(needUsdc) / 10 ** dec / ethUsd * 1.01).toFixed(18));
 }
 const noFunds = (m) => Object.assign(new Error(m), { noFunds: true });
 
 export async function enterClm(s, ctx) {
-  const r = s.run;
+  const r = s.run, N = s.net;
   await resolve(s);
-  // 1) ETH → USDC (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el USDC de la wallet)
+  const D = N.stableDec, U1 = 10n ** BigInt(D);
+  // 1) nativo → estable (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el estable de la wallet)
   if (r.usdcIn === undefined) {
     const balEth = await s.provider.getBalance(s.me);
-    const target = s.dcaUsd ? BigInt(Math.round(s.dcaUsd * 1e6)) : null;
-    const usdcHave = target !== null ? await bal(s, BASE.USDC) : 0n;
+    const target = s.dcaUsd ? ethers.parseUnits(String(s.dcaUsd), D) : null;
+    const usdcHave = target !== null ? await bal(s, N.stable) : 0n;
     let amountIn;
     if (target === null) {
       amountIn = spendable(balEth, s.reserve, ethers.parseEther("0.0003"));
-      if (amountIn < ethers.parseEther("0.001")) throw new Error(`saldo insuficiente (${ethers.formatEther(balEth)} ETH)`);
+      if (amountIn < ethers.parseEther("0.001")) throw new Error(`saldo insuficiente (${ethers.formatEther(balEth)} nativo)`);
     } else {
-      amountIn = usdcHave >= target ? 0n : ethForUsdc(target - usdcHave, ctx?.ethUsd);
-      if (amountIn > 0n && amountIn > spendable(balEth, s.reserve, ethers.parseEther("0.0003"))) throw noFunds(`fondos insuficientes para $${s.dcaUsd}: ${ethers.formatEther(balEth)} ETH (reserva ${ethers.formatEther(s.reserve)}) y ${ethers.formatUnits(usdcHave, 6)} USDC`);
-      if (amountIn === 0n && !(ctx?.ethUsd > 0) && usdcHave < target) throw Object.assign(new Error("sin precio de ETH"), { retry: true });
+      amountIn = usdcHave >= target ? 0n : ethForUsdc(target - usdcHave, ctx?.ethUsd, D);
+      if (amountIn > 0n && (N.nativeFee === null || amountIn > spendable(balEth, s.reserve, ethers.parseEther("0.0003")))) throw noFunds(`fondos insuficientes para $${s.dcaUsd}: ${ethers.formatUnits(usdcHave, D)} ${N.stableSym}${N.nativeFee === null ? " (en esta cadena no se vende el nativo)" : ` y ${ethers.formatEther(balEth)} nativo (reserva ${ethers.formatEther(s.reserve)})`}`);
+      if (amountIn === 0n && usdcHave < target) throw Object.assign(new Error("sin precio del nativo"), { retry: true });
     }
     if (amountIn > 0n) {
-      const p = { tokenIn: BASE.WETH, tokenOut: BASE.USDC, fee: BASE.FEE, recipient: s.me, amountIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
-      const simOut = U.decodeFunctionResult("exactInputSingle", await s.provider.call({ from: s.me, to: BASE.ROUTER, value: amountIn, data: U.encodeFunctionData("exactInputSingle", [p]) }))[0];
-      p.amountOutMinimum = minOut(simOut, s.slipBps, ctx?.ethUsd ? BigInt(Math.floor(Number(ethers.formatEther(amountIn)) * ctx.ethUsd * 1e6)) : 0n);
-      await s.diag(`estrategia ${s.kind}: ${ethers.formatEther(amountIn)} ETH de ${ethers.formatEther(balEth)} (reserva ${ethers.formatEther(s.reserve)}) → ~${ethers.formatUnits(simOut, 6)} USDC (ETH $${ctx?.ethUsd?.toFixed?.(2) ?? "?"})`);
-      const before = await bal(s, BASE.USDC);
-      await s.send("swap ETH→USDC", { to: BASE.ROUTER, value: amountIn, data: U.encodeFunctionData("exactInputSingle", [p]) });
+      const p = { tokenIn: N.wnative, tokenOut: N.stable, fee: N.nativeFee, recipient: s.me, amountIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
+      const simOut = U.decodeFunctionResult("exactInputSingle", await s.provider.call({ from: s.me, to: N.router, value: amountIn, data: U.encodeFunctionData("exactInputSingle", [p]) }))[0];
+      p.amountOutMinimum = minOut(simOut, s.slipBps, ctx?.ethUsd ? ethers.parseUnits((Number(ethers.formatEther(amountIn)) * ctx.ethUsd).toFixed(D > 6 ? 6 : D), D) : 0n);
+      await s.diag(`estrategia ${s.kind}: ${ethers.formatEther(amountIn)} nativo de ${ethers.formatEther(balEth)} (reserva ${ethers.formatEther(s.reserve)}) → ~${ethers.formatUnits(simOut, D)} ${N.stableSym} (nativo $${ctx?.ethUsd?.toFixed?.(2) ?? "?"})`);
+      const before = await bal(s, N.stable);
+      await s.send(`swap nativo→${N.stableSym}`, { to: N.router, value: amountIn, data: U.encodeFunctionData("exactInputSingle", [p]) });
       r.ethIn = ethers.formatEther(amountIn);
-      const got = (await bal(s, BASE.USDC)) - before;
+      const got = (await bal(s, N.stable)) - before;
       r.usdcIn = String(target === null ? got : (usdcHave + got < target ? usdcHave + got : target));
     } else { r.ethIn = "0"; r.usdcIn = String(target); }
     await s.save();
@@ -149,12 +158,12 @@ export async function enterClm(s, ctx) {
     const usdc = BigInt(r.usdcIn);
     const [b0, b1] = await call(s, r.clm, "balances");
     const [balU, balX] = r.usdcIs0 ? [b0, b1] : [b1, b0];
-    const probe = 1_000_000n; // 1 USDC
-    if (r.dex !== "uni") await approve(s, BASE.USDC, r.router, usdc, "approve USDC→router (cotización)");
-    const rate = Number(await slipQuote(s, BASE.USDC, r.x, probe)) / Number(probe);
+    const probe = U1; // 1 unidad del estable
+    if (r.dex !== "uni") await approve(s, N.stable, r.router, usdc, "approve estable→router (cotización)");
+    const rate = Number(await slipQuote(s, N.stable, r.x, probe)) / Number(probe);
     const f = swapFraction(rate, Number(balX), Number(balU));
     const swapAmt = BigInt(Math.floor(Number(usdc) * f));
-    r.xIn = swapAmt > 0n ? String(await slipSwap(s, BASE.USDC, r.x, swapAmt, probe, "swap USDC→X")) : "0";
+    r.xIn = swapAmt > 0n ? String(await slipSwap(s, N.stable, r.x, swapAmt, probe, `swap ${N.stableSym}→X`)) : "0";
     r.usdcForClm = String(usdc - swapAmt); await s.save();
   }
   // 3) depósito en el CLM
@@ -179,7 +188,7 @@ export async function enterClm(s, ctx) {
     await s.send(r.gov ? "stake reward pool Beefy" : "deposit vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
     r.mooShares = String((await bal(s, r.vault)) - before); await s.save();
   }
-  await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} ETH → ${ethers.formatUnits(r.usdcIn, 6)} USDC → CLM ${r.clmShares} → vault ${r.mooShares} · sobrante en wallet: el que el CLM no tomó · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
+  await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} nativo → ${ethers.formatUnits(r.usdcIn, D)} ${N.stableSym} → CLM ${r.clmShares} → vault ${r.mooShares} · sobrante en wallet: el que el CLM no tomó · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
 }
 
 export async function exitClm(s, ctx) {
@@ -193,7 +202,7 @@ export async function exitClm(s, ctx) {
   }
   if (r.usdcOut === undefined) {
     const sh = await bal(s, r.clm);
-    const bU0 = await bal(s, BASE.USDC), bX0 = await bal(s, r.x);
+    const bU0 = await bal(s, s.net.stable), bX0 = await bal(s, r.x);
     if (sh > 0n) {
       const [m0, m1] = await call(s, r.clm, "previewWithdraw", [sh]);
       try { await s.sim({ to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) }); }
@@ -201,11 +210,12 @@ export async function exitClm(s, ctx) {
       await s.send("withdraw CLM", { to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) });
     }
     const xGot = (await bal(s, r.x)) - bX0;
-    const uFromX = xGot > 0n ? await slipSwap(s, r.x, BASE.USDC, xGot, xGot / 100n, "swap X→USDC") : 0n;
-    r.usdcOut = String((await bal(s, BASE.USDC)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
+    const uFromX = xGot > 0n ? await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`) : 0n;
+    r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
   }
   const amt = BigInt(r.usdcOut);
   if (amt <= 0n) throw new Error("no salió USDC del CLM");
+  if (s.net.nativeFee === null) { await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, s.net.stableDec)} ${s.net.stableSym} quedan en la wallet · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   await approve(s, BASE.USDC, BASE.ROUTER, amt, "approve USDC→router");
   const p = { tokenIn: BASE.USDC, tokenOut: BASE.WETH, fee: BASE.FEE, recipient: BASE.ROUTER, amountIn: amt, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
   const simOut = U.decodeFunctionResult("exactInputSingle", await s.provider.call({ from: s.me, to: BASE.ROUTER, data: U.encodeFunctionData("exactInputSingle", [p]) }))[0];

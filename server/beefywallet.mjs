@@ -110,13 +110,14 @@ export async function beefyWallet(address, { provider = null } = {}) {
   positions.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0));
   const total = positions.reduce((s, x) => s + (x.valueUsd ?? 0), 0);
   const daily = positions.reduce((s, x) => s + (x.valueUsd ?? 0) * (Math.pow(1 + (x.apyPct ?? 0) / 100, 1 / 365) - 1), 0);
-  return { address, at: new Date().toISOString(), totalUsd: +total.toFixed(2), estDailyUsd: +daily.toFixed(3), positions,
+  const px = (k) => (Number.isFinite(Number(price[k])) ? +Number(price[k]).toFixed(4) : null);
+  return { address, at: new Date().toISOString(), totalUsd: +total.toFixed(2), estDailyUsd: +daily.toFixed(3), positions, prices: { BTC: px("BTC") ?? px("WBTC"), cbBTC: px("cbBTC"), ZEC: px("ZEC"), ETH: px("ETH"), BNB: px("BNB") },
     history: { source: history.source, entries: history.entries.length, chains: chainsInHistory, error: history.error, sampleKeys: history.entries[0] ? Object.keys(history.entries[0]).slice(0, 20) : null },
     errors };
 }
 
 export function beefyWalletLine(r) {
-  return `beefy wallet ${r.address}: total $${r.totalUsd} · est. $${r.estDailyUsd}/día · ${r.positions.length} posiciones: ` +
+  return `beefy wallet ${r.address}: total $${r.totalUsd} · est. $${r.estDailyUsd}/día · precios ${Object.entries(r.prices ?? {}).filter(([, v]) => v !== null).map(([k, v]) => `${k} $${v}`).join(", ")} · ${r.positions.length} posiciones: ` +
     r.positions.map((p) => `[${p.chain}] ${p.name} (${p.type}${p.status !== "active" ? ", " + p.status : ""}) $${p.valueUsd?.toFixed(2) ?? "?"}` +
       `${p.netDepositedUsd !== null ? ` dep $${p.netDepositedUsd} → ${p.pnlUsd >= 0 ? "+" : ""}$${p.pnlUsd}` : ""} APY ${p.apyPct ?? "—"}% TVL $${p.tvlUsd} id ${p.id}`).join(" | ") +
     ` · historial: ${r.history.source ?? "—"} (${r.history.entries} entradas${r.history.chains.length ? ", cadenas " + r.history.chains.join("/") : ""}${r.history.error ? ", error " + r.history.error : ""})` +
