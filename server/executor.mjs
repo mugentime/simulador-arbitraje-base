@@ -105,6 +105,25 @@ export function bundlePreFresh(pre, now, blockMs = 450) {
   return now - pre.at <= Math.max(1500, 3 * blockMs) ? pre : null;
 }
 
+
+// categoría corta de un motivo de omisión ("omitida: neto $0.01 < 3× gas …" → "EV<3×gas")
+export function skipKey(sent) {
+  const t = String(sent).replace(/^omitida: /, "");
+  if (t.startsWith("tope por hora")) return "tope/h";
+  if (t.startsWith("gas ")) return "gas>tope";
+  if (t.startsWith("neto simulado ≤ 0")) return "neto≤0";
+  if (t.startsWith("neto simulado")) return "neto<mín";
+  if (/^neto tras propina/.test(t)) return "EV tras propina";
+  if (/^neto \$[\d.]+ < /.test(t)) return "EV<mult×gas";
+  if (t.includes("tx en vuelo")) return "en vuelo";
+  if (t.startsWith("presupuesto")) return "presupuesto";
+  if (t.startsWith("envío en curso")) return "en curso";
+  if (t.startsWith("la propina")) return "propina>neto";
+  if (t.startsWith("si revierte")) return "presupuesto";
+  if (t.startsWith("gas del bundle")) return "gas bundle≥neto";
+  return t.split(/[ :$]/)[0] || "otro";
+}
+
 export class FanoutProvider extends ethers.JsonRpcProvider {
   constructor(readUrl, fanout, chainId) { super(typeof readUrl === "string" ? noRetryRequest(readUrl) : readUrl, chainId, { staticNetwork: true, batchMaxCount: 1 }); this.fanout = fanout; this.lastWinner = null; }
   async send(method, params) {
@@ -648,6 +667,18 @@ export class Executor {
   }
 
   async send(plan, rec, gas, ethUsd) {
+    try { return await this.sendInner(plan, rec, gas, ethUsd); } finally { this.tallySkip(rec.sent); }
+  }
+
+  // cuenta por qué una sim ok no salió (para el resumen: "omitidas: …"); sin esto solo se veía "enviadas N"
+  tallySkip(sent) {
+    if (typeof sent !== "string" || !sent.startsWith("omitida: ")) return;
+    const key = skipKey(sent);
+    const m = (this.p1.skips ??= {});
+    m[key] = (m[key] ?? 0) + 1;
+  }
+
+  async sendInner(plan, rec, gas, ethUsd) {
     rec.route ??= label(plan.meta);
     const now = Date.now();
     this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
