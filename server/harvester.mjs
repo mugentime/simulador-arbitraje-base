@@ -308,7 +308,18 @@ export class Harvester {
     this.push(rec);
   }
 
-  push(rec) { this.h.recent.unshift(rec); if (this.h.recent.length > MAX_RECENT) this.h.recent.length = MAX_RECENT; }
+  push(rec) {
+    this.h.recent.unshift(rec); if (this.h.recent.length > MAX_RECENT) this.h.recent.length = MAX_RECENT;
+    // 2026-11-05: con harvests autorizados en Base salían "1 rentables" sin envío ni explicación en logs; se registra
+    // por qué no se envió (como mucho una vez cada 10 min por estrategia y motivo)
+    const why = rec.reason ? `revertiría (${rec.reason})` : rec.sent && !/^0x/.test(rec.sent) ? rec.sent : null;
+    if (!why) return;
+    const k = `${rec.strategy}|${why.slice(0, 24)}`; const now = Date.now();
+    this.whyAt ??= new Map();
+    if (now - (this.whyAt.get(k) ?? 0) < 600_000) return;
+    this.whyAt.set(k, now);
+    this.diag?.(`harvest: no enviada · ${rec.id} · ${why}${rec.gasEst ? ` · gas estimado ${rec.gasEst}` : ""}`)?.catch?.(() => {});
+  }
 
   async reconcile(ethUsd) {
     const keep = [];
