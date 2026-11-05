@@ -230,7 +230,9 @@ export class Harvester {
       if (!cr) return; // la estrategia no expone callReward(): no se puede estimar
       const reward = BigInt(cr);
       const rewardUsd = (Number(reward) / 1e18) * ethUsd; // WETH
-      const gasUsd = (Number(core.HARVEST_GAS * gasPrice + gas.l1Fee) / 1e18) * ethUsd;
+      // gas aprendido de estimateGas por estrategia (Base 2026-11-05: spcxc estimaba 4.74M, no los 2M fijos)
+      const gasUnits = this.gasOf?.get(s.address) ?? core.HARVEST_GAS;
+      const gasUsd = (Number(gasUnits * gasPrice + gas.l1Fee) / 1e18) * ethUsd;
       rows.push({ address: s.address, id: s.id, platform: s.platform, rewardUsd, gasUsd, netUsd: rewardUsd - gasUsd, sinceMin: lastHarvest ? Math.round((ts - lastHarvest) / 60) : null, worth: rewardUsd >= gasUsd * this.limits.rewardOverGas && rewardUsd - gasUsd >= this.limits.minNetUsd });
     });
     // callReward() no tiene unidad fiable (en Base muchas estrategias lo devuelven en el token de recompensa, no en WETH):
@@ -290,6 +292,7 @@ export class Harvester {
       try { data = this.iface.encodeFunctionData("harvest()", []); tx = { to: r.address, from: wallet.address, data }; gasEst = await this.provider.estimateGas(tx); }
       catch (e2) { rec.reason = (e2.shortMessage || e2.message).slice(0, 80); this.h.simulated++; this.h.wouldRevert++; this.push(rec); return; }
     }
+    (this.gasOf ??= new Map()).set(r.address, BigInt(gasEst));
     rec.gasUsd = (Number(gasEst * (gas.baseFee + gas.priority) + gas.l1Fee) / 1e18) * ethUsd;
     rec.netUsd = (r.feeUsd ?? 0) - rec.gasUsd; rec.ok = true; rec.gasEst = Number(gasEst);
     if (r.feeUsd !== null && r.feeUsd !== undefined && r.feeUsd < rec.gasUsd * this.limits.rewardOverGas) { rec.sent = `omitida: comisión medida $${r.feeUsd.toFixed(4)} < ${this.limits.rewardOverGas}× gas real $${rec.gasUsd.toFixed(4)}`; this.push(rec); return; }
