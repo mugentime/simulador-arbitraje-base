@@ -131,9 +131,30 @@ const routeKey = (r) => label(r);
  */
 export function bundleMaxBlock({ head = 0, lastChainBlock = 0, seen, now = Date.now(), blockMs = 750, blocks = 10 }) {
   const known = Math.max(Number(head) || 0, Number(lastChainBlock) || 0);
-  if (seen && known > (seen.n ?? 0)) { seen.n = known; seen.at = now; }
-  const est = seen?.n ? seen.n + Math.floor(Math.max(0, now - (seen.at ?? now)) / Math.max(1, blockMs)) : 0;
-  return Math.max(known, est) + blocks;
+  if (seen && known > (seen.n ?? 0)) {
+    // ritmo real de bloques medido (BSC bajó de 750 ms a ~450 ms por bloque; con 750 fijo la estimación se quedaba corta)
+    if (seen.n && seen.at && now > seen.at) {
+      const per = (now - seen.at) / (known - seen.n);
+      if (per >= 50 && per <= 5000) seen.msPer = seen.msPer ? seen.msPer * 0.8 + per * 0.2 : per;
+    }
+    seen.n = known; seen.at = now;
+  }
+  const ms = Math.max(100, Math.min(blockMs, seen?.msPer ?? blockMs));
+  const est = seen?.n ? seen.n + Math.floor(Math.max(0, now - (seen.at ?? now)) / ms) : 0;
+  return Math.max(known, est) + blocks + Math.max(0, seen?.extra ?? 0);
+}
+
+/** ¿Los builders rechazaron solo porque el bundle ya venció (maxBlockNumber por detrás de su punta)? */
+export function bundleBlockExpired(errors) {
+  const v = Object.values(errors ?? {});
+  return v.some((e) => /maxBlockNumber/i.test(String(e))) && v.every((e) => /maxBlockNumber|HTTP 429|rate|limit|timeout|abort/i.test(String(e)));
+}
+
+/** Ajusta el margen adaptativo: +10 bloques (tope 60) si venció; −1 si un builder lo aceptó. */
+export function bundleMarginAdjust(seen, expired) {
+  if (!seen) return 0;
+  seen.extra = expired ? Math.min(60, (seen.extra ?? 0) + 10) : Math.max(0, (seen.extra ?? 0) - 1);
+  return seen.extra;
 }
 
 /** ¿Todos los builders rechazaron porque la tx revierte en su simulación? (la ruta ya se cerró) */
@@ -682,6 +703,8 @@ export class Executor {
       this.p1.bundles = (this.p1.bundles ?? 0) + 1; this.p1.backruns = (this.p1.backruns ?? 0) + 1;
       const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
       const route = label(r);
+      if (!accepted.length && (bundleBlockExpired(ra.errors) || bundleBlockExpired(rb.errors))) bundleMarginAdjust(this.headSeen, true);
+      else if (accepted.length) bundleMarginAdjust(this.headSeen, false);
       if (!accepted.length) { this.p1.lastError = `back-run rechazado por todos los builders (${errTxt.slice(0, 160)})`; return `rechazado (${errTxt.slice(0, 160)})`; }
       this.sentTimes.push(now); this.p1.sent++;
       const rec = { block: head, ts: Math.floor(now / 1000), route, start: r.start, lender: r.lender, amountUsd: r.amountInUsd, modelNetUsd: r.netUsd, ok: true, direct: true, backrun: victimHash, reason: null, profitUsd: r.grossUsd - r.flashFeeUsd, gasUsd: r.gasUsd, netUsd: r.netUsd, gasEst, sent: hash };
@@ -744,8 +767,15 @@ export class Executor {
     data = this.encodeWithCost(plan, costUsd, ethUsd); // si el beneficio real no cubre lo pagado al builder, revierte → no se incluye
     const raw = await w.signTransaction({ type: 0, chainId: core.CHAIN_ID, to: this.p1.executor, data, nonce, gasLimit, gasPrice });
     const hash = ethers.keccak256(raw);
-    const maxBlockNumber = bundleMaxBlock({ head, lastChainBlock: this.lastChainBlock, seen: (this.headSeen ??= { n: 0, at: 0 }), now: Date.now(), blockMs: core.CHAIN.blockMs, blocks: this.limits.bundleBlocks }); // ver bundleMaxBlock
-    const { accepted, errors } = await sendBundle(raw, { maxBlockNumber });
+    const seen = (this.headSeen ??= { n: 0, at: 0 });
+    let maxBlockNumber = bundleMaxBlock({ head, lastChainBlock: this.lastChainBlock, seen, now: Date.now(), blockMs: core.CHAIN.blockMs, blocks: this.limits.bundleBlocks }); // ver bundleMaxBlock
+    let { accepted, errors } = await sendBundle(raw, { maxBlockNumber });
+    if (!accepted.length && bundleBlockExpired(errors)) {
+      // vencido al llegar: se amplía el margen y se reenvía una vez la MISMA tx (un bundle no incluido no cuesta)
+      bundleMarginAdjust(seen, true); this.p1.bundlesExpired = (this.p1.bundlesExpired ?? 0) + 1;
+      maxBlockNumber = bundleMaxBlock({ head, lastChainBlock: this.lastChainBlock, seen, now: Date.now(), blockMs: core.CHAIN.blockMs, blocks: this.limits.bundleBlocks });
+      ({ accepted, errors } = await sendBundle(raw, { maxBlockNumber }));
+    } else if (accepted.length) bundleMarginAdjust(seen, false);
     this.p1.bundles = (this.p1.bundles ?? 0) + 1;
     const errTxt = Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(" · ");
     if (!accepted.length) {
