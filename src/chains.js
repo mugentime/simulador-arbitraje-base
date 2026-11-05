@@ -101,7 +101,7 @@ export const CHAINS = {
       // 2026-11-05 11:45 (agentes de Virtuals: VaderAI VADER con pools VIRTUAL/WETH; Acolyt ACOLYT con pools WETH)
       { sym: "ACOLYT", address: "0x79dacb99A8698052a9898E81Fdf883c29efb93cb" }, // VADER 0x731814e4… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 12:45 (Auki AUKI con pools WETH/USDC/AERO en Uniswap/Aerodrome; Aerostrategy AEROSTRAT con pools AERO en Aerodrome)
-      { sym: "AUKI", address: "0xF9569cFb8FD265e91aa478d86ae8c78b8AF55Df4" }, { sym: "AEROSTRAT", address: "0x1A85b97F8b0E1CEE4D5500E093F5970a2aeB3fB8" },
+      { sym: "AUKI", address: "0xF9569cFb8FD265e91aa478d86ae8c78b8AF55Df4" }, // AEROSTRAT 0x1A85b97F… verificado pero 0 pools ≥ MIN_LIQ_USD (solo contra AERO)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["COMP/USDC", /* 2026-11-05 12:45 peor 3 corridas (s0 p1; COMP sigue con COMP/WETH p2) */ "KEYCAT/VIRTUAL", /* 2026-11-05 11:45 peor 3 corridas (s-0.5 p1; KEYCAT sigue con KEYCAT/WETH) */ "DOLA/WETH", /* 2026-11-05 10:45 inactivo (s0 p1 al entrar al ranking; DOLA sigue con DOLA/USDC) */ "AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -607,7 +607,7 @@ export const CHAINS = {
       // 2026-11-05 05:45 (Lyra LYRA con pools OP/USDC.e/VELO en Velodrome)
       // LYRA 0x50c57259… retirado 2026-11-05 09:45 (único pool LYRA/WETH s0 al entrar al ranking)
       // 2026-11-05 12:45 (con Slipstream ya activo en OP: USDT0 con pools USDC/WETH/USDT y Renzo ezETH con pools WETH, antes 0 pools solo por la factory sin código)
-      { sym: "USDT0", address: "0x01bFF41798a0BcF287b996046Ca68b395DbC1071" }, { sym: "ezETH", address: "0x2416092f143378750bb29b79eD961ab195CcEea5" },
+      { sym: "USDT0", address: "0x01bFF41798a0BcF287b996046Ca68b395DbC1071", symbols: ["USD₮0"] }, // ezETH 0x2416092f… 0 pools también con Slipstream
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
