@@ -360,7 +360,7 @@ export const CHAINS = {
       // 2026-11-04 20:45 (Livepeer LPT con pools WETH/USDC en Uni v3; WINR con pools WETH/ARB en Camelot/Uni v3)
       { sym: "LPT", address: "0x289ba1701C2F088cf0faf8B3705246331cB8A839" }, { sym: "WINR", address: "0xD77B108d4f6cefaa0Cae9506A934e825BEccA46E" },
       // 2026-11-04 21:45 (stablecoins secundarias: MIM con pools WETH/ARB/USDT en Uni v3; USDS de Sky con pools USDC/WETH)
-      { sym: "MIM", address: "0xFEa7a6a0B346362BF88A9e4A88416B77a57D6c2A" }, { sym: "USDS", address: "0x6491c05A82219b8D1479057361ff1654749b876b" },
+      { sym: "MIM", address: "0xFEa7a6a0B346362BF88A9e4A88416B77a57D6c2A" }, // USDS 0x6491c05A… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -449,7 +449,7 @@ export const CHAINS = {
       // 2026-11-04 20:45 (EXA de Exactly con pools WETH/OP en Velodrome; HAI con pools WETH/USDC en Velodrome)
       { sym: "EXA", address: "0x1e925De1c68ef83bD98eE3E130eF14a50309C01B" }, { sym: "HAI", address: "0x10398AbC267496E49106B07dd6BE13364D10dC71" },
       // 2026-11-04 21:45 (dHEDGE DHT con pools WETH/OP en Velodrome; KNC con pools WETH/USDT/OP)
-      { sym: "DHT", address: "0xAF9fE3B5cCDAe78188B1F8b9a49Da7ae9510F151" }, { sym: "KNC", address: "0xa00E3A3511aAC35cA78530c85007AFCd31753819" },
+      { sym: "DHT", address: "0xAF9fE3B5cCDAe78188B1F8b9a49Da7ae9510F151" }, // KNC 0xa00E3A35… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
