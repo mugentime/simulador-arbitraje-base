@@ -65,7 +65,7 @@ export const CHAINS = {
       // 2026-11-04 17:45 (agentes de Virtuals y memecoin con pools en Uniswap/Aerodrome)
       { sym: "BENJI", address: "0xBC45647eA894030a4E9801Ec03479739FA2485F0" }, { sym: "TYBG", address: "0x0d97F261b1e88845184f678e2d1e7a98D9FD38dE" }, // LUNA 0x55cD6469… verificado pero 0 pools (liquidez contra VIRTUAL)
       // 2026-11-04 18:45 (perps de Base y token de juegos con pools WETH/USDC)
-      { sym: "AVNT", address: "0x696F9436B67233384889472Cd7cD58A6fB5DF4f1" }, { sym: "B3", address: "0xB3B32F9f8827D4634fE7d973Fa1034Ec9fdDB3B3" },
+      { sym: "AVNT", address: "0x696F9436B67233384889472Cd7cD58A6fB5DF4f1" }, { sym: "DRB", address: "0x3ec2156D4c0A9CBdAB4a016633b7BcF6a8d68Ea2" }, // B3 0xB3B32F9f… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -154,7 +154,7 @@ export const CHAINS = {
       // 2026-11-04 17:45
       { sym: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd" }, // APE 0xB7b31a6B… y ORBS 0x614389Ea… verificados pero 0 pools
       // 2026-11-04 18:45 (tBTC de Threshold vía Wormhole; NAKA con pools NAKA/WPOL en QuickSwap)
-      { sym: "tBTC", address: "0x236aa50979D5f3De3Bd1Eeb40E81137F22ab794b" }, { sym: "NAKA", address: "0x311434160D7537be358930def317AfB606C0D737" },
+      { sym: "NAKA", address: "0x311434160D7537be358930def317AfB606C0D737" }, // tBTC 0x236aa509… verificado pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -322,7 +322,7 @@ export const CHAINS = {
       // 2026-11-04 17:45 (stable de Aave y OHM)
       { sym: "GHO", address: "0x7dfF72693f6A4149b17e7C6314655f6A9F7c8B33" }, { sym: "OHM", address: "0xf0cb2dc0db5e6c66B9a70Ac27B06b878da017028" },
       // 2026-11-04 18:45 (Sanko DMT con pools WETH/DMT en Camelot y Uni v3; RPL de Rocket Pool)
-      { sym: "DMT", address: "0x8B0E6f19Ee57089F7649A455D89D7bC6314D04e8" }, { sym: "RPL", address: "0xB766039cc6DB368759C1E56B79AFfE831d0Cc507" },
+      // DMT 0x8B0E6f19… y RPL 0xB766039c… verificados pero 0 pools (DMT: liquidez en Camelot v3; RPL: contra wstETH)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -399,7 +399,7 @@ export const CHAINS = {
       // 2026-11-04 17:45 (pools WETH/ACX y WETH/WCT en Velodrome)
       { sym: "WCT", address: "0xeF4461891DfB3AC8572cCf7C794664A8DD927945" }, // ACX 0xFf733b2A… verificado pero 0 pools fuera de Slipstream
       // 2026-11-04 18:45 (USDT0 nativo —distinto del USDT puenteado— con pools contra WETH/OP/USDT; kBTC de Kraken)
-      { sym: "USDT0", address: "0x01bFF41798a0BcF287b996046Ca68b395DbC1071", symbols: ["USD₮0", "USDT0"] }, { sym: "kBTC", address: "0x73E0C0d45E048D25Fc26Fa3159b0aA04BfA4Db98" },
+      // USDT0 0x01bFF417… y kBTC 0x73E0C0d4… verificados pero 0 pools fuera de Slipstream/v4
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
