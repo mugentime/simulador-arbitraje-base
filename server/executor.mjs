@@ -706,7 +706,11 @@ export class Executor {
       const txData = forced ? data : this.encodeWithCost(plan, (Number((gas.baseFee + prio) * BigInt(rec.gasEst) + (gas.l1Fee ?? 0n)) / 1e18) * ethUsd, ethUsd);
       const fee = forced ?? { maxFeePerGas: maxFee, maxPriorityFeePerGas: prio };
       if (forced) { prio = forced.maxPriorityFeePerGas ?? forced.gasPrice; maxFee = forced.maxFeePerGas ?? forced.gasPrice; }
-      const tx = await this.withSender((w) => w.sendTransaction({ to: this.p1.executor, data: txData, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee }));
+      // Nonce explícito desde "latest" del proveedor de lectura: solo hay una tx en vuelo (ver arriba), así que "latest" es exacto.
+      // El NonceManager tomaba "pending" del RPC de envío y polygon.drpc.org devolvió 22 cuando el siguiente era 14 (15:12 UTC):
+      // la tx quedó con hueco de nonce, sin minarse. NONCE_LATEST=0 vuelve al NonceManager.
+      const nonce = process.env.NONCE_LATEST === "0" ? undefined : await this.provider.getTransactionCount(this.wallet.address, "latest");
+      const tx = await this.withSender((w) => (nonce === undefined ? w : (w.signer ?? w)).sendTransaction({ to: this.p1.executor, data: txData, gasLimit: BigInt(Math.floor(rec.gasEst * 1.25)), ...fee, ...(nonce === undefined ? {} : { nonce }) }));
       this.sentTimes.push(now); this.p1.sent++; rec.sent = tx.hash;
       await this.diag(`fase 1: enviada ${tx.hash} (${rec.route}, neto simulado $${rec.netUsd.toFixed(4)}, nonce ${tx.nonce}, propina ${Number(prio) / 1e9} gwei, maxFee ${Number(maxFee) / 1e9} gwei, vía ${this.sendProv?.lastWinner ?? new URL(this.sendUrl).host})`);
       this.sendProv?.lastReport?.then((r) => this.diag(`fase 1: difusión ${tx.hash.slice(0, 10)}: ${r}`)).catch(() => {});
