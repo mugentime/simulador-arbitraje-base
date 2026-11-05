@@ -99,7 +99,7 @@ export const CHAINS = {
       // 2026-11-05 10:45 (Extra Finance EXTRA con pools USDC/USDbC/cbBTC en Aerodrome; Stargate STG con pools WETH/USDC)
       { sym: "EXTRA", address: "0x2dAD3a13ef0C6366220f989157009e501e7938F8" }, { sym: "STG", address: "0xE3B53AF74a4BF62Ae5511055290838050bf764Df" },
       // 2026-11-05 11:45 (agentes de Virtuals: VaderAI VADER con pools VIRTUAL/WETH; Acolyt ACOLYT con pools WETH)
-      { sym: "VADER", address: "0x731814e491571A2e9eE3c5b1F7f3b962eE8f4870" }, { sym: "ACOLYT", address: "0x79dacb99A8698052a9898E81Fdf883c29efb93cb" },
+      { sym: "ACOLYT", address: "0x79dacb99A8698052a9898E81Fdf883c29efb93cb" }, // VADER 0x731814e4… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["KEYCAT/VIRTUAL", /* 2026-11-05 11:45 peor 3 corridas (s-0.5 p1; KEYCAT sigue con KEYCAT/WETH) */ "DOLA/WETH", /* 2026-11-05 10:45 inactivo (s0 p1 al entrar al ranking; DOLA sigue con DOLA/USDC) */ "AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
