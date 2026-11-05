@@ -18,7 +18,8 @@ import { addrCapFromError, callCapped } from "./logcap.mjs";
 import * as core from "../src/core.js";
 import { chainByKey, verifyChain } from "../src/chains.js";
 import { pairTable, pairLine } from "../src/pairs.js";
-import { beefyTop, beefyTopLine, beefyClmTokens } from "./beefytop.mjs";
+import { beefyTop, beefyTopLine, beefyClmTokens, beefyClmVaults } from "./beefytop.mjs";
+import { poolDepth, cashIn, publicRows } from "./depth.mjs";
 
 // Histograma de motivos agrupado (los contadores persistidos traen claves antiguas con argumentos) y ordenado de mayor a menor.
 function reasonsText(byReason) {
@@ -287,6 +288,18 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, headers);
     return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
+  if (req.url.startsWith("/api/depth") || req.url.startsWith("/api/cashin")) {
+    try {
+      if (!live.pools) { res.writeHead(503, headers); return res.end(JSON.stringify({ error: "universo no listo" })); }
+      const ethUsd = core.referenceEthUsd(live.pools);
+      const rows = poolDepth(live.pools, ethUsd);
+      if (req.url.startsWith("/api/depth")) { res.writeHead(200, headers); return res.end(JSON.stringify({ chain: CHAIN_CFG.key, ethUsd, pools: publicRows(rows).sort((a, b) => b.sellUsd["2%"] - a.sellUsd["2%"]) })); }
+      const q = new URL(req.url, "http://x").searchParams;
+      const minTvl = q.has("minTvl") ? Number(q.get("minTvl")) : 20_000;
+      const vaults = (await beefyClmVaults(CHAIN_CFG.key)).filter((v) => v.tvlUsd >= minTvl);
+      res.writeHead(200, headers); return res.end(JSON.stringify({ chain: CHAIN_CFG.key, ethUsd, minTvl, vaults: cashIn(vaults, rows) }));
+    } catch (e) { res.writeHead(500, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/api/beefy-tokens")) {
     const q = new URL(req.url, "http://x").searchParams;
     try { res.writeHead(200, headers); return res.end(JSON.stringify(await beefyClmTokens(q.get("chain") || "robinhood"))); }
@@ -337,6 +350,20 @@ if (CHAIN_CFG.key === "base") {
   };
   setTimeout(logBeefy, 15_000); setInterval(logBeefy, 6 * 3600_000);
 }
+// profundidad y cash in de los CLM de Beefy de esta cadena (a los 6 min del arranque y cada 6 h)
+async function logCashIn() {
+  try {
+    if (!live.pools) return;
+    const ethUsd = core.referenceEthUsd(live.pools);
+    const rows = poolDepth(live.pools, ethUsd);
+    const vs = cashIn((await beefyClmVaults(CHAIN_CFG.key)).filter((v) => v.tvlUsd >= 20_000), rows);
+    const f = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+    console.log(`${new Date().toISOString()} cashin ${CHAIN_CFG.key} (CLM Beefy TVL ≥ $20k: ${vs.length}; prof. venta 1/2/5 % en USD; por depósito $1k/$5k/$25k: costo entrada+salida, $/día, días para recuperar): ` +
+      vs.map((v) => v.watched ? `${v.vault} ${v.apyPct}% TVL ${f(v.tvlUsd)} [${v.dex} ${v.feeBps}bps, ${v.poolsOfPair} pools] prof ${f(v.sellDepthUsd["1%"])}/${f(v.sellDepthUsd["2%"])}/${f(v.sellDepthUsd["5%"])} · ${v.bySize.map((s) => `$${f(s.depositUsd)}: ${(s.entryCostUsd + s.exitCostUsd).toFixed(0)}/${s.dailyUsd}/${s.breakevenDays}d (APY ${s.effectiveApyPct}%)`).join(" ")}` : `${v.vault} ${v.apyPct}% TVL ${f(v.tvlUsd)} [par no vigilado]`).join(" | "));
+  } catch (e) { console.log(`${new Date().toISOString()} cashin: error ${e.message}`); }
+}
+setTimeout(logCashIn, 6 * 60_000);
+setInterval(logCashIn, 6 * 3600_000);
 // resumen periódico en los logs de Railway
 setInterval(async () => {
   const st = await store.get("stats");

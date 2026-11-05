@@ -71,3 +71,17 @@ export async function beefyClmTokens(chain) {
   }
   return Object.values(out);
 }
+
+// Vaults CLM de Beefy en una cadena con sus dos tokens, APY (el del Reward Pool si existe) y TVL (CLM + Reward Pool).
+export async function beefyClmVaults(chain) {
+  const { all, apy, tvlById } = await load();
+  const govs = [...all.values()].filter((g) => g.type === "gov" && g.chain === chain);
+  const out = [];
+  for (const v of all.values()) {
+    if (v.chain !== chain || v.type !== "cowcentrated" || v.status !== "active" || !Array.isArray(v.depositTokenAddresses) || v.depositTokenAddresses.length !== 2) continue;
+    const reward = govs.find((g) => g.tokenAddress?.toLowerCase() === v.earnContractAddress?.toLowerCase());
+    const apyDec = Math.max(Number(apy[reward?.id]?.totalApy) || 0, Number(apy[v.id]?.totalApy) || 0);
+    out.push({ id: reward?.id ?? v.id, name: v.name, tokens: v.depositTokenAddresses, apy: apyDec, tvlUsd: (tvlById[v.id] ?? 0) + (tvlById[reward?.id] ?? 0) });
+  }
+  return out;
+}
