@@ -13,6 +13,7 @@ import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
 import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
+import { beefyWallet, beefyWalletLine } from "./beefywallet.mjs";
 import { Strategy } from "./strategy.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
@@ -323,6 +324,12 @@ const server = http.createServer(async (req, res) => {
     const r = revertLend?.s ?? (await store.get("rvl")) ?? null;
     res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, line: lpLending?.line() ?? null, revertLine: revertLend?.active ? revertLend.line() : null, ...(s ?? {}), revertLend: r }));
   }
+  if (req.url.startsWith("/api/beefy-wallet")) {
+    const q = new URL(req.url, "http://x").searchParams;
+    const addr = q.get("address") || executor?.p1?.wallet;
+    try { res.writeHead(200, headers); return res.end(J(await beefyWallet(addr, { provider: executor?.provider }))); }
+    catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/api/beefy-tokens")) {
     const q = new URL(req.url, "http://x").searchParams;
     try { res.writeHead(200, headers); return res.end(JSON.stringify(await beefyClmTokens(q.get("chain") || "robinhood"))); }
@@ -386,6 +393,17 @@ async function logCashIn() {
   } catch (e) { console.log(`${new Date().toISOString()} cashin: error ${e.message}`); }
 }
 setTimeout(logCashIn, 6 * 60_000);
+// posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada 6 h (solo el servicio de Base)
+async function logBeefyWallets() {
+  if (CHAIN_CFG.key !== "base") return;
+  const list = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",").map((x) => x.trim()).filter(Boolean);
+  for (const a of list) {
+    try { console.log(`${new Date().toISOString()} ${beefyWalletLine(await beefyWallet(a, { provider: executor?.provider }))}`); }
+    catch (e) { console.log(`${new Date().toISOString()} beefy wallet ${a}: error ${e.message}`); }
+  }
+}
+setTimeout(logBeefyWallets, 2 * 60_000);
+setInterval(logBeefyWallets, 6 * 3600_000);
 setInterval(logCashIn, 6 * 3600_000);
 // resumen periódico en los logs de Railway
 setInterval(async () => {
