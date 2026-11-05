@@ -194,7 +194,7 @@ export const CHAINS = {
       // 2026-11-05 00:45 (BRZ, stable del real brasileño con pools USDT/USDC/WPOL; BNB puenteado PoS con pools WPOL/WETH/AAVE)
       // BRZ 0x4eD14111… y BNB 0xA649325A… verificados pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 01:45 (KlimaDAO KLIMA con pools USDC/WPOL en Sushi/QuickSwap; Vulcan Forged PYR con pools WPOL/WETH en QuickSwap)
-      { sym: "KLIMA", address: "0x4e78011Ce80ee02d2c3e649Fb657E45898257815" }, { sym: "PYR", address: "0x430EF9263E76DAE63c84292C3409D61c598E9682" },
+      // KLIMA 0x4e78011C… y PYR 0x430EF926… verificados pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -274,7 +274,7 @@ export const CHAINS = {
       // 2026-11-04 12:45
       { sym: "NEAR", address: "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63" }, { sym: "INJ", address: "0xa2B726B1145A4773F68593CF171187d8EBe4d495" },
       // 2026-11-04 13:45 (FLOKI descartado: impuesto por transferencia)
-      { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, { sym: "TON", address: "0x76A797A59Ba2C17726896976B7B3747BfD1d220f", symbols: ["TONCOIN"] },
+      { sym: "PEPE", address: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" }, /* TON 0x76A797A5… retirado 2026-11-05 01:45 (sin TON/WBNB quedó con 0 pools: TON/USDT no pasa el filtro de liquidez) */
       // 2026-11-04 14:45
       { sym: "USD1", address: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d" }, { sym: "AAVE", address: "0xfb6115445Bff7b52FeB98650C87f44907E58f802" },
       // 2026-11-04 15:45
@@ -410,7 +410,7 @@ export const CHAINS = {
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH en Uni v3; cbETH de Coinbase con pools WETH en Uni v3/Balancer)
       { sym: "cbETH", address: "0x1DEBd73E752bEaF79865Fd6446b0c970EaE7732f" }, // ENA 0x58538e6A… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 01:45 (SolvBTC con pools WBTC/WETH en Uni v3/Camelot; Ethena sUSDe, OFT, con pools USDC/USDe)
-      { sym: "SolvBTC", address: "0x3647c54c4c2C65bC7a2D63c0Da2809B399DBBDC0" }, { sym: "sUSDe", address: "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2" },
+      // SolvBTC 0x3647c54c… y sUSDe 0x211Cc4DD… verificados pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -511,7 +511,7 @@ export const CHAINS = {
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH/USDC en Velodrome/Uni v3)
       // ENA 0x58538e6A… verificado pero 0 pools fuera de Slipstream
       // 2026-11-05 01:45 (CyberConnect CYBER con pools OP/USDC/WETH en Velodrome/Uni v3; Ethena sUSDe, OFT)
-      { sym: "CYBER", address: "0x14778860E937f509e651192a90589dE711Fb88a9" }, { sym: "sUSDe", address: "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2" },
+      // CYBER 0x14778860… y sUSDe 0x211Cc4DD… verificados pero 0 pools fuera de Slipstream
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
