@@ -175,6 +175,24 @@ export function rawFromPending(tx) {
   return raw;
 }
 
+/** Cuenta el selector (4 bytes) del calldata por destino desconocido (para identificar el agregador y su ABI). */
+export function noteUnknownSelector(m, to, input) {
+  const sel = String(input).slice(0, 10).toLowerCase();
+  const bySel = ((m.unknownSel ??= {})[to] ??= {});
+  bySel[sel] = (bySel[sel] ?? 0) + 1;
+  if (Object.keys(bySel).length > 12) for (const [k, n] of Object.entries(bySel)) if (n < 2) delete bySel[k];
+}
+
+/** Línea con los N destinos no decodificados más frecuentes: dirección completa y sus 3 selectores principales. */
+export function unknownDestLine(m, top = 6) {
+  const u = Object.entries(m.unknownTo ?? {}).sort((a, b) => b[1] - a[1]).slice(0, top);
+  if (!u.length) return null;
+  return "destinos no decodificados (completos): " + u.map(([a, n]) => {
+    const sels = Object.entries(m.unknownSel?.[a] ?? {}).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, v]) => `${k}×${v}`).join(" ");
+    return `${a} ${n}${sels ? ` [${sels}]` : ""}`;
+  }).join(" | ");
+}
+
 export function emptyMempool() {
   return { enabled: false, ws: null, connected: false, seen: 0, routerTxs: 0, decoded: 0, modeled: 0, profitable: 0, bundles: 0, lastError: null, lastOpp: null, jit: emptyJit() };
 }
@@ -318,6 +336,16 @@ export class MempoolWatcher {
   }
   retry(url) { this.fails = this.fails ?? {}; const n = (this.fails[url] = (this.fails[url] ?? 0) + 1); setTimeout(() => this.connect(url), Math.min(120_000, 5000 * n)); }
 
+  /** Cada UNKNOWN_LOG_MS (30 min) deja en la bitácora los destinos no decodificados con dirección completa y selectores. */
+  maybeLogUnknown(now = Date.now()) {
+    const every = Number(process.env.UNKNOWN_LOG_MS ?? 1_800_000);
+    if (!every || now - (this.lastUnknownLog ?? 0) < every) return null;
+    this.lastUnknownLog = now;
+    const line = unknownDestLine(this.m);
+    if (line) this.diag(`mempool: ${line}`).catch(() => {});
+    return line;
+  }
+
   async onHash(h) {
     // sin tx completas habría que pedir cada una; solo se piden las que van a routers sería imposible saberlo antes,
     // así que se limita el ritmo para no saturar el RPC
@@ -334,7 +362,9 @@ export class MempoolWatcher {
       // destinos desconocidos con calldata de swap probable (≥ 4 bytes y valor o datos largos): para saber qué agregador decodificar
       const inp = tx.input ?? tx.data ?? "0x";
       if (inp.length >= 10 + 64 * 3) { const k = String(tx.to).toLowerCase(); const u = (this.m.unknownTo ??= {}); u[k] = (u[k] ?? 0) + 1;
-        if (Object.keys(u).length > 400) for (const [a, n] of Object.entries(u)) if (n < 3) delete u[a]; }
+        noteUnknownSelector(this.m, k, inp);
+        if (Object.keys(u).length > 400) for (const [a, n] of Object.entries(u)) if (n < 3) { delete u[a]; delete this.m.unknownSel?.[a]; }
+        this.maybeLogUnknown(); }
       return;
     }
     this.m.routerTxs++;
