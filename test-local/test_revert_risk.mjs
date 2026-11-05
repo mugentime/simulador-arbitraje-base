@@ -6,6 +6,7 @@ const mk = (spent) => {
   ex.p1 = { pending: [], sent: 0, recent: [], revertGas: spent ? [{ t: Date.now() - 1000, usd: spent }] : [] };
   ex.limits = { maxTxPerHour: 5, maxGasUsd: 1, minSendNetUsd: 0.01, revertBudgetUsdPerHour: 0.25, tipShare: 0.6, maxTipGwei: 2, bundleSend: false };
   ex.iface = { encodeFunctionData: () => "0x" }; ex.encodeWithCost = () => "0x"; ex.save = async () => {}; ex.diag = async () => {};
+  ex.provider = { getTransactionCount: async () => 1 }; ex.wallet = { address: "0x0" };
   ex.sendUrl = "https://rpc.test"; ex.sent = 0; ex.withSender = async () => { ex.sent++; return { hash: "0xhash", nonce: 1 }; };
   return ex;
 };

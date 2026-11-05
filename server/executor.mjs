@@ -691,7 +691,9 @@ export class Executor {
       const tipWei = BigInt(Math.floor((tipUsd / ethUsd) * 1e18 / Math.max(1, rec.gasEst)));
       const capWei = BigInt(Math.floor(this.limits.maxTipGwei * 1e9));
       let prio = gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI;
-      if (!forced && tipWei > prio) prio = tipWei < capWei ? tipWei : capWei;
+      // MAX_TIP_GWEI es un tope sobre la propina EXTRA, no absoluto: en Polygon la de mercado es ≥ 25 gwei y el tope absoluto
+      // de 2 gwei la bajaba por debajo del mínimo del nodo ("gas tip cap 2000000000, minimum needed 25000000000", 15:29 UTC).
+      if (!forced && tipWei > prio) { const top = prio + capWei; prio = tipWei < top ? tipWei : top; }
       if (!forced) rec.netUsd -= (Number(prio - (gas.priority > core.MIN_PRIORITY_WEI ? gas.priority : core.MIN_PRIORITY_WEI)) * rec.gasEst / 1e18) * ethUsd; // neto esperado tras la propina
       if (rec.netUsd <= 0) { rec.sent = "omitida: la propina necesaria se come el neto"; return; }
       // lo que costaría si revierte (gas completo con la propina ofrecida): no puede pasar del presupuesto que queda en la hora.

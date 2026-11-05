@@ -94,6 +94,8 @@ export const CHAINS = {
       { sym: "sUSDS", address: "0x5875eEE11Cf8398102FdAd704C9E96607675467a" }, // wsuperOETHb 0x7FcD174E… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 08:45 (TN100x memecoin con pools WETH/USDC/HAMFREN; ResearchCoin RSC con pools WETH/BIO/REI en Uniswap/Aerodrome)
       { sym: "TN100x", address: "0x5B5dee44552546ECEA05EDeA01DCD7Be7aa6144A" }, { sym: "RSC", address: "0xFbB75A59193A3525a8825BeBe7D4b56899E2f7e1" },
+      // 2026-11-05 09:45 (Mamo MAMO con pools en Aerodrome/Uniswap contra WETH/VIRTUAL/AIXBT/cbXRP; Ethena sUSDe OFT con pool sUSDe/USDC)
+      { sym: "MAMO", address: "0x7300B37DfdfAb110d83290A29DfB31B1740219fE" }, { sym: "sUSDe", address: "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -162,6 +164,7 @@ export const CHAINS = {
     ws: ["wss://polygon-bor-rpc.publicnode.com", "wss://polygon.drpc.org"],
     fastRpc: "https://polygon-bor-rpc.publicnode.com", fastMs: 400,
     publicMempool: true, l1GasOracle: null, blockMs: 2000,
+    minPriorityGwei: 25, // Bor rechaza propinas < 25 gwei ("gas tip cap … minimum needed 25000000000", 2026-11-05 15:29 UTC)
     tokens: {
       WETH: { address: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", decimals: 18, label: "WPOL" },
       USDC: { address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6, label: "USDC" },
@@ -345,6 +348,8 @@ export const CHAINS = {
       // 2026-11-05 07:45 (48 Club KOGE con pools WBNB/USD1/USDT en PancakeSwap v3; Four FORM con pools WBNB/TST/USDT)
       // 2026-11-05 08:45 (Solv Protocol SOLV con pools WBNB/USDT en PancakeSwap; Polyhedra ZKJ con pools WBNB/USDC/USDT en PancakeSwap v3)
       { sym: "SOLV", address: "0xabE8E5CabE24Cb36df9540088fD7cE1175b9bc52" }, { sym: "ZKJ", address: "0xC71B5F631354BE6853eFe9C3Ab6b9590F8302e81", symbols: ["ZK"] },
+      // 2026-11-05 09:45 (MYX Finance MYX con pools WBNB/USDT en PancakeSwap; Lorenzo BANK con pools WBNB)
+      { sym: "MYX", address: "0xD82544bf0dfe8385eF8FA34D67e6e4940CC63e16" }, { sym: "BANK", address: "0x3AeE7602b612de36088F3ffEd8c8f10E86EbF2bF" },
       { sym: "KOGE", address: "0xe6DF05CE8C8301223373CF5B969AFCb1498c5528" }, // FORM 0x5b73A93b… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
@@ -437,7 +442,7 @@ export const CHAINS = {
       // 2026-11-04 09:45
       { sym: "RDNT", address: "0x3082CC23568eA640225c2467653dB90e9250AaA0" }, // STG 0x6694340f… retirado 13:45 (STG/WETH y ARB/STG s0)
       // 2026-11-04 10:45
-      { sym: "SUSHI", address: "0xd4d42F0b6DEF4CE0383636770eF773390d85c61A" }, { sym: "JOE", address: "0x371c7ec6D8039ff7933a2AA28EB827Ffe1F52f07" },
+      /* SUSHI 0xd4d42F0b… retirado 2026-11-05 09:45 (SUSHI/WETH peor 3 corridas, su único par) */ { sym: "JOE", address: "0x371c7ec6D8039ff7933a2AA28EB827Ffe1F52f07" },
       // 2026-11-04 11:45
       { sym: "tBTC", address: "0x6c84a8f1c29108F47a79964b5Fe888D4f4D0dE40" }, // FRAX 0x17FC002b… retirado 15:45 (FRAX/USDC y FRAX/USDT s0, 1 pool cada uno)
       // 2026-11-04 12:45
@@ -588,7 +593,7 @@ export const CHAINS = {
       // 2026-11-05 01:45 (CyberConnect CYBER con pools OP/USDC/WETH en Velodrome/Uni v3; Ethena sUSDe, OFT)
       // CYBER 0x14778860… y sUSDe 0x211Cc4DD… verificados pero 0 pools fuera de Slipstream
       // 2026-11-05 05:45 (Lyra LYRA con pools OP/USDC.e/VELO en Velodrome)
-      { sym: "LYRA", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb" },
+      // LYRA 0x50c57259… retirado 2026-11-05 09:45 (único pool LYRA/WETH s0 al entrar al ranking)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores

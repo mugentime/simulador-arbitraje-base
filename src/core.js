@@ -86,7 +86,7 @@ export function applyChain(cfg) {
   OBSERVE_TOKENS = new Set((cfg.observeTokens ?? []).map((a) => a.toLowerCase()));
   EXCLUDED_PAIRS = excludedSet(cfg.excludedPairs ?? []);
   BLOCKED_TOKENS = new Set((cfg.blockedTokens ?? []).map((a) => a.toLowerCase()));
-  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [], fcfs: !!cfg.fcfs };
+  CHAIN = { key: cfg.key, name: cfg.name, id: cfg.id, native: cfg.native, blockMs: cfg.blockMs ?? 2000, publicMempool: !!cfg.publicMempool, beefy: cfg.beefy, morphoApiChainId: cfg.morphoApiChainId ?? null, aavePool: cfg.aavePool ?? null, morpho: cfg.morpho ?? null, fastRpc: cfg.fastRpc, fastMs: cfg.fastMs ?? 250, rpcs: cfg.rpcs ?? [], fcfs: !!cfg.fcfs, minPriorityWei: cfg.minPriorityGwei ? BigInt(Math.round(cfg.minPriorityGwei * 1e9)) : 0n };
   CHAIN_ID = BigInt(cfg.id);
   TOKENS = Object.fromEntries(Object.entries(cfg.tokens).map(([k, t]) => [k, { address: t.address, decimals: t.decimals, label: t.label ?? k }]));
   EXTRA_TOKENS = (cfg.extraTokens ?? []).map((t) => ({ ...t }));
@@ -791,6 +791,12 @@ export function pickLender(lenders, sym, amount) {
 // ------------------------------------------------------------------ Gas real de Base
 
 export const MIN_PRIORITY_WEI = 1_000_000n; // 0.001 gwei
+// Piso de propina de la cadena (CHAIN.minPriorityWei; Polygon 25 gwei). Si eth_maxPriorityFeePerGas falla (429) devuelve 0
+// y sin este piso la tx salía con una propina que el nodo rechaza.
+export function priorityFloor(p) {
+  const floor = (CHAIN.minPriorityWei ?? 0n) > MIN_PRIORITY_WEI ? CHAIN.minPriorityWei : MIN_PRIORITY_WEI;
+  return p > floor ? p : floor;
+}
 export async function readGas(ethers, provider) {
   const iface = makeIface(ethers);
   const [block, prio] = await Promise.all([
@@ -807,7 +813,7 @@ export async function readGas(ethers, provider) {
     number: block.number,
     timestamp: block.timestamp,
     baseFee: block.baseFeePerGas ?? 0n,
-    priority: BigInt(prio) > MIN_PRIORITY_WEI ? BigInt(prio) : MIN_PRIORITY_WEI, // piso: el secuenciador no incluye tx con propina 0
+    priority: priorityFloor(BigInt(prio)), // piso: el secuenciador no incluye tx con propina 0; Polygon exige ≥ 25 gwei
     l1Fee,
   };
 }
