@@ -1,0 +1,143 @@
+// Estrategia activada por Jose (2026-11-05): depósito simple de USDC en el vault de préstamo de Revert Lend (Uniswap v3, Base),
+// financiado con el ETH de la wallet del executor. Sin apalancamiento: no hay precio que liquide.
+// Una sola ejecución por etiqueta (STRATEGY_RUN=<etiqueta>); el estado persiste en el volumen.
+//   Entrada (STRATEGY=revert-usdc): swap ETH→USDC (Uniswap v3 0.05 %) → approve → vault.deposit. Reserva de gas ≥ STRATEGY_RESERVE_ETH.
+//   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
+// Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
+import { ethers } from "ethers";
+
+export const BASE = {
+  WETH: "0x4200000000000000000000000000000000000006",
+  USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  ROUTER: "0x2626664c2603336E57B271c5C0b26F421741e481", // Uniswap SwapRouter02 (Base)
+  VAULT: "0x36AEAe0E411a1E28372e0d66f02E57744EbE7599", // Revert Lend V3Vault (Uniswap v3), activo USDC
+  FEE: 500,
+};
+const I = new ethers.Interface([
+  "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)",
+  "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
+  "function multicall(bytes[] data) payable returns (bytes[] results)",
+  "function approve(address,uint256) returns (bool)",
+  "function allowance(address,address) view returns (uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function asset() view returns (address)",
+  "function deposit(uint256 assets,address receiver) returns (uint256)",
+  "function redeem(uint256 shares,address receiver,address owner) returns (uint256)",
+  "function convertToAssets(uint256) view returns (uint256)",
+  "function maxDeposit(address) view returns (uint256)",
+]);
+
+/** Cantidad de ETH a usar: saldo − reserva − colchón de gas de las 3 tx (nunca negativo). */
+export function spendable(balanceWei, reserveWei, gasBufferWei) {
+  const x = balanceWei - reserveWei - gasBufferWei;
+  return x > 0n ? x : 0n;
+}
+/** Salida mínima aceptada: lo que devuelve la simulación menos el deslizamiento, y no peor que el precio de referencia −2 %. */
+export function minOut(simOut, slipBps, refOut) {
+  const m = simOut * BigInt(10_000 - slipBps) / 10_000n;
+  if (refOut && simOut * 100n < refOut * 98n) throw new Error(`cotización ${simOut} más de 2 % peor que la referencia ${refOut}`);
+  return m;
+}
+
+export class Strategy {
+  constructor({ executor, provider, store, diag }) {
+    this.x = executor; this.provider = provider; this.store = store; this.diag = diag;
+    this.kind = process.env.STRATEGY || ""; this.label = process.env.STRATEGY_RUN || "";
+    this.reserve = ethers.parseEther(process.env.STRATEGY_RESERVE_ETH || "0.002");
+    this.slipBps = Number(process.env.STRATEGY_SLIP_BPS ?? 50);
+    this.busy = false; this.done = false;
+  }
+  get wanted() { return !!this.kind && !!this.label && this.x?.wallet && this.x.mode === "live"; }
+
+  async init() { this.s = (await this.store.get("strategy")) ?? { runs: {} }; }
+  async save() { await this.store.set("strategy", this.s); }
+  get me() { return this.x.wallet.address; }
+
+  async sim(tx) {
+    const t = { from: this.me, ...tx };
+    await this.provider.call(t); // revierte → lanza
+    const g = await this.provider.estimateGas(t);
+    return g * 13n / 10n;
+  }
+  async send(step, tx) {
+    const gasLimit = await this.sim(tx);
+    const eth = await this.provider.getBalance(this.me);
+    const fee = await this.provider.getFeeData();
+    const cost = gasLimit * (fee.maxFeePerGas ?? fee.gasPrice ?? 0n);
+    if (eth - (tx.value ?? 0n) - cost < this.reserve) throw new Error(`${step}: dejaría menos de la reserva de gas`);
+    const r = await this.x.withSender((w) => w.sendTransaction({ ...tx, gasLimit }));
+    await this.diag(`estrategia ${this.kind}: ${step} enviada ${r.hash}`);
+    const rc = await this.provider.waitForTransaction(r.hash, 1, 180_000);
+    if (!rc || rc.status !== 1) throw new Error(`${step}: ${r.hash} ${rc ? "revertida" : "sin recibo"}`);
+    this.run.txs.push({ step, hash: r.hash, block: rc.blockNumber, gasUsed: String(rc.gasUsed) }); await this.save();
+    return rc;
+  }
+
+  async onBlock(ctx) {
+    if (this.done || this.busy || !this.wanted) return;
+    this.busy = true;
+    try {
+      this.run = this.s.runs[this.label] ??= { kind: this.kind, startedAt: Date.now(), txs: [], status: "pendiente" };
+      if (this.run.status === "hecho" || this.run.status === "error") { this.done = true; return; }
+      if (this.kind === "revert-usdc") await this.enter(ctx);
+      else if (this.kind === "revert-usdc-exit") await this.exit(ctx);
+      else throw new Error(`STRATEGY desconocida: ${this.kind}`);
+      this.run.status = "hecho"; this.run.endedAt = Date.now();
+    } catch (e) {
+      this.run.status = "error"; this.run.error = (e.shortMessage || e.message).slice(0, 300);
+      await this.diag(`estrategia ${this.kind}: detenida · ${this.run.error}`);
+    } finally { this.done = true; this.busy = false; await this.save().catch(() => {}); }
+  }
+
+  async enter(ctx) {
+    const usdc = new ethers.Contract(BASE.USDC, I, this.provider), vault = new ethers.Contract(BASE.VAULT, I, this.provider);
+    if ((await vault.asset()).toLowerCase() !== BASE.USDC.toLowerCase()) throw new Error("el vault no es de USDC");
+    // 1) swap ETH→USDC (solo si este run aún no lo hizo)
+    if (this.run.usdcIn === undefined) {
+      const bal = await this.provider.getBalance(this.me);
+      const amountIn = spendable(bal, this.reserve, ethers.parseEther("0.0002"));
+      if (amountIn < ethers.parseEther("0.001")) throw new Error(`saldo insuficiente (${ethers.formatEther(bal)} ETH)`);
+      const p = { tokenIn: BASE.WETH, tokenOut: BASE.USDC, fee: BASE.FEE, recipient: this.me, amountIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
+      const simOut = I.decodeFunctionResult("exactInputSingle", await this.provider.call({ from: this.me, to: BASE.ROUTER, value: amountIn, data: I.encodeFunctionData("exactInputSingle", [p]) }))[0];
+      const ref = ctx?.ethUsd ? BigInt(Math.floor(Number(ethers.formatEther(amountIn)) * ctx.ethUsd * 1e6)) : 0n;
+      p.amountOutMinimum = minOut(simOut, this.slipBps, ref);
+      const before = await usdc.balanceOf(this.me);
+      await this.diag(`estrategia revert-usdc: ${ethers.formatEther(amountIn)} ETH de ${ethers.formatEther(bal)} (reserva ${ethers.formatEther(this.reserve)}) → ~${ethers.formatUnits(simOut, 6)} USDC (ETH $${ctx?.ethUsd?.toFixed?.(2) ?? "?"})`);
+      await this.send("swap ETH→USDC", { to: BASE.ROUTER, value: amountIn, data: I.encodeFunctionData("exactInputSingle", [p]) });
+      const got = (await usdc.balanceOf(this.me)) - before;
+      this.run.ethIn = ethers.formatEther(amountIn); this.run.usdcIn = String(got); await this.save();
+    }
+    const amt = BigInt(this.run.usdcIn);
+    if (amt <= 0n) throw new Error("el swap no dejó USDC");
+    const maxDep = await vault.maxDeposit(this.me).catch(() => null);
+    if (maxDep !== null && maxDep < amt) throw new Error(`el vault solo admite ${ethers.formatUnits(maxDep, 6)} USDC ahora`);
+    // 2) approve exacto 3) deposit
+    if ((await usdc.allowance(this.me, BASE.VAULT)) < amt) await this.send("approve USDC", { to: BASE.USDC, data: I.encodeFunctionData("approve", [BASE.VAULT, amt]) });
+    const sharesBefore = await vault.balanceOf(this.me);
+    await this.send("deposit Revert Lend", { to: BASE.VAULT, data: I.encodeFunctionData("deposit", [amt, this.me]) });
+    const shares = (await vault.balanceOf(this.me)) - sharesBefore;
+    this.run.shares = String(shares);
+    await this.diag(`estrategia revert-usdc: activa · ${ethers.formatUnits(amt, 6)} USDC depositados en Revert Lend (vault ${BASE.VAULT}) · participaciones ${shares} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
+  }
+
+  async exit(ctx) {
+    const usdc = new ethers.Contract(BASE.USDC, I, this.provider), vault = new ethers.Contract(BASE.VAULT, I, this.provider);
+    const shares = await vault.balanceOf(this.me);
+    if (shares > 0n) {
+      const before = await usdc.balanceOf(this.me);
+      await this.send("redeem Revert Lend", { to: BASE.VAULT, data: I.encodeFunctionData("redeem", [shares, this.me, this.me]) });
+      this.run.usdcOut = String((await usdc.balanceOf(this.me)) - before); await this.save();
+    }
+    const amt = this.run.usdcOut ? BigInt(this.run.usdcOut) : 0n;
+    if (amt <= 0n) throw new Error("no hay USDC del vault que vender");
+    if ((await usdc.allowance(this.me, BASE.ROUTER)) < amt) await this.send("approve USDC→router", { to: BASE.USDC, data: I.encodeFunctionData("approve", [BASE.ROUTER, amt]) });
+    // swap a WETH con el router como destinatario y unwrap a ETH en la misma tx (multicall)
+    const p = { tokenIn: BASE.USDC, tokenOut: BASE.WETH, fee: BASE.FEE, recipient: BASE.ROUTER, amountIn: amt, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
+    const simOut = I.decodeFunctionResult("exactInputSingle", await this.provider.call({ from: this.me, to: BASE.ROUTER, data: I.encodeFunctionData("exactInputSingle", [p]) }))[0];
+    const ref = ctx?.ethUsd ? BigInt(Math.floor(Number(amt) / 1e6 / ctx.ethUsd * 1e18)) : 0n;
+    p.amountOutMinimum = minOut(simOut, this.slipBps, ref);
+    const data = I.encodeFunctionData("multicall", [[I.encodeFunctionData("exactInputSingle", [p]), I.encodeFunctionData("unwrapWETH9", [p.amountOutMinimum, this.me])]]);
+    await this.send("swap USDC→ETH", { to: BASE.ROUTER, data });
+    await this.diag(`estrategia revert-usdc-exit: cerrada · ${ethers.formatUnits(amt, 6)} USDC → ETH · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
+  }
+}
