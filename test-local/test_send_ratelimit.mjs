@@ -2,7 +2,7 @@
 // y se salta en los envíos siguientes.
 import http from "node:http";
 import { ethers } from "ethers";
-import { FanoutProvider, noRetryRequest, RATE_LIMIT_RE } from "../server/executor.mjs";
+import { FanoutProvider, noRetryRequest, RATE_LIMIT_RE, sendBackoffMin } from "../server/executor.mjs";
 process.on("unhandledRejection", () => {}); // el servidor registra estas como "promesa rechazada"
 const hits = { lim: 0, ok: 0 };
 function node(name, limited) {
@@ -36,6 +36,11 @@ if (ex) {
   const before = hits.lim; ex.sendIdx = 0; ex.sendProv = null; // como tras reiniciar el índice
   await ex.withSender(send);
   ok(hits.lim === before, "el RPC en 429 se salta en el siguiente envío");
+  const until = ex.sendBad.get(lim.url) - Date.now();
+  ok(until > 600 * 60e3, `cuota mensual agotada: se salta ${(until / 3600e3).toFixed(1)} h (antes 30 min: cada envío horario volvía a tocarlo)`);
 } else console.log("(Executor no exportado: se omite la parte 2)");
+ok(sendBackoffMin("exceeded maximum retry limit", {}) === 30, "429 genérico: 30 min");
+ok(sendBackoffMin("x Monthly capacity limit exceeded.", {}) === 720, "cuota mensual: 720 min");
+ok(sendBackoffMin("execution reverted", {}) === 0, "error de la tx: no se salta el RPC");
 lim.srv.close(); good.srv.close();
 console.log("TODO OK");

@@ -62,6 +62,15 @@ export function noRetryRequest(url, timeoutMs = 4000) {
 }
 /** Errores de cuota/límite del nodo (no de la tx): el RPC se salta durante un rato. */
 export const RATE_LIMIT_RE = /429|capacity limit|too many requests|exceeded maximum retry|rate limit|compute units/i;
+/** Cuota MENSUAL agotada (Alchemy "Monthly capacity limit exceeded"): no se recupera en 30 min. Con el salto de 30 min
+ *  cada envío de Base (uno cada ~hora) volvía a empezar por Alchemy: el primer intento difundía la tx por el secuenciador
+ *  pero fallaba al leer (getBlockNumber en Alchemy) y se reenviaba por otro RPC → "enviada" ~500 ms después (01:42 UTC). */
+export const QUOTA_RE = /monthly|capacity limit|compute units per month|quota/i;
+/** Minutos que se salta un RPC de envío según el error (cuota mensual: SEND_RPC_QUOTA_BACKOFF_MIN, 720 por defecto). */
+export function sendBackoffMin(msg, env = process.env) {
+  if (!RATE_LIMIT_RE.test(msg ?? "")) return 0;
+  return QUOTA_RE.test(msg) ? Number(env.SEND_RPC_QUOTA_BACKOFF_MIN ?? 720) : Number(env.SEND_RPC_BACKOFF_MIN ?? 30);
+}
 
 async function postRaw(url, raw, timeoutMs = 4000) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeoutMs);
@@ -207,7 +216,7 @@ export class Executor {
           if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
           // errores propios de la tx (no del nodo): no tiene sentido probar otro RPC
           if (/insufficient funds|execution reverted|CALL_EXCEPTION|underpriced|already known|tip cap|fee cap|below minimum|exceeds block gas limit|intrinsic gas/i.test(m)) throw e;
-          const limited = RATE_LIMIT_RE.test(m), backoffMin = Number(process.env.SEND_RPC_BACKOFF_MIN ?? 30);
+          const backoffMin = sendBackoffMin(m + " " + String(e?.info?.responseBody ?? e?.error?.message ?? "")), limited = backoffMin > 0;
           if (limited) this.sendBad.set(this.sendUrl, Date.now() + backoffMin * 60e3);
           await this.diag(`fase 1: el RPC ${new URL(this.sendUrl).host} rechazó el envío en ${Date.now() - t0} ms (${m.slice(0, 160)})${limited ? `; se salta ${backoffMin} min` : ""}; probando otro`);
           this.rotateSender();
