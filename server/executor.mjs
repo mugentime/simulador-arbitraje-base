@@ -365,8 +365,12 @@ export class Executor {
     const hops = [];
     for (const p of r.route) {
       const tokenOut = core.other(p, tokenIn).address;
-      if (p.kind === "v4") hops.push([2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing, p.native ? ethers.AbiCoder.defaultAbiCoder().encode(["address"], [core.TOKENS.WETH.address]) : "0x"]);
-      else hops.push([p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0, "0x"]);
+      if (p.kind === "split") {
+        // salto repartido: DexKind.SPLIT (5) con las partes y sus bps codificadas en `extra`
+        if (p.parts.some((q) => q.kind === "v4" && !q.tickSpacing)) return null;
+        const parts = p.parts.map((q) => hopTuple(q, tokenIn, tokenOut));
+        hops.push([5, ethers.ZeroAddress, tokenIn, tokenOut, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode([`${HOP_T}[]`, "uint16[]"], [parts, p.bps])]);
+      } else hops.push(hopTuple(p, tokenIn, tokenOut));
       tokenIn = tokenOut;
     }
     if (tokenIn !== r.startTok.address) return null;
@@ -827,6 +831,12 @@ export class Executor {
   async refreshBalance() {
     if (this.wallet) { try { this.p1.balanceEth = Number(ethers.formatEther(await this.provider.getBalance(this.wallet.address))); } catch { /* red */ } }
   }
+}
+
+const HOP_T = "tuple(uint8,address,address,address,uint16,uint24,int24,bytes)";
+function hopTuple(p, tokenIn, tokenOut) {
+  if (p.kind === "v4") return [2, p.manager, tokenIn, tokenOut, 0, Number(p.feePips), p.tickSpacing, p.native ? ethers.AbiCoder.defaultAbiCoder().encode(["address"], [core.TOKENS.WETH.address]) : "0x"];
+  return [p.kind === "v3" ? 1 : 0, p.address, tokenIn, tokenOut, p.kind === "v3" ? 0 : Math.min(65535, Math.round(p.feeBps)), 0, 0, "0x"];
 }
 
 function label(r) {

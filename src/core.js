@@ -570,6 +570,21 @@ export function other(p, tokenAddr) {
   return tokenAddr === p.token0.address ? p.token1 : p.token0;
 }
 
+/** Salto sintético que reparte el monto entre dos pools del mismo par (`bpsA` = parte del primero, en bps). */
+export function makeSplit(a, b, bpsA) {
+  const same = b.token0.address === a.token0.address;
+  const [b0, b1] = same ? [b.reserve0, b.reserve1] : [b.reserve1, b.reserve0];
+  return {
+    kind: "split", parts: [a, b], bps: [bpsA, 10000 - bpsA], token0: a.token0, token1: a.token1,
+    reserve0: a.reserve0 + b0, reserve1: a.reserve1 + b1,
+    address: `split:${a.address}+${b.address}:${bpsA}`, dex: `reparto ${a.dex} ${bpsA / 100}% + ${b.dex} ${(10000 - bpsA) / 100}%`,
+    feeBps: (a.feeBps * bpsA + b.feeBps * (10000 - bpsA)) / 10000,
+  };
+}
+/** Pools físicos de una ruta (los saltos repartidos cuentan cada parte). */
+export const routePools = (route) => route.flatMap((p) => (p.kind === "split" ? p.parts : [p]));
+const swapsOf = (route) => routePools(route).length;
+
 /**
  * Uniswap v4: la comisión que paga el trader es lpFee + protocolFee − lpFee·protocolFee/1e6 (ProtocolFeeLibrary.
  * calculateSwapFee), con protocolFee por dirección (12 bits bajos: 0→1, 12 bits altos: 1→0) en slot0. `feePips`
@@ -592,6 +607,12 @@ export function feeFor(p, tokenIn) {
 /** Salida de un pool para `amountIn` de `tokenIn`: exacta con cruce de ticks si el pool tiene tabla de ticks. */
 export function swapOut(p, tokenIn, amountIn) {
   if (amountIn <= 0n) return 0n;
+  if (p.kind === "split") {
+    // mismo par repartido entre varios pools (la última parte recibe el resto, como el contrato)
+    let left = amountIn, out = 0n;
+    p.parts.forEach((q, i) => { const a = i === p.parts.length - 1 ? left : (amountIn * BigInt(p.bps[i])) / 10000n; left -= a; out += swapOut(q, tokenIn, a); });
+    return out;
+  }
   const feePips = feeFor(p, tokenIn);
   if ((p.kind === "v3" || p.kind === "v4") && p.ticks && p.liquidity !== undefined) {
     if (p.liquidity === 0n && !p.ticks.length) return 0n;
@@ -641,13 +662,14 @@ export function poolPrice(p, base = "WETH") {
 
 // ------------------------------------------------------------------ Ciclos
 
-export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3, maxCycles = 15000) {
+export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = Number(process.env.MAX_HOPS ?? 4), maxCycles = 15000, max4 = Number(process.env.MAX_CYCLES_4 ?? 4000)) {
   const byTok = new Map();
   for (const p of pools) for (const t of [p.token0.address, p.token1.address]) {
     if (!byTok.has(t)) byTok.set(t, []);
     byTok.get(t).push(p);
   }
   const out = [];
+  const four = [];
   const seen = new Set();
   const add = (start, route) => {
     const k = start + ":" + route.map((p) => p.address).join(">");
@@ -669,19 +691,33 @@ export function enumerateCycles(pools, startSyms = ["WETH", "USDC"], maxHops = 3
           const t2 = other(b, t1).address;
           for (const c of byTok.get(t2) || []) {
             if (c === a || c === b) continue;
-            if (other(c, t2).address === s) add(s, [a, b, c]);
+            const t3 = other(c, t2).address;
+            if (t3 === s) add(s, [a, b, c]);
+            else if (maxHops >= 4 && t3 !== t1 && four.length < 400000) {
+              // 4 saltos: menos disputados (más gas y comisiones, pero menos bots los recorren)
+              for (const d of byTok.get(t3) || []) {
+                if (d === a || d === b || d === c) continue;
+                if (other(d, t3).address === s) four.push({ start: s, route: [a, b, c, d] });
+              }
+            }
           }
         }
       }
     }
   }
+  const byLiq = (x, y) => (liqOf(y) > liqOf(x) ? 1 : liqOf(y) < liqOf(x) ? -1 : 0);
+  let base = out;
   if (out.length > maxCycles) {
     // demasiados ciclos: se conservan todos los de 2 saltos y los de 3 saltos con más liquidez
     const two = out.filter((c) => c.route.length === 2), three = out.filter((c) => c.route.length === 3);
-    three.sort((x, y) => (liqOf(y) > liqOf(x) ? 1 : liqOf(y) < liqOf(x) ? -1 : 0));
-    return two.concat(three.slice(0, Math.max(0, maxCycles - two.length)));
+    three.sort(byLiq);
+    base = two.concat(three.slice(0, Math.max(0, maxCycles - two.length)));
   }
-  return out;
+  // ciclos de 4 saltos: cupo propio, los de más liquidez (no desplazan a los de 2 y 3)
+  four.sort(byLiq);
+  let added4 = 0;
+  for (const c of four) { if (added4 >= max4) break; added4++; const k = c.start + ":" + c.route.map((p) => p.address).join(">"); if (!seen.has(k)) { seen.add(k); base.push({ ...c, key: k }); } }
+  return base;
 }
 
 // ------------------------------------------------------------------ Proveedores de flashloan
@@ -792,7 +828,7 @@ function ternaryMax(f, lo, hi) {
 export function lenderSegments(lenders, sym, route = null) {
   const segs = [];
   // un pool v3 que presta queda bloqueado durante el flash: no sirve si la ruta pasa por él
-  if (route) { const inRoute = new Set(route.map((p) => String(p.address).toLowerCase())); lenders = lenders.filter((l) => !l.pool || !inRoute.has(String(l.address).toLowerCase())); }
+  if (route) { const inRoute = new Set(routePools(route).map((p) => String(p.address).toLowerCase())); lenders = lenders.filter((l) => !l.pool || !inRoute.has(String(l.address).toLowerCase())); }
   const free = lenders.filter((l) => l.ok && l.feeBps === 0n && (l.liquidity[sym] ?? 0n) > 0n)
     .sort((a, b) => (b.liquidity[sym] > a.liquidity[sym] ? 1 : -1));
   if (free.length) segs.push({ name: free[0].name, max: free[0].liquidity[sym], bps: 0n });
@@ -866,7 +902,7 @@ export function withSwap(pools, poolAddr, tokenAddr, amountIn) {
 
 export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0, maxOptimize = 150 }) {
   const results = [];
-  const gasWeiFor = (hops) => (GAS_BASE + GAS_PER_HOP * BigInt(hops)) * (gas.baseFee + gas.priority) + gas.l1Fee;
+  const gasWeiFor = (hops) => (GAS_BASE + GAS_PER_HOP * BigInt(hops)) * (gas.baseFee + gas.priority) + gas.l1Fee; // hops = swaps reales
   // 1) sondeo marginal de todos los ciclos (barato); 2) optimización solo de los positivos, los mejores primero
   const pre = [];
   for (const c of cycles) {
@@ -904,8 +940,60 @@ export function evaluateAll({ pools, cycles, lenders, gas, ethUsd, minNetUsd = 0
       suspicious,
     });
   }
+  if (process.env.SPLIT_ROUTES !== "0") improveWithSplits(results, pools, lenders, ethUsd, (n) => (Number(gasWeiFor(n)) / 1e18) * ethUsd);
   results.sort((a, b) => b.netUsd - a.netUsd || b.marginalBps - a.marginalBps);
   return results;
+}
+
+// Índice par → pools con reservas (cacheado por arreglo de pools)
+const pairIdxCache = new WeakMap();
+function pairIndex(pools) {
+  let m = pairIdxCache.get(pools);
+  if (m) return m;
+  m = new Map();
+  for (const p of pools) {
+    if (p.kind === "split" || !(p.reserve0 > 0n && p.reserve1 > 0n)) continue;
+    const k = [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()].sort().join();
+    (m.get(k) ?? m.set(k, []).get(k)).push(p);
+  }
+  pairIdxCache.set(pools, m);
+  return m;
+}
+
+/**
+ * Para las mejores rutas rentables: prueba repartir cada salto entre su pool y otro pool del mismo par
+ * (20/40/60/80 %). Si el neto mejora tras el gas del swap extra, la ruta pasa a usar el salto repartido.
+ */
+export function improveWithSplits(results, pools, lenders, ethUsd, gasUsdFor, maxTry = Number(process.env.SPLIT_MAX_TRY ?? 5)) {
+  const idx = pairIndex(pools);
+  const winners = results.filter((r) => r.profitable && !r.suspicious).sort((a, b) => b.netUsd - a.netUsd).slice(0, maxTry);
+  for (const r of winners) {
+    const toUsd = tokenToUsd(r.startTok, ethUsd);
+    let best = null;
+    const used = new Set(routePools(r.route));
+    for (let i = 0; i < r.route.length; i++) {
+      const p = r.route[i];
+      if (p.kind === "split") continue;
+      const k = [p.token0.address.toLowerCase(), p.token1.address.toLowerCase()].sort().join();
+      const alts = (idx.get(k) ?? []).filter((q) => q !== p && !used.has(q)).slice(0, 3);
+      for (const q of alts) for (const bpsA of [2000, 4000, 6000, 8000]) {
+        const route = r.route.slice(); route[i] = makeSplit(p, q, bpsA);
+        const segs = lenderSegments(lenders, r.startTok.sym, route);
+        const o = optimize(r.startTok.address, route, segs, r.cap);
+        if (!(o.x > 0n) || o.gross * 10n > o.x) continue;
+        const gasUsd = gasUsdFor(swapsOf(route));
+        const netUsd = toUsd(o.gross) - toUsd(o.fee) - gasUsd;
+        if (netUsd > (best?.netUsd ?? r.netUsd)) best = { route, o, gasUsd, netUsd, segs };
+      }
+    }
+    if (best) {
+      Object.assign(r, {
+        route: best.route, key: r.key + "|reparto", hops: swapsOf(best.route), split: true,
+        amountIn: best.o.x, amountInUsd: toUsd(best.o.x), grossUsd: toUsd(best.o.gross), flashFeeUsd: toUsd(best.o.fee),
+        gasUsd: best.gasUsd, lender: best.o.lender ?? r.lender, netUsd: best.netUsd, segs: best.segs,
+      });
+    }
+  }
 }
 
 export function referenceEthUsd(pools) {

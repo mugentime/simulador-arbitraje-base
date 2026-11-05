@@ -26,7 +26,8 @@ contract ArbExecutor {
         UNI_V3, // pools tipo UniswapV3 (swap con callback)
         UNI_V4, // Uniswap v4: `pool` es el PoolManager; la pool se identifica por (tokens, fee, tickSpacing), sin hooks
         AAVE_LIQ, // liquidación en Aave v3: `pool` = Pool; tokenIn = deuda, tokenOut = colateral; extra = abi.encode(user)
-        MORPHO_LIQ // liquidación en Morpho Blue: `pool` = Morpho; tokenIn = préstamo, tokenOut = colateral; extra = abi.encode(MarketParams, borrower, seizedAssets)
+        MORPHO_LIQ, // liquidación en Morpho Blue: `pool` = Morpho; tokenIn = préstamo, tokenOut = colateral; extra = abi.encode(MarketParams, borrower, seizedAssets)
+        SPLIT // mismo par repartido entre varios pools: extra = abi.encode(Hop[] partes, uint16[] bps); la última parte recibe el resto
     }
 
     struct Hop {
@@ -224,7 +225,26 @@ contract ArbExecutor {
             else if (h.kind == DexKind.UNI_V3) amountIn = _swapV3(h, amountIn);
             else if (h.kind == DexKind.UNI_V4) amountIn = _swapV4(h, amountIn);
             else if (h.kind == DexKind.AAVE_LIQ) amountIn = _liquidateAave(h, amountIn);
+            else if (h.kind == DexKind.SPLIT) amountIn = _swapSplit(h, amountIn);
             else amountIn = _liquidateMorpho(h, amountIn);
+        }
+    }
+
+    function _swapSplit(Hop memory h, uint256 amountIn) internal returns (uint256 amountOut) {
+        (Hop[] memory parts, uint16[] memory bps) = abi.decode(h.extra, (Hop[], uint16[]));
+        uint256 n = parts.length;
+        if (n < 2 || n > 4 || bps.length != n) revert BadRoute();
+        uint256 left = amountIn;
+        for (uint256 i = 0; i < n; ++i) {
+            Hop memory q = parts[i];
+            if (q.tokenIn != h.tokenIn || q.tokenOut != h.tokenOut) revert BadRoute();
+            uint256 a = i == n - 1 ? left : (amountIn * bps[i]) / 10_000;
+            left -= a;
+            if (a == 0) continue;
+            if (q.kind == DexKind.UNI_V2) amountOut += _swapV2(q, a);
+            else if (q.kind == DexKind.UNI_V3) amountOut += _swapV3(q, a);
+            else if (q.kind == DexKind.UNI_V4) amountOut += _swapV4(q, a);
+            else revert BadRoute();
         }
     }
 

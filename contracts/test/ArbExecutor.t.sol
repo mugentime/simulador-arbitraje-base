@@ -176,6 +176,35 @@ contract ArbExecutorTest is Test {
         arb.pancakeV3FlashCallback(0, 0, abi.encode(_plan(ArbExecutor.Source.V3_FLASH, address(v3rich), 1, 0)));
     }
 
+    function test_Split_V2AndV3_SameOutputAsSum() public {
+        // salto 2 (WETH→USDC) repartido 60 % rich (v2) / 40 % v3rich
+        ArbExecutor.Plan memory p = _plan(ArbExecutor.Source.MORPHO, address(morpho), 2_000e18, 0);
+        ArbExecutor.Hop[] memory parts = new ArbExecutor.Hop[](2);
+        parts[0] = ArbExecutor.Hop(ArbExecutor.DexKind.UNI_V2, address(rich), address(weth), address(usdc), 30, 0, 0, "");
+        parts[1] = ArbExecutor.Hop(ArbExecutor.DexKind.UNI_V3, address(v3rich), address(weth), address(usdc), 0, 0, 0, "");
+        uint16[] memory bps = new uint16[](2);
+        bps[0] = 6000; bps[1] = 4000;
+        p.hops[1] = ArbExecutor.Hop(ArbExecutor.DexKind.SPLIT, address(0), address(weth), address(usdc), 0, 0, 0, abi.encode(parts, bps));
+        vm.prank(owner);
+        uint256 profit = arb.execute(p);
+        assertGt(profit, 0);
+        assertEq(usdc.balanceOf(address(arb)), 0);
+        assertEq(weth.balanceOf(address(arb)), 0, "todo el WETH del salto 1 se reparte");
+    }
+
+    function test_RevertWhen_SplitPartTokensMismatch() public {
+        ArbExecutor.Plan memory p = _plan(ArbExecutor.Source.MORPHO, address(morpho), 2_000e18, 0);
+        ArbExecutor.Hop[] memory parts = new ArbExecutor.Hop[](2);
+        parts[0] = ArbExecutor.Hop(ArbExecutor.DexKind.UNI_V2, address(rich), address(weth), address(usdc), 30, 0, 0, "");
+        parts[1] = ArbExecutor.Hop(ArbExecutor.DexKind.UNI_V2, address(cheap), address(usdc), address(weth), 30, 0, 0, "");
+        uint16[] memory bps = new uint16[](2);
+        bps[0] = 5000; bps[1] = 5000;
+        p.hops[1] = ArbExecutor.Hop(ArbExecutor.DexKind.SPLIT, address(0), address(weth), address(usdc), 0, 0, 0, abi.encode(parts, bps));
+        vm.prank(owner);
+        vm.expectRevert(ArbExecutor.BadRoute.selector);
+        arb.execute(p);
+    }
+
     function test_MixedRoute_V2ThenV3() public {
         ArbExecutor.Plan memory p = _plan(ArbExecutor.Source.MORPHO, address(morpho), 2_000e18, 1e18);
         p.hops[1] = ArbExecutor.Hop(ArbExecutor.DexKind.UNI_V3, address(v3rich), address(weth), address(usdc), 0, 0, 0, "");
