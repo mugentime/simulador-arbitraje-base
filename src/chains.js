@@ -271,7 +271,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (AXS con pools WBNB/CAKE en PancakeSwap; WOO con pools WBNB/USDT)
       { sym: "AXS", address: "0x715D400F88C167884bbCc41C5FeA407ed4D2f8A0" }, { sym: "WOO", address: "0x4691937a7508860F876c9c0a2a617E7d9E945D4B" },
       // 2026-11-04 22:45 (Thena THE con pools WBNB/USDT/ETH/BTCB; STEPN GMT con pools WBNB/USDT en PancakeSwap)
-      { sym: "ID", address: "0x2dfF88A56767223A5529eA5960Da7A3F5f766406" }, { sym: "GMT", address: "0x3019BF2a2eF8040C242C9a4c5c4BD4C81678b2A1" }, // THE 0xF4C8E32E… verificado pero 0 pools (liquidez en Thena)
+      { sym: "GMT", address: "0x3019BF2a2eF8040C242C9a4c5c4BD4C81678b2A1" }, // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -466,7 +466,7 @@ export const CHAINS = {
       // 2026-11-04 21:45 (dHEDGE DHT con pools WETH/OP en Velodrome; KNC con pools WETH/USDT/OP)
       { sym: "DHT", address: "0xAF9fE3B5cCDAe78188B1F8b9a49Da7ae9510F151" }, // KNC 0xa00E3A35… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 22:45 (PoolTogether POOL con pools WETH en Velodrome/Uni v3; Wormhole W con pools WETH)
-      { sym: "POOL", address: "0x395Ae52bB17aef68C2888d941736A71dC6d4e125" }, { sym: "SUSHI", address: "0x3eaEb77b03dBc0F6321AE1b72b2E9aDb0F60112B" }, // W 0xB0fFa800… verificado pero 0 pools
+      { sym: "POOL", address: "0x395Ae52bB17aef68C2888d941736A71dC6d4e125" }, // W 0xB0fFa800… y SUSHI 0x3eaEb77b… verificados pero 0 pools
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
