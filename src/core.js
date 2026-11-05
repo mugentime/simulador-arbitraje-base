@@ -185,7 +185,7 @@ export async function existingPools(ethers, provider, tokenAddrs, factories = FA
         const sig = f.kind === "v3fee" ? "getPool(address,address,uint24)" : "getPool(address,address,int24)";
         for (const p of f.params) { calls.push([f.address, enc(iface, sig, [a, b, p])]); meta.push({ dex: f.name, kind: "v3" }); }
       } else if (f.kind === "v2pair") {
-        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag });
+        calls.push([f.address, enc(iface, "getPair", [a, b])]); meta.push({ dex: f.name, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag, dirFee: f.dirFee });
       } else if (f.kind === "aero") {
         calls.push([f.address, enc(iface, "getPool(address,address,bool)", [a, b, false])]);
         meta.push({ dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -257,7 +257,7 @@ export async function scanNewPools(ethers, provider, { lookback = 3600, chunk = 
         const base = { dex: f.name, createdBlock: lg.blockNumber };
         const t = lg.topics, d = lg.data;
         if (f.kind === "v2pair") {
-          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag });
+          specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, kind: "v2", feeBps: f.feeBps, pairFee: f.pairFee, stableFlag: f.stableFlag, dirFee: f.dirFee });
         } else if (f.kind === "aero") {
           if (BigInt(t[3]) === 1n) continue; // estable: otra curva
           specs.set(ethers.getAddress("0x" + d.slice(2 + 24, 2 + 64)), { ...base, dex: f.name + " (volátil)", kind: "v2", aeroFactory: f.address });
@@ -391,6 +391,11 @@ export async function loadPools(ethers, provider, found, tokens = TOKENS) {
       let bps = m.feeBps ?? m.feeHint ?? 30;
       if (m.aeroFactory && aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)); // Aerodrome: bps directos
       else if (m.pairFee && aeroFee && aeroFee !== "0x") bps = Number(word(aeroFee, 0)) * 10; // Biswap: comisión por par en milésimas
+      // Camelot v2: getReserves() devuelve también token0FeePercent y token1FeePercent (denominador 100000; 300 = 0.3 %),
+      // comisión por dirección que puede ser > 0.3 %. Con 30 bps fijos el modelo sobrestimaba la salida → "CamelotPair: K".
+      // El contrato solo admite una comisión entera en bps por salto: se usa la mayor de las dos, redondeada hacia arriba
+      // (subestimar la salida nunca rompe K; a lo sumo da InsufficientProfit).
+      if (m.dirFee) { const d = camelotFeeBps(res); if (d != null) bps = d; }
       p.feeBps = bps;
       p.feePips = BigInt(Math.round(bps * 100));
     }
@@ -556,6 +561,14 @@ export const Q96 = 1n << 96n;
 export function v3VirtualReserves(sqrtP, L) {
   if (sqrtP === 0n || L === 0n) return [0n, 0n];
   return [(L * Q96) / sqrtP, (L * sqrtP) / Q96];
+}
+
+// comisión de Camelot v2 en bps a partir del retorno crudo de getReserves() (4 palabras); null si no viene
+export function camelotFeeBps(raw) {
+  if (!raw || raw.length < 2 + 64 * 4) return null;
+  const f0 = Number(BigInt("0x" + raw.slice(2 + 128, 2 + 192))), f1 = Number(BigInt("0x" + raw.slice(2 + 192, 2 + 256)));
+  if (!(f0 > 0 || f1 > 0) || f0 > 10000 || f1 > 10000) return null;
+  return Math.ceil(Math.max(f0, f1) / 10);
 }
 
 export function amountOut(amountIn, rIn, rOut, feePips) {
