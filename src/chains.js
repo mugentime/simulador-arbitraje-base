@@ -160,7 +160,7 @@ export const CHAINS = {
       // 2026-11-04 18:45 (tBTC de Threshold vía Wormhole; NAKA con pools NAKA/WPOL en QuickSwap)
       { sym: "NAKA", address: "0x311434160D7537be358930def317AfB606C0D737" }, // tBTC 0x236aa509… verificado pero 0 pools
       // 2026-11-04 19:45 (MKR con pool WPOL/MKR; YFI con WETH/YFI)
-      { sym: "MKR", address: "0x6f7C932e7684666C9fd1d44527765433e01fF61d" }, { sym: "YFI", address: "0xDA537104D6A5edd53c6fBba9A898708E465260b6" },
+      // MKR 0x6f7C932e… y YFI 0xDA537104… verificados pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -334,7 +334,7 @@ export const CHAINS = {
       // 2026-11-04 18:45 (Sanko DMT con pools WETH/DMT en Camelot y Uni v3; RPL de Rocket Pool)
       // DMT 0x8B0E6f19… y RPL 0xB766039c… verificados pero 0 pools (DMT: liquidez en Camelot v3; RPL: contra wstETH)
       // 2026-11-04 19:45 (SPELL con pools WETH/USDT en Uni v3 y Sushi; BAL de Balancer)
-      { sym: "SPELL", address: "0x3E6648C5a70A150A88bCE65F4aD4d506Fe15d2AF" }, { sym: "BAL", address: "0x040d1EdC9569d4Bab2D15287Dc5A4F10F56a56B8" },
+      { sym: "SPELL", address: "0x3E6648C5a70A150A88bCE65F4aD4d506Fe15d2AF" }, // BAL 0x040d1EdC… verificado pero 0 pools (liquidez en Balancer)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -415,7 +415,7 @@ export const CHAINS = {
       // 2026-11-04 18:45 (USDT0 nativo —distinto del USDT puenteado— con pools contra WETH/OP/USDT; kBTC de Kraken)
       // USDT0 0x01bFF417… y kBTC 0x73E0C0d4… verificados pero 0 pools fuera de Slipstream/v4
       // 2026-11-04 19:45 (wrsETH de Kelp con pools contra ETH/VELO/ezETH en Velodrome)
-      { sym: "wrsETH", address: "0x87eEE96D50Fb761AD85B1c982d28A042169d61b1" },
+      // wrsETH 0x87eEE96D… verificado pero 0 pools (liquidez en Slipstream/contra ezETH)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
