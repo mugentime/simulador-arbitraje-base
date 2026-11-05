@@ -72,6 +72,8 @@ export const CHAINS = {
       { sym: "GAME", address: "0x1C4CcA7C5DB003824208aDDA61Bd749e55F463a3" }, { sym: "uSOL", address: "0x9B8Df6E244526ab5F6e6400d331DB28C8fdDdb55" },
       // 2026-11-04 21:45 (memecoins con pools WETH en Uniswap/Aerodrome: Mister Miggles y mfercoin, éste también contra VIRTUAL/Mog)
       { sym: "MIGGLES", address: "0xB1a03EdA10342529bBF8EB700a06C60441fEf25d" }, { sym: "mfer", address: "0xE3086852A4B125803C815a158249ae468A3254Ca", symbols: ["$mfer", "MFER"] },
+      // 2026-11-04 22:45 (Spectral SPEC con pools WETH/PRIME en Uniswap/Aerodrome; ODOS del agregador con pools WETH/USDC)
+      { sym: "SPEC", address: "0x96419929d7949D6A801A6909c145C8EEf6A40431" }, { sym: "ODOS", address: "0xca73ed1815e5915489570014e024b7EbE65dE679" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -101,7 +103,10 @@ export const CHAINS = {
       // 19:45 inactivos (VVV sigue con VVV/WETH, 6 pools, y USDC/VVV, 3)
       "USDT/VVV", "VVV/cbBTC",
       // 21:45: peor 3 corridas (19:45, 20:45, 21:45; KTA sigue con KTA/WETH, 4 pools)
-      "KTA/USDC"],
+      "KTA/USDC",
+      // 22:45: peor 3 corridas (20:45, 21:45, 22:45; AERO y wstETH siguen con sus pares WETH) + inactivo (DRB sigue con DRB/WETH, 4 pools)
+      "AERO/wstETH",
+      "BNKR/DRB"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -121,7 +126,7 @@ export const CHAINS = {
 
   polygon: {
     key: "polygon", id: 137, name: "Polygon", native: "POL", beefy: "polygon", morphoApiChainId: 137,
-    rpcs: ["https://polygon-bor-rpc.publicnode.com", "https://polygon-rpc.com", "https://1rpc.io/matic", "https://polygon.drpc.org", "https://rpc.ankr.com/polygon"],
+    rpcs: ["https://polygon-bor-rpc.publicnode.com", /* polygon-rpc.com: 401 "tenant disabled" desde 2026-11-04 */ "https://1rpc.io/matic", "https://polygon.drpc.org", "https://rpc.ankr.com/polygon"],
     ws: ["wss://polygon-bor-rpc.publicnode.com", "wss://polygon.drpc.org"],
     fastRpc: "https://polygon-bor-rpc.publicnode.com", fastMs: 400,
     publicMempool: true, l1GasOracle: null, blockMs: 2000,
@@ -171,6 +176,8 @@ export const CHAINS = {
       { sym: "TRADE", address: "0x692AC1e363ae34b6B489148152b12e2785a3d8d6" }, { sym: "REVV", address: "0x70c006878a5A50Ed185ac4C87d837633923De296" },
       // 2026-11-04 21:45 (QiDao QI con pools QI/DAI/WPOL en QuickSwap; PolyDoge con pools contra WPOL en QuickSwap v2/v3)
       { sym: "QI", address: "0x580A84C73811E1839F75d86d75d88cCa0c241fF4" }, { sym: "PolyDoge", address: "0x8A953CfE442c5E8855cc6c61b1293FA648BAE472" },
+      // 2026-11-04 22:45 (PlanetIX IXT con pools WPOL/USDT en QuickSwap; Monerium EURe con pools USDC/USDC.e/USDT)
+      { sym: "IXT", address: "0xE06Bd4F5aAc8D0aA337D13eC88dB6defC6eAEefE" }, { sym: "EURe", address: "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -256,13 +263,15 @@ export const CHAINS = {
       // 2026-11-04 17:45 (LST de BNB y token de agregador)
       /* ankrBNB 0x52F24a5e… retirado 21:45 (único pool WBNB/ankrBNB s0) */ { sym: "1INCH", address: "0x111111111117dC0aa78b770fA6A738034120C302" },
       // 2026-11-04 18:45 (LST/CDP de BNB y perps con pools en PancakeSwap)
-      { sym: "LISTA", address: "0xFceB31A79F71AC9CBDCF853519c1b12D379EdC46" }, { sym: "ASTER", address: "0x000Ae314E2A2172a039B26378814C252734f556A" },
+      /* LISTA 0xFceB31A7… retirado 22:45 (LISTA/WBNB, LISTA/USDT, CAKE/LISTA s0, 1 pool cada uno) */ { sym: "ASTER", address: "0x000Ae314E2A2172a039B26378814C252734f556A" },
       // 2026-11-04 19:45 (SafePal y Coin98, con pools contra WBNB/USDT en PancakeSwap)
       { sym: "SFP", address: "0xD41FDb03Ba84762dD66a0af1a6C8540FF1ba5dfb" }, { sym: "C98", address: "0xaEC945e04baF28b135Fa7c640f624f8D90F1C3a6" },
       // 2026-11-04 20:45 (LST de ETH de Binance y BTC de Solv, con pools contra ETH/BTCB/WBNB en PancakeSwap)
       { sym: "SolvBTC", address: "0x4aae823a6a0b376De6A78e74eCC5b079d38cBCf7" }, // wBETH 0xa2E33566… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 21:45 (AXS con pools WBNB/CAKE en PancakeSwap; WOO con pools WBNB/USDT)
       { sym: "AXS", address: "0x715D400F88C167884bbCc41C5FeA407ed4D2f8A0" }, { sym: "WOO", address: "0x4691937a7508860F876c9c0a2a617E7d9E945D4B" },
+      // 2026-11-04 22:45 (Thena THE con pools WBNB/USDT/ETH/BTCB; STEPN GMT con pools WBNB/USDT en PancakeSwap)
+      { sym: "THE", address: "0xF4C8E32EaDEC4BFe97E0F595AdD0f4450a863a11" }, { sym: "GMT", address: "0x3019BF2a2eF8040C242C9a4c5c4BD4C81678b2A1" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -291,7 +300,9 @@ export const CHAINS = {
       // 20:45 inactivo (FDUSD sigue con FDUSD/USDT, 2 pools, y FDUSD/WBNB, 1)
       "FDUSD/USDC",
       // 21:45 inactivo (1INCH sigue con 1INCH/WBNB, 3 pools)
-      "1INCH/CAKE"],
+      "1INCH/CAKE",
+      // 22:45 inactivos (ASTER sigue con ASTER/USDT, 8 pools, y ASTER/WBNB, 6; + token LISTA retirado)
+      "ASTER/USDC", "ASTER/BTCB", "ASTER/CAKE", "ASTER/TRX"],
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -361,6 +372,8 @@ export const CHAINS = {
       { sym: "LPT", address: "0x289ba1701C2F088cf0faf8B3705246331cB8A839" }, { sym: "WINR", address: "0xD77B108d4f6cefaa0Cae9506A934e825BEccA46E" },
       // 2026-11-04 21:45 (stablecoins secundarias: MIM con pools WETH/ARB/USDT en Uni v3; USDS de Sky con pools USDC/WETH)
       { sym: "MIM", address: "0xFEa7a6a0B346362BF88A9e4A88416B77a57D6c2A" }, // USDS 0x6491c05A… verificado pero 0 pools ≥ MIN_LIQ_USD
+      // 2026-11-04 22:45 (CAKE con pools WETH/ARB/USDC en PancakeSwap v3; Wormhole W con pools WETH en Uni v3)
+      { sym: "CAKE", address: "0x1b896893dfc86bb67Cf57767298b9073D2c1bA2c", symbols: ["Cake"] }, { sym: "W", address: "0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -384,7 +397,9 @@ export const CHAINS = {
       // 20:45 inactivo (PEPE sigue con PEPE/WETH, 2 pools)
       "PEPE/USDC",
       // 21:45 inactivo (GHO sigue con GHO/USDC, 3 pools)
-      "GHO/USDT"],
+      "GHO/USDT",
+      // 22:45: peor 3 corridas (20:45, 21:45, 22:45; ARB y DAI siguen con sus pares WETH/USDC/USDT)
+      "ARB/DAI"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -450,6 +465,8 @@ export const CHAINS = {
       { sym: "EXA", address: "0x1e925De1c68ef83bD98eE3E130eF14a50309C01B" }, { sym: "HAI", address: "0x10398AbC267496E49106B07dd6BE13364D10dC71" },
       // 2026-11-04 21:45 (dHEDGE DHT con pools WETH/OP en Velodrome; KNC con pools WETH/USDT/OP)
       { sym: "DHT", address: "0xAF9fE3B5cCDAe78188B1F8b9a49Da7ae9510F151" }, // KNC 0xa00E3A35… verificado pero 0 pools ≥ MIN_LIQ_USD
+      // 2026-11-04 22:45 (PoolTogether POOL con pools WETH en Velodrome/Uni v3; Wormhole W con pools WETH)
+      { sym: "POOL", address: "0x395Ae52bB17aef68C2888d941736A71dC6d4e125" }, { sym: "W", address: "0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores

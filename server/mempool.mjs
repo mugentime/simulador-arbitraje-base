@@ -185,6 +185,42 @@ export class MempoolWatcher {
     this.routers = new Map((ROUTERS[core.CHAIN.key] ?? []).map((r) => [r.address.toLowerCase(), r]));
     this.m = emptyMempool(); this.m.enabled = this.routers.size > 0;
     this.pools = null; this.cycles = null; this.index = null; this.ctx = null; this.busy = false; this.wsIdx = 0;
+    this.badVictims = new Map(); // hash → hasta cuándo se ignora (víctima que revierte o ya minada)
+  }
+
+  // BSC 2026-11-05: la misma víctima 0xca293ee855… (pendiente durante horas, se re-difunde) generó 4 back-runs de
+  // ~$3.7 "rentables" en el modelo; los builders rechazaban el bundle porque la VÍCTIMA revierte ("[0xca29..edbd]
+  // execution reverted") o ya estaba minada ("nonce too low"). Se ignoran esas víctimas y se comprueba con eth_call
+  // que la víctima no revierte antes de mandar el bundle.
+  isBadVictim(h, now = Date.now()) {
+    const k = String(h ?? "").toLowerCase(); const t = this.badVictims.get(k);
+    if (t === undefined) return false;
+    if (t > now) return true;
+    this.badVictims.delete(k); return false;
+  }
+  markBadVictim(h, why, ms = Number(process.env.BAD_VICTIM_MS ?? 6 * 3600e3)) {
+    const k = String(h ?? "").toLowerCase(); if (!k) return;
+    this.badVictims.set(k, Date.now() + ms);
+    if (this.badVictims.size > 5000) this.badVictims.delete(this.badVictims.keys().next().value);
+    const v = (this.m.badVictims ??= {}); v[why] = (v[why] ?? 0) + 1;
+  }
+  /** ¿Revierte la víctima sobre el estado actual? true = revierte, false = no, null = no se pudo saber (red). */
+  async victimReverts(tx) {
+    const prov = this.executor?.provider; if (!prov?.send) return null;
+    const call = { from: tx.from, to: tx.to, data: tx.input ?? tx.data ?? "0x", value: "0x" + BigInt(tx.value ?? 0).toString(16) };
+    if (tx.gas ?? tx.gasLimit) call.gas = "0x" + BigInt(tx.gas ?? tx.gasLimit).toString(16);
+    try { await prov.send("eth_call", [call, "latest"]); return false; }
+    catch (e) { const msg = String(e?.info?.error?.message ?? e?.error?.message ?? e?.shortMessage ?? e?.message ?? e);
+      return /revert|execution reverted|insufficient funds|nonce too low|out of gas/i.test(msg) ? true : null; }
+  }
+  /** Lee el rechazo de los builders: si nombra a la víctima como revertida o con nonce ya usado, se marca. */
+  victimRejected(h, text) {
+    const k = String(h ?? "").toLowerCase(); if (!text || k.length < 12) return null;
+    const tag = `[${k.slice(0, 6)}..${k.slice(-4)}]`;
+    const t = String(text).toLowerCase();
+    if (t.includes(`${tag} execution reverted`)) return "revierte";
+    if (t.includes(`${tag} nonce too low`)) return "ya minada";
+    return null;
   }
   setUniverse(pools, cycles) {
     this.main = pools;
@@ -293,6 +329,7 @@ export class MempoolWatcher {
   async onTx(tx) {
     if (!tx.to || !this.pools || !this.ctx) return;
     const router = this.routers.get(String(tx.to).toLowerCase());
+    if (router && this.isBadVictim(tx.hash)) { this.m.badSkipped = (this.m.badSkipped ?? 0) + 1; return; }
     if (!router) {
       // destinos desconocidos con calldata de swap probable (≥ 4 bytes y valor o datos largos): para saber qué agregador decodificar
       const inp = tx.input ?? tx.data ?? "0x";
@@ -323,7 +360,13 @@ export class MempoolWatcher {
     try {
       let raw;
       try { raw = rawFromPending(tx); } catch (e) { if (this.executor.limits.bundleSend) { this.m.lastError = `no se pudo reconstruir la tx ${tx.hash}: ${e.message}`; return; } raw = null; }
+      if (this.executor.limits?.bundleSend && process.env.VICTIM_CHECK !== "0") {
+        const rv = await this.victimReverts(tx);
+        if (rv) { this.markBadVictim(tx.hash, "revierte (eth_call)"); this.m.badSkipped = (this.m.badSkipped ?? 0) + 1; return; }
+      }
       const r = await this.executor.sendBackrun(raw, tx.hash, best, lenders, gas, ethUsd, tx);
+      const why = this.victimRejected(tx.hash, r);
+      if (why) this.markBadVictim(tx.hash, why);
       if (r) { this.m.bundles++; await this.diag(`mempool: back-run de ${String(tx.hash).slice(0, 12)}… (${router.dex}) · neto modelo $${best.netUsd.toFixed(4)} · ${r}`); }
     } finally { this.busy = false; }
   }
