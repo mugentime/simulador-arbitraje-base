@@ -190,7 +190,7 @@ export const CHAINS = {
       // 2026-11-04 23:45 (Glo Dollar USDGLO con pools USDC en Uniswap; MANTRA OM con pools WPOL/WETH/USDC.e en QuickSwap/Sushi)
       { sym: "USDGLO", address: "0x4F604735c1cF31399C6E711D5962b2B3E0225AD3" }, // OM 0xC3Ec8034… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 00:45 (BRZ, stable del real brasileño con pools USDT/USDC/WPOL; BNB puenteado PoS con pools WPOL/WETH/AAVE)
-      { sym: "BRZ", address: "0x4eD141110F6EeeAbA9A1df36d8c26f684d2475Dc" }, { sym: "BNB", address: "0xA649325Aa7C5093d12D6F98EB4378deAe68CE23F" },
+      // BRZ 0x4eD14111… y BNB 0xA649325A… verificados pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -401,7 +401,7 @@ export const CHAINS = {
       // 2026-11-04 23:45 (Animecoin ANIME con pools WETH/USDT0 en Uni v3/Camelot; Frax frxUSD con pools USDC)
       // ANIME 0x37a64564… y frxUSD 0x80Eede49… verificados pero 0 pools (ANIME: liquidez en Camelot v3/contra USDT0)
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH en Uni v3; cbETH de Coinbase con pools WETH en Uni v3/Balancer)
-      { sym: "ENA", address: "0x58538e6A46E07434d7E7375Bc268D3cb839C0133" }, { sym: "cbETH", address: "0x1DEBd73E752bEaF79865Fd6446b0c970EaE7732f" },
+      { sym: "cbETH", address: "0x1DEBd73E752bEaF79865Fd6446b0c970EaE7732f" }, // ENA 0x58538e6A… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -500,7 +500,7 @@ export const CHAINS = {
       // 2026-11-04 23:45 (Beefy BIFI con pools WETH en Velodrome; Frax frxUSD con pools USDC en Velodrome)
       // BIFI 0x4E720DD3… y frxUSD 0x80Eede49… verificados pero 0 pools fuera de Slipstream
       // 2026-11-05 00:45 (Ethena ENA, OFT con la misma dirección en L2, pools WETH/USDC en Velodrome/Uni v3)
-      { sym: "ENA", address: "0x58538e6A46E07434d7E7375Bc268D3cb839C0133" },
+      // ENA 0x58538e6A… verificado pero 0 pools fuera de Slipstream
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["DAI/VELO", "OP/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
