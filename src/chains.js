@@ -85,13 +85,15 @@ export const CHAINS = {
       // 2026-11-05 03:45 (Reserve Rights RSR con pools WETH/USDC en Aerodrome/Uniswap; Wrapped BTC WBTC (OFT de BitGo) con pools cbBTC/WETH/USDC)
       { sym: "RSR", address: "0xaB36452DbAC151bE02b16Ca17d8919826072f64a" }, { sym: "WBTC", address: "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c" },
       // 2026-11-05 04:45 (Pendle PENDLE y Curve CRV puenteados, con pools WETH/USDC en Aerodrome/Uniswap)
-      { sym: "PENDLE", address: "0xA99F6e6785Da0F5d6fB42495Fe424BCE029Eeb3E" }, { sym: "CRV", address: "0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415" },
+      /* PENDLE 0xA99F6e67… (1 pool) y CRV 0x8Ee73c48… (CRV/WETH, CRV/USDC p1) retirados 2026-11-05 08:45: s0 al entrar al ranking */
       // 2026-11-05 05:45 (Uniswap UNI y Compound COMP puenteados, con pools WETH/USDC en Uniswap/Aerodrome)
       { sym: "UNI", address: "0xc3De830EA07524a0761646a6a4e4be0e114a3C83" }, { sym: "COMP", address: "0x9e1028F5F1D5eDE59748FFceE5532509976840E0" },
       // 2026-11-05 06:45 (Inverse DOLA con pools USDC/USDbC/USD+ en Aerodrome; Wormhole W (NTT) con pools WETH/ZRO)
       { sym: "DOLA", address: "0x4621b7A9c75199271F773Ebd9A499dbd165c3191" }, { sym: "W", address: "0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91" },
       // 2026-11-05 07:45 (Sky sUSDS, ERC-4626 sin rebase, con pools USDC en Aerodrome/Uniswap; Origin wsuperOETHb, envoltorio sin rebase, con pools WETH/superOETHb)
       { sym: "sUSDS", address: "0x5875eEE11Cf8398102FdAd704C9E96607675467a" }, // wsuperOETHb 0x7FcD174E… verificado pero 0 pools ≥ MIN_LIQ_USD
+      // 2026-11-05 08:45 (TN100x memecoin con pools WETH/USDC/HAMFREN; ResearchCoin RSC con pools WETH/BIO/REI en Uniswap/Aerodrome)
+      { sym: "TN100x", address: "0x5B5dee44552546ECEA05EDeA01DCD7Be7aa6144A" }, { sym: "RSC", address: "0xFbB75A59193A3525a8825BeBe7D4b56899E2f7e1" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["AERO/BRETT", "AERO/cbETH", "AERO/WELL", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
@@ -341,6 +343,8 @@ export const CHAINS = {
       // 2026-11-05 03:45 (My Neighbor Alice ALICE con pools WBNB/USDT/CAKE en PancakeSwap; DODO con pools WBNB/CAKE/USDT en PancakeSwap/DODO)
       /* ALICE 0xAC51066d… (1 pool) y DODO 0x67ee3Cb0… (DODO/WBNB, CAKE/DODO p1) retirados 2026-11-05 07:45: s0 al entrar al ranking */
       // 2026-11-05 07:45 (48 Club KOGE con pools WBNB/USD1/USDT en PancakeSwap v3; Four FORM con pools WBNB/TST/USDT)
+      // 2026-11-05 08:45 (Solv Protocol SOLV con pools WBNB/USDT en PancakeSwap; Polyhedra ZKJ con pools WBNB/USDC/USDT en PancakeSwap v3)
+      { sym: "SOLV", address: "0xabE8E5CabE24Cb36df9540088fD7cE1175b9bc52" }, { sym: "ZKJ", address: "0xC71B5F631354BE6853eFe9C3Ab6b9590F8302e81", symbols: ["ZK"] },
       { sym: "KOGE", address: "0xe6DF05CE8C8301223373CF5B969AFCb1498c5528" }, // FORM 0x5b73A93b… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
@@ -384,7 +388,9 @@ export const CHAINS = {
       // 23:45 inactivo (SFP sigue con SFP/WBNB, 3 pools)
       "SFP/USDT",
       // 2026-11-05 04:45 inactivos (entran al ranking ya en s0; ZEC sigue con WBNB/ZEC p4, USDT/ZEC p5, BTCB/ZEC p3)
-      "DOGE/ZEC", "ETH/ZEC", "SOL/ZEC"],
+      "DOGE/ZEC", "ETH/ZEC", "SOL/ZEC",
+      // 2026-11-05 08:45 inactivos (entran al ranking ya en s0; IOTX y BAND siguen con X/WBNB p2)
+      "BAND/ETH", "ETH/IOTX"],
     factories: [
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
       { name: "Uniswap v3", kind: "v3fee", address: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", params: UNI_FEES },
@@ -469,7 +475,9 @@ export const CHAINS = {
       // 2026-11-05 01:45 (SolvBTC con pools WBTC/WETH en Uni v3/Camelot; Ethena sUSDe, OFT, con pools USDC/USDe)
       // SolvBTC 0x3647c54c… y sUSDe 0x211Cc4DD… verificados pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Inverse DOLA con pools USDC en Balancer/Uni v3)
-      { sym: "DOLA", address: "0x6A7661795C374c0bFC635934efAddFf3A7Ee23b6" },
+      /* DOLA 0x6A766179… retirado 2026-11-05 08:45 (token de 1 pool, DOLA/USDC s0 al entrar al ranking) */
+      // 2026-11-05 08:45 (Morpheus MOR con pools WETH/USDC en Uniswap v3)
+      { sym: "MOR", address: "0x092bAaDB7DEf4C3981454dD9c0A0D7FF07bCFc86" },
       // 2026-11-05 07:45 (Bedrock uniETH con pools WETH en Uniswap/Camelot; Avalanche Bitcoin BTC.b con pools WETH/WBTC)
       { sym: "BTC.b", address: "0x2297aEbD383787A160DD0d9F71508148769342E3" }, // uniETH 0x3d15fD46… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 05:45 (Curve crvUSD con pools USDC/USDT; yearn YFI con pools WETH)
@@ -501,7 +509,9 @@ export const CHAINS = {
       // 22:45: peor 3 corridas (20:45, 21:45, 22:45; ARB y DAI siguen con sus pares WETH/USDC/USDT)
       "ARB/DAI",
       // 2026-11-05 00:45: peor 3 corridas (22:45, 23:45, 00:45; GMX sigue con GMX/WETH, 4 pools)
-      "GMX/USDC"],
+      "GMX/USDC",
+      // 2026-11-05 08:45 peor 3 corridas (06:45, 07:45, 08:45; ZRO sigue con WETH/ZRO p3)
+      "USDC/ZRO"],
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "PancakeSwap v3", kind: "v3fee", address: PANCAKE_V3, params: CAKE_FEES },
@@ -598,7 +608,9 @@ export const CHAINS = {
       "DAI/USDC",
       "USDC.e/WBTC", "USDC.e/VELO",
       // 20:45: peor 3 corridas (18:45, 19:45, 20:45; OP sigue con OP/WETH, 4 pools, y OP/USDC.e, 2)
-      "OP/USDC"], // PERP/USDC no: era el único pool de PERP con token base (sin él, PERP quedaba con 0 pools)
+      "OP/USDC",
+      // 2026-11-05 08:45 inactivo 3 corridas (06:45, 07:45, 08:45; OP sigue con OP/WETH p4)
+      "OP/USDC.e"], // PERP/USDC no: era el único pool de PERP con token base (sin él, PERP quedaba con 0 pools)
     factories: [
       { name: "Uniswap v3", kind: "v3fee", address: UNI_V3_CANON, params: UNI_FEES },
       { name: "Velodrome Slipstream", kind: "v3tick", address: "0xCc0bDDB707055e04e09910ed7D0E70C7D6aD4Ba1", params: [1, 50, 100, 200] },

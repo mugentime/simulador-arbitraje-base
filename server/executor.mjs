@@ -446,6 +446,7 @@ export class Executor {
     if (!this.wallet) return results.some((r) => r.profitable) ? "Fase 1 sin llave: solo observación" : null;
     if (!this.p1.executor) return results.some((r) => r.profitable) ? "Fase 1: contrato no desplegado" : null;
     if (typeof block === "number") this.lastChainBlock = block;
+    if (typeof block === "number") this.checkShadow(block);
     if (this.inflight || (typeof block === "number" && block <= this.lastSimBlock)) return null;
     const cooled = (r) => (this.routeCooldown.get(routeKey(r)) ?? 0) > this.lastChainBlock;
     const cands = results.filter((r) => r.profitable && r.netUsd >= this.limits.minNetUsd && !r.suspicious && !cooled(r) && !this.phantomSkip(r)).slice(0, 3);
@@ -486,6 +487,7 @@ export class Executor {
         if (rec.ok) text = `Simulado on-chain (eth_call contra ${this.p1.executor.slice(0, 8)}…): éxito con préstamo $${rec.amountUsd.toFixed(0)}${rec.sizeDiv > 1 ? ` (óptimo del modelo ÷${rec.sizeDiv})` : ""} · beneficio ${rec.profitUsd.toFixed(4)} USD − gas ${rec.gasUsd.toFixed(4)} = neto ${rec.netUsd.toFixed(4)} USD (modelo: ${rec.modelNetUsd.toFixed(4)})`;
         else text = `Simulado on-chain: revertiría (${rec.reason})`;
         if (rec.ok && this.mode === "live" && !this.p1.paused) { await this.send(plan, rec, gas, ethUsd); text += ` · envío: ${rec.sent}`; }
+        if (rec.ok) this.armShadow(plan, rec, block, ethUsd);
         if (rec.ok) break; // una por bloque
       }
       await this.save();
@@ -494,6 +496,35 @@ export class Executor {
       text = `Error en Fase 1: ${this.p1.lastError}`;
     } finally { this.inflight = false; }
     return text;
+  }
+
+  /** Sombra: una simulación ok que NO se envió (pausa, tope por hora = 0, guardas) se re-simula una vez en el primer bloque
+   *  posterior. Si la ruta sigue abierta un bloque después, enviarla probablemente habría confirmado; si ya se cerró, otro bot
+   *  la tomó en ese bloque (lo que explica los `transferFrom reverted` al enviar). Da evidencia para reactivar envíos (regla 2)
+   *  sin gastar gas: 1 eth_call por oportunidad, una a la vez. SHADOW_CHECK=0 lo apaga. */
+  armShadow(plan, rec, block, ethUsd) {
+    if (process.env.SHADOW_CHECK === "0" || typeof block !== "number" || this.shadow) return;
+    if (typeof rec.sent === "string" && !rec.sent.startsWith("omitida")) return; // se envió: el resultado real lo dice
+    this.shadow = { plan, block, route: rec.route, gasEst: rec.gasEst ?? 0, gasUsd: rec.gasUsd ?? 0, netUsd: rec.netUsd ?? 0, ethUsd, why: rec.sent ?? (this.p1.paused ? "pausada" : "sin envío") };
+  }
+
+  checkShadow(block) {
+    const sh = this.shadow;
+    if (!sh || block <= sh.block || this.shadowBusy) return;
+    if (block > sh.block + 3) { this.shadow = null; return; } // demasiado tarde para medir el bloque siguiente
+    this.shadowBusy = true; this.shadow = null;
+    const st = (this.p1.shadow ??= { checked: 0, alive: 0, aliveNetUsd: 0, closed: 0, last: null });
+    const plan = sh.plan, r = plan.meta;
+    const data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
+    this.provider.call({ to: this.p1.executor, from: this.wallet.address, data, blockTag: block })
+      .then((ret) => {
+        const profitUsd = core.tokenToUsd(r.startTok, sh.ethUsd)(this.iface.decodeFunctionResult("execute", ret)[0]);
+        const net = profitUsd - sh.gasUsd;
+        st.checked++; if (net > 0) { st.alive++; st.aliveNetUsd += net; } else st.closed++;
+        st.last = `${sh.route} · b${sh.block}→b${block}: ${net > 0 ? `sigue abierta, neto $${net.toFixed(4)}` : `abierta pero neto $${net.toFixed(4)} ≤ 0`}`;
+      })
+      .catch((e) => { st.checked++; st.closed++; st.last = `${sh.route} · b${sh.block}→b${block}: cerrada (${decodeRevert(this.iface, e).slice(0, 60)})`; })
+      .finally(() => { this.shadowBusy = false; });
   }
 
   countLadderOk(rec) {
