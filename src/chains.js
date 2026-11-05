@@ -252,7 +252,7 @@ export const CHAINS = {
       // 2026-11-04 19:45 (SafePal y Coin98, con pools contra WBNB/USDT en PancakeSwap)
       { sym: "SFP", address: "0xD41FDb03Ba84762dD66a0af1a6C8540FF1ba5dfb" }, { sym: "C98", address: "0xaEC945e04baF28b135Fa7c640f624f8D90F1C3a6" },
       // 2026-11-04 20:45 (LST de ETH de Binance y BTC de Solv, con pools contra ETH/BTCB/WBNB en PancakeSwap)
-      { sym: "wBETH", address: "0xa2E3356610840701BDf5611a53974510Ae27E2e1" }, { sym: "SolvBTC", address: "0x4aae823a6a0b376De6A78e74eCC5b079d38cBCf7" },
+      { sym: "SolvBTC", address: "0x4aae823a6a0b376De6A78e74eCC5b079d38cBCf7" }, // wBETH 0xa2E33566… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["BTCB/DAI", "CAKE/DAI", "DAI/DOGE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
