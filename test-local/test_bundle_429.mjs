@@ -1,0 +1,21 @@
+// Builders con HTTP 429 se saltan durante BUNDLE_429_COOLDOWN_MS; los demás siguen recibiendo bundles.
+import { sendBundle, builderCooldown, bundleStats } from "../server/bundler.mjs";
+let ok = true; const check = (c, m) => { console.log((c ? "OK  " : "FAIL") + " " + m); ok &&= c; };
+const calls = [];
+const fetchImpl = async (url) => { calls.push(url); if (url.includes("limit")) return new Response('{"error":"rate"}', { status: 429 }); return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }), { status: 200 }); };
+const builders = [{ name: "A", url: "http://a/ok", method: "eth_sendBundle" }, { name: "B", url: "http://b/limit", method: "eth_sendBundle" }];
+let t = 1_000_000; const now = () => t;
+let r = await sendBundle("0x01", { builders, fetchImpl, now });
+check(r.accepted.join() === "A" && /HTTP 429/.test(r.errors.B), "1.º envío: A acepta, B da 429");
+check(builderCooldown.get("B") === t + 600_000, "B queda en enfriamiento 10 min");
+calls.length = 0; t += 60_000;
+r = await sendBundle("0x02", { builders, fetchImpl, now });
+check(calls.length === 1 && calls[0] === "http://a/ok" && !r.errors.B, "durante el enfriamiento solo se llama a A");
+check(bundleStats.skipped429 === 1, "contador de saltos = 1");
+calls.length = 0; t += 600_000;
+r = await sendBundle("0x03", { builders, fetchImpl, now });
+check(calls.length === 2, "tras el enfriamiento se vuelve a probar B");
+process.env.BUNDLE_429_COOLDOWN_MS = "0"; builderCooldown.clear(); calls.length = 0;
+await sendBundle("0x04", { builders, fetchImpl, now }); await sendBundle("0x05", { builders, fetchImpl, now });
+check(calls.length === 4, "BUNDLE_429_COOLDOWN_MS=0 desactiva el salto");
+console.log(ok ? "TODO OK" : "HAY FALLOS"); process.exit(ok ? 0 : 1);

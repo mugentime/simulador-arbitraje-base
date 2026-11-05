@@ -21,11 +21,20 @@ export function activeBuilders() {
   return env.split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const i = x.indexOf("="); return { name: x.slice(0, i), url: x.slice(i + 1), method: "eth_sendBundle" }; });
 }
 
-export async function sendBundle(rawTx, { maxBlockNumber, builders = activeBuilders(), timeoutMs = 2500, fetchImpl = fetch } = {}) {
+// Builders que respondieron HTTP 429 (cuota/límite: p. ej. NodeReal en BSC desde 2026-11-05) se saltan un rato
+// en vez de gastar una petición por bundle que siempre falla. BUNDLE_429_COOLDOWN_MS (por defecto 10 min; 0 = nunca saltar).
+export const builderCooldown = new Map(); // nombre → epoch ms hasta el que se salta
+export const bundleStats = { skipped429: 0 };
+const cooldownMs = () => Number(process.env.BUNDLE_429_COOLDOWN_MS ?? 600_000);
+
+export async function sendBundle(rawTx, { maxBlockNumber, builders = activeBuilders(), timeoutMs = 2500, fetchImpl = fetch, now = Date.now } = {}) {
   const bundle = { txs: Array.isArray(rawTx) ? rawTx : [rawTx], revertingTxHashes: [] };
   if (maxBlockNumber) bundle.maxBlockNumber = Number(maxBlockNumber);
   const accepted = [], errors = {};
-  await Promise.all(builders.map(async (b) => {
+  const t = now();
+  const live = builders.filter((b) => !((builderCooldown.get(b.name) ?? 0) > t));
+  if (live.length < builders.length) bundleStats.skipped429 += builders.length - live.length;
+  await Promise.all(live.map(async (b) => {
     try {
       const r = await fetchImpl(b.url, {
         method: "POST",
@@ -35,6 +44,7 @@ export async function sendBundle(rawTx, { maxBlockNumber, builders = activeBuild
       });
       const txt = await r.text();
       let j = null; try { j = JSON.parse(txt); } catch { /* respuesta no JSON */ }
+      if (r.status === 429 && cooldownMs() > 0) builderCooldown.set(b.name, now() + cooldownMs());
       if (!r.ok) throw new Error(`HTTP ${r.status} ${txt.slice(0, 80)}`);
       if (!j) throw new Error(`respuesta no JSON: ${txt.slice(0, 80)}`);
       if (j.error) throw new Error(`${j.error.code ?? ""} ${j.error.message ?? JSON.stringify(j.error)}`.trim().slice(0, 120));
