@@ -24,6 +24,12 @@ export function emptyLiqExec() {
   return { simulated: 0, wouldSucceed: 0, wouldRevert: 0, sent: 0, confirmed: 0, reverted: 0, realizedUsd: 0, gasPaidUsd: 0, byReason: {}, recent: [], pending: [], lastError: null };
 }
 
+// enfriamiento tras una simulación ok con neto < mínimo (ms)
+export function liqNegCooldownMs(profitUsd, gasUsd) {
+  if (!(gasUsd > 0)) return 3 * 60_000;
+  return (profitUsd ?? 0) < gasUsd * 0.5 ? 30 * 60_000 : 3 * 60_000;
+}
+
 export class Liquidator {
   constructor({ provider, store, diag, executor, liquidations }) {
     this.provider = provider; this.store = store; this.diag = diag; this.executor = executor; this.liqs = liquidations;
@@ -235,7 +241,13 @@ export class Liquidator {
       this.push(rec); return;
     }
     if (this.executor.mode !== "live") { rec.sent = "modo simulación"; this.push(rec); return; }
-    if (rec.netUsd < this.limits.minNetUsd) { rec.sent = `omitida: neto $${rec.netUsd.toFixed(4)} < mínimo $${this.limits.minNetUsd}`; this.push(rec); return; }
+    if (rec.netUsd < this.limits.minNetUsd) {
+      // simulación ok pero sin ganancia: enfriar la posición (antes se re-simulaba cada ~45 s; Polygon: 5894 sims ok con neto < 0).
+      // Si el beneficio ni siquiera llega a la mitad del gas, 30 min; si está cerca, 3 min (el precio puede moverse a favor).
+      this.x.coolNeg = (this.x.coolNeg ?? 0) + 1;
+      this.backoff.set(cand.proto + ":" + cand.user, Date.now() + liqNegCooldownMs(rec.profitUsd, rec.gasUsd));
+      rec.sent = `omitida: neto $${rec.netUsd.toFixed(4)} < mínimo $${this.limits.minNetUsd}`; this.push(rec); return;
+    }
     const now = Date.now();
     this.sentTimes = this.sentTimes.filter((t) => now - t < 3600e3);
     if (this.sentTimes.length >= this.limits.maxPerHour) { rec.sent = "omitida: tope por hora"; this.push(rec); return; }
