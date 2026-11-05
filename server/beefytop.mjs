@@ -53,17 +53,21 @@ export function beefyTopLine(r) {
 }
 
 // Tokens de los CLM de Beefy en una cadena (símbolo → dirección), para alimentar extraTokens.
+const BASES = new Set(["0x0bd7d308f8e1639fab988df18a8011f41eacad73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"]); // Robinhood: WETH, USDG
+const BASE_SYMS = new Set(["WETH", "ETH", "USDG"]);
 export async function beefyClmTokens(chain) {
   const { all, apy, tvlById } = await load();
   const out = {};
   for (const v of all.values()) {
     if (v.chain !== chain || v.type !== "cowcentrated" || !Array.isArray(v.depositTokenAddresses)) continue;
-    v.depositTokenAddresses.forEach((addr, i) => {
-      const sym = v.assets?.[i] ?? "?";
-      const reward = [...all.values()].find((g) => g.type === "gov" && g.tokenAddress?.toLowerCase() === v.earnContractAddress?.toLowerCase());
-      const o = (out[sym] ??= { symbol: sym, address: addr, vaults: [] });
-      o.vaults.push({ name: v.name, status: v.status, apyPct: +(((apy[reward?.id ?? v.id]?.totalApy) ?? 0) * 100).toFixed(1), tvlUsd: Math.round((tvlById[v.id] ?? 0) + (tvlById[reward?.id] ?? 0)) });
-    });
+    // el orden de assets no coincide con depositTokenAddresses: se empareja quitando los tokens base conocidos (nativo envuelto / dólar) de ambos lados
+    const reward = [...all.values()].find((g) => g.type === "gov" && g.tokenAddress?.toLowerCase() === v.earnContractAddress?.toLowerCase());
+    const info = { name: v.name, status: v.status, apyPct: +(((apy[reward?.id ?? v.id]?.totalApy) ?? 0) * 100).toFixed(1), tvlUsd: Math.round((tvlById[v.id] ?? 0) + (tvlById[reward?.id] ?? 0)) };
+    const addrs = v.depositTokenAddresses.filter((x) => !BASES.has(x.toLowerCase()));
+    const syms = (v.assets ?? []).filter((x) => !BASE_SYMS.has(String(x).toUpperCase()));
+    if (addrs.length !== 1 || syms.length !== 1) continue;
+    const o = (out[addrs[0].toLowerCase()] ??= { symbol: syms[0], address: addrs[0], vaults: [] });
+    o.vaults.push(info);
   }
   return Object.values(out);
 }
