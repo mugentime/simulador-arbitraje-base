@@ -215,7 +215,7 @@ export const CHAINS = {
       // 2026-11-05 04:45 (Fetch.ai FET (PoS) con pools WPOL en QuickSwap)
       // FET 0x7583FEDD… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 05:45 (Ocean Token (PoS) con pools en QuickSwap/Sushi)
-      { sym: "OCEAN", address: "0x282d8efCe846A88B159800bd4130ad77443Fa1A1", symbols: ["mOCEAN"] },
+      // OCEAN 0x282d8efC… verificado pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["MaticX/USDC", "WBTC/wstETH", // 06:45 y 07:45: 3+ corridas seguidas entre los 3 peores
@@ -329,7 +329,7 @@ export const CHAINS = {
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
       // 2026-11-05 05:45 (Binance-Peg EOS y Tezos XTZ con pools WBNB/USDT en PancakeSwap)
-      { sym: "EOS", address: "0x56b6fB708fC5732DEC1Afc8D8556423A2EDcCbD6" }, { sym: "XTZ", address: "0x16939ef78684453bfDFb47825F8a5F714f12623a" },
+      { sym: "EOS", address: "0x56b6fB708fC5732DEC1Afc8D8556423A2EDcCbD6" }, // XTZ 0x16939ef7… verificado pero 0 pools ≥ MIN_LIQ_USD
       // TUSD 0x40af3827… verificado pero 0 pools (liquidez contra BUSD) // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
@@ -451,7 +451,7 @@ export const CHAINS = {
       // 2026-11-05 04:45 (Inverse DOLA con pools USDC en Balancer/Uni v3)
       { sym: "DOLA", address: "0x6A7661795C374c0bFC635934efAddFf3A7Ee23b6" },
       // 2026-11-05 05:45 (Curve crvUSD con pools USDC/USDT; yearn YFI con pools WETH)
-      { sym: "crvUSD", address: "0x498Bf2B1e120FeD3ad3D42EA2165E9b73f99C1e5" }, { sym: "YFI", address: "0x82e3A8F066a6989666b031d916c43672085b1582" },
+      // crvUSD 0x498Bf2B1… y YFI 0x82e3A8F0… verificados pero 0 pools ≥ MIN_LIQ_USD
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
     excludedPairs: ["ARB/PENDLE", "DAI/wstETH", "LINK/PENDLE", // 06:45, 07:45 y 08:45: 3+ corridas seguidas entre los 3 peores
