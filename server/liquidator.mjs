@@ -96,6 +96,13 @@ export class Liquidator {
     } else { await core.refreshPools(ethers, this.provider, c.pools); }
     try { await core.refreshTicks(ethers, this.provider, c.pools); } catch { /* sin ticks: reservas virtuales */ }
     const live = c.pools.filter((p) => p.reserve0 > 0n && p.reserve1 > 0n);
+    const best = this.routeFrom(live, colTok, loanTok, amountIn);
+    if (best) best.live = live;
+    return best;
+  }
+
+  // mejor ruta (directa o vía WETH) sobre pools ya cargados: sin RPC, sirve para cotizar varios tamaños
+  routeFrom(live, colTok, loanTok, amountIn) {
     const eq = (a, b) => a.toLowerCase() === b.toLowerCase();
     let best = null;
     // directo
@@ -133,7 +140,7 @@ export class Liquidator {
 
   async _attempt(cand, { block, gas, ethUsd }) {
     const wallet = this.executor.wallet, exec = this.executor.p1.executor;
-    let loanTok, colTok, hop0, amount, label, valueUsd, expectedCol = 0n;
+    let loanTok, colTok, hop0, amount, label, valueUsd, expectedCol = 0n, morphoSize = null;
     if (cand.proto === "aave") {
       const { debts, cols } = await this.aavePosition(cand.user);
       if (!debts.length || !cols.length) return;
@@ -156,20 +163,37 @@ export class Liquidator {
       // máximo incautable: todo el colateral o el que cubre toda la deuda·LIF
       if (price === 0n) return;
       const maxSeizeByDebt = (borrowed * BigInt(Math.floor(lif * 1e6)) / 1_000_000n) * 10n ** 36n / price;
-      const seized = (collateral < maxSeizeByDebt ? collateral : maxSeizeByDebt) * 995n / 1000n;
-      const repaid = (seized * price / 10n ** 36n) * 1_000_000n / BigInt(Math.floor(lif * 1e6));
-      amount = repaid * 1005n / 1000n; // margen de redondeo; lo no usado vuelve con el préstamo
+      const fullSeized = (collateral < maxSeizeByDebt ? collateral : maxSeizeByDebt) * 995n / 1000n;
       const mp = [loanTok.address, colTok.address, ethers.getAddress(m.market.oracleAddress), ethers.getAddress(m.market.irmAddress), BigInt(m.market.lltv)];
-      hop0 = [4, MORPHO_OF(), loanTok.address, colTok.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,address,address,uint256)", "address", "uint256"], [mp, cand.user, seized])];
       label = `Morpho · ${colTok.sym}/${loanTok.sym} LLTV ${(Number(m.market.lltv) / 1e16).toFixed(0)}% (LIF ${((lif - 1) * 100).toFixed(1)}%)`;
-      expectedCol = seized;
       if (price === 0n || borrowed === 0n) return;
-      valueUsd = (Number(repaid) / 10 ** loanTok.decimals) * (cand.debtUsd / Math.max(1e-9, Number(borrowed) / 10 ** loanTok.decimals));
+      const usdPerUnit = cand.debtUsd / Math.max(1e-9, Number(borrowed) / 10 ** loanTok.decimals);
+      // Morpho admite liquidaciones parciales: el tamaño se elige según lo que la venta del colateral puede absorber
+      morphoSize = (seized) => {
+        const repaid = (seized * price / 10n ** 36n) * 1_000_000n / BigInt(Math.floor(lif * 1e6));
+        return {
+          seized, repaid, amount: repaid * 1005n / 1000n, // margen de redondeo; lo no usado vuelve con el préstamo
+          hop0: [4, MORPHO_OF(), loanTok.address, colTok.address, 0, 0, 0, ethers.AbiCoder.defaultAbiCoder().encode(["tuple(address,address,address,address,uint256)", "address", "uint256"], [mp, cand.user, seized])],
+          valueUsd: (Number(repaid) / 10 ** loanTok.decimals) * usdPerUnit,
+        };
+      };
+      ({ amount, hop0, valueUsd } = morphoSize(fullSeized)); expectedCol = fullSeized;
     }
     if (amount <= 0n) return;
     // ruta de venta del colateral (cantidad esperada ≈ valor/precio; se usa la salida real del salto en la cadena)
-    const route = await this.sellRoute(colTok, loanTok, expectedCol > 0n ? expectedCol : 1n);
+    let route = await this.sellRoute(colTok, loanTok, expectedCol > 0n ? expectedCol : 1n);
     if (!route) { this.note(cand, label, "sin pool para vender el colateral"); return; }
+    if (morphoSize) {
+      const pick = pickMorphoSize(morphoSize, expectedCol, (seized) => this.routeFrom(route.live, colTok, loanTok, seized));
+      if (!pick) {
+        // ni el tamaño más chico cubre la deuda pagada: deuda mala o colateral sin liquidez; no se gasta una simulación
+        this.x.noMarket = (this.x.noMarket ?? 0) + 1;
+        this.backoff.set(cand.proto + ":" + cand.user, Date.now() + 10 * 60_000);
+        if ((this.x.noMarket % 25) === 1) await this.diag(`liquidación: sin margen · ${label} · ${cand.user.slice(0, 10)}… · la venta del colateral no cubre lo pagado en ningún tamaño (1 → 1/64; ${this.x.noMarket} en total)`);
+        this.note(cand, label, "venta del colateral < deuda pagada en todos los tamaños"); return;
+      }
+      ({ amount, hop0, valueUsd } = pick.size); expectedCol = pick.size.seized; route = pick.route;
+    }
     const hops = [hop0];
     let t = colTok.address;
     for (const p of route.route) { const out = core.other(p, t).address; hops.push(this.hopFor(p, t, out)); t = out; }
@@ -253,4 +277,19 @@ function decodeRevert(iface, e) {
     return "revert " + data.slice(0, 10);
   }
   return (e?.shortMessage || e?.message || "revert").slice(0, 120);
+}
+
+// Tamaño de liquidación Morpho: prueba 1, 1/2, … 1/64 del máximo incautable y se queda con el que deja más
+// margen (salida de la venta − deuda pagada con su margen de redondeo); null si ninguno lo cubre.
+export function pickMorphoSize(sizeOf, fullSeized, quote) {
+  let best = null;
+  for (let k = 0n; k <= 6n; k++) {
+    const seized = fullSeized >> k;
+    if (seized <= 0n) break;
+    const size = sizeOf(seized), r = quote(seized);
+    if (!r) continue;
+    const margin = r.out - size.amount;
+    if (margin > 0n && (!best || margin > best.margin)) best = { size, route: r, margin };
+  }
+  return best;
 }
