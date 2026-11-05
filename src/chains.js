@@ -371,7 +371,7 @@ export const CHAINS = {
       { sym: "asBNB", address: "0x77734e70b6E88b4d82fE632a168EDf6e700912b6" }, { sym: "AITECH", address: "0x2D060Ef4d6BF7f9e5edDe373Ab735513c0e4F944" },
       // 2026-11-05 13:45: memes 0xF7454880… (four.meme) verificado pero 0 pools ≥ MIN_LIQ_USD en estas factories
       // 2026-11-05 14:45 (MGO con 2 pools WBNB en PancakeSwap v3, ~$50M/día; World Mobile WMTX con pools WBNB/USDT; Falcon Finance FF con pools USDT/USDC)
-      { sym: "MGO", address: "0x5e0d6791EdbEEBa6a14D1d38e2b8233257118EB1" }, { sym: "WMTX", address: "0xDBB5Cf12408a3Ac17d668037Ce289f9eA75439D7" }, { sym: "FF", address: "0xAC23B90A79504865D52B49B327328411a23d4dB2" },
+      { sym: "MGO", address: "0x5e0d6791EdbEEBa6a14D1d38e2b8233257118EB1" }, { sym: "WMTX", address: "0xDBB5Cf12408a3Ac17d668037Ce289f9eA75439D7" }, // FF 0xAC23B90A… verificado pero 0 pools ≥ MIN_LIQ_USD
       { sym: "KOGE", address: "0xe6DF05CE8C8301223373CF5B969AFCb1498c5528" }, // FORM 0x5b73A93b… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-05 04:45 (Binance-Peg IoTeX IOTX y Band Protocol BAND con pools WBNB/USDT en PancakeSwap)
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
@@ -626,7 +626,7 @@ export const CHAINS = {
       // 2026-11-05 13:45 (reintento con Slipstream activo: Kelp wrsETH con pools WETH; Kraken kBTC con pools WBTC/WETH)
       // wrsETH 0x87eEE96D…, kBTC 0x73E0C0d4…, ACX 0xFf733b2A… y ENA 0x58538e6A… verificados pero 0 pools ≥ MIN_LIQ_USD también con Slipstream y Uniswap v2
       // 2026-11-05 14:45 (reintento con Slipstream: Metronome msETH/msUSD con pools WETH/OP/USDC/msUSD-msETH; cbETH con pools WETH/wstETH/USDC)
-      { sym: "msETH", address: "0x1610e3c85dd44Af31eD7f33a63642012Dca0C5A5" }, { sym: "msUSD", address: "0x9dAbAE7274D28A45F0B65Bf8ED201A5731492ca0" },
+      // msETH 0x1610e3c8… y msUSD 0x9dAbAE72… verificados pero 0 pools ≥ MIN_LIQ_USD también con Slipstream
       { sym: "cbETH", address: "0xadDb6A0412DE1BA0F936DCaeb8Aaa24578dcF3B2" },
     ],
     // pares excluidos por la revisión horaria (símbolos de rol o etiqueta, o direcciones): ver doc 13
