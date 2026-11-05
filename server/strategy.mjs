@@ -43,7 +43,9 @@ export function minOut(simOut, slipBps, refOut) {
 export class Strategy {
   constructor({ executor, provider, store, diag }) {
     this.x = executor; this.provider = provider; this.store = store; this.diag = diag;
-    this.kind = process.env.STRATEGY || ""; this.label = process.env.STRATEGY_RUN || "";
+    this.kind = process.env.STRATEGY || ""; this.label = process.env.STRATEGY_RUN || (this.kind === "beefy-clm-dca" ? "dca" : "");
+    // depósito periódico (STRATEGY=beefy-clm-dca): DCA_USD cada DCA_EVERY_H horas en STRATEGY_VAULT_ID
+    this.dcaUsdCfg = Number(process.env.DCA_USD ?? 10); this.dcaEveryMs = Number(process.env.DCA_EVERY_H ?? 24) * 3600_000;
     this.reserve = ethers.parseEther(process.env.STRATEGY_RESERVE_ETH || "0.002");
     this.slipBps = Number(process.env.STRATEGY_SLIP_BPS ?? 50);
     this.busy = false; this.done = false;
@@ -74,7 +76,36 @@ export class Strategy {
     return rc;
   }
 
+  /** Depósito periódico: una corrida "<etiqueta>#n" por periodo; sin fondos → reintenta cada hora; error → espera al siguiente periodo. */
+  async dca(ctx) {
+    const now = Date.now();
+    const d = ((this.s.dca ??= {})[this.label] ??= { n: 0, lastAt: 0, totalUsd: 0, deposits: [], vaultId: process.env.STRATEGY_VAULT_ID || null });
+    if (this.retryAt && now < this.retryAt) return;
+    const label = `${this.label}#${d.n + 1}`;
+    if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) return;
+    this.run = this.s.runs[label] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: this.dcaUsdCfg };
+    this.dcaUsd = this.dcaUsdCfg;
+    try {
+      await enterClm(this, ctx);
+      this.run.status = "hecho"; this.run.endedAt = Date.now();
+      d.n++; d.lastAt = now; d.totalUsd += this.dcaUsdCfg; d.deposits.push({ at: new Date(now).toISOString(), usd: this.dcaUsdCfg, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
+      d.nextAt = new Date(now + this.dcaEveryMs).toISOString(); this.retryAt = 0;
+      await this.diag(`estrategia beefy-clm-dca: depósito ${d.n} de $${this.dcaUsdCfg} en ${this.run.vaultId} · acumulado $${d.totalUsd} · siguiente ${d.nextAt}`);
+    } catch (e) {
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
+      if (e.retry && (this.run.retries = (this.run.retries ?? 0) + 1) <= 60) { this.retryAt = now + 60_000; this.run.lastRetry = msg; if (this.run.retries === 1 || this.run.retries % 10 === 0) await this.diag(`estrategia beefy-clm-dca: reintento ${this.run.retries} en 1 min · ${msg}`); }
+      else if (e.noFunds) { this.retryAt = now + 3600_000; if (d.lastNoFunds !== label) { d.lastNoFunds = label; await this.diag(`estrategia beefy-clm-dca: ${msg} · reintento cada hora hasta que haya fondos`); } }
+      else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.n++; d.errors = (d.errors ?? 0) + 1; this.retryAt = 0; await this.diag(`estrategia beefy-clm-dca: depósito ${label} falló · ${msg} · se intenta de nuevo en el siguiente periodo`); }
+    }
+  }
+
   async onBlock(ctx) {
+    if (this.kind === "beefy-clm-dca") {
+      if (this.busy || !this.wanted) return;
+      this.busy = true;
+      try { await this.dca(ctx); } finally { this.busy = false; await this.save().catch(() => {}); }
+      return;
+    }
     if (this.done || this.busy || !this.wanted) return;
     this.busy = true;
     try {
