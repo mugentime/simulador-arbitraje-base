@@ -11,6 +11,7 @@ import { Executor } from "./executor.mjs";
 import { Harvester } from "./harvester.mjs";
 import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
+import { LpLending } from "./lplending.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
 import { MempoolWatcher } from "./mempool.mjs";
@@ -193,6 +194,7 @@ let executor = null;
 let harvester = null;
 let liquidations = null;
 let liquidator = null;
+let lpLending = null;
 let fast = null;
 let events = null;
 // WebSocket para el estado por eventos: WS_EVENTS_URL, o el de Alchemy de la cadena (Base: pendingLogs de Flashblocks)
@@ -226,6 +228,9 @@ async function loop() {
       await lx.init();
       liquidator = lx;
       lq.onCandidate = (cand, ctx) => lx.attempt(cand, ctx).catch(() => {});
+      // préstamos con LP como colateral (Lista en BSC, Extra Finance en OP/Base): solo observación; una instancia para todas las tandas
+      if (!lpLending) { lpLending = new LpLending({ provider: p, logsProvider: logsProviderFor(p, url), store, diag, ourAddress: () => executor?.p1?.executor ?? null }); await lpLending.init(); }
+      else { lpLending.provider = p; lpLending.logs = logsProviderFor(p, url); }
       if (process.env.FLASHBLOCKS !== "0") {
         // un solo bucle rápido: el de la tanda anterior se detiene (si no, se acumulan bucles con ejecutores y nonces propios)
         if (fast) { fast.stop(); fast.executor = exec; fast.start(); }
@@ -247,6 +252,7 @@ async function loop() {
         const text = await exec.onBlock(ctx);
         hv.onBlock(ctx).catch((e) => { hv.h.lastError = e.shortMessage || e.message; }); // en paralelo: no retrasa el siguiente bloque
         lq.onBlock(ctx).catch((e) => { lq.liq.aave.error = e.shortMessage || e.message; });
+        if (process.env.LP_LENDING !== "0") lpLending?.onBlock(ctx).catch(() => {});
         if (lx.x.pending.length) lx.reconcile(ctx.ethUsd).catch(() => {});
         return text;
       };
@@ -286,7 +292,7 @@ const server = http.createServer(async (req, res) => {
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, lpLending: lpLending?.s ?? null, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
   if (req.url.startsWith("/api/depth") || req.url.startsWith("/api/cashin")) {
     try {
@@ -299,6 +305,10 @@ const server = http.createServer(async (req, res) => {
       const vaults = (await beefyClmVaults(CHAIN_CFG.key)).filter((v) => v.tvlUsd >= minTvl);
       res.writeHead(200, headers); return res.end(JSON.stringify({ chain: CHAIN_CFG.key, ethUsd, minTvl, vaults: cashIn(vaults, rows) }));
     } catch (e) { res.writeHead(500, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
+  if (req.url.startsWith("/api/lp-lending")) {
+    const s = lpLending?.s ?? (await store.get("lpl")) ?? null;
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, line: lpLending?.line() ?? null, ...(s ?? {}) }));
   }
   if (req.url.startsWith("/api/beefy-tokens")) {
     const q = new URL(req.url, "http://x").searchParams;
