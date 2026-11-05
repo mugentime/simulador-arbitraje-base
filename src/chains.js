@@ -336,7 +336,7 @@ export const CHAINS = {
       { sym: "IOTX", address: "0x9678E42ceBEb63F23197D726B29b1CB20d0064E5" }, { sym: "BAND", address: "0xAD6cAEb32CD2c308980a548bD0Bc5AA4306c6c18" },
       // 2026-11-05 05:45 (Binance-Peg EOS y Tezos XTZ con pools WBNB/USDT en PancakeSwap)
       // 2026-11-05 06:45 (Binance-Peg Compound COMP con pools ETH/WBNB/USDT; Binance-Peg SushiToken SUSHI con pools WBNB/USDT/USDC en PancakeSwap)
-      { sym: "COMP", address: "0x52CE071Bd9b1C4B00A0b92D298c512478CaD67e8" }, { sym: "SUSHI", address: "0x947950BcC74888a40Ffa2593C5798F11Fc9124C4" },
+      // COMP 0x52CE071B… y SUSHI 0x947950Bc… verificados pero 0 pools ≥ MIN_LIQ_USD
       { sym: "EOS", address: "0x56b6fB708fC5732DEC1Afc8D8556423A2EDcCbD6" }, // XTZ 0x16939ef7… verificado pero 0 pools ≥ MIN_LIQ_USD
       // TUSD 0x40af3827… verificado pero 0 pools (liquidez contra BUSD) // THE 0xF4C8E32E… e ID 0x2dfF88A5… verificados pero 0 pools (THE: liquidez en Thena)
     ],
@@ -449,7 +449,7 @@ export const CHAINS = {
       // 2026-11-05 02:45 (Tether Gold XAUt0, OFT, con pools USDC/USDT0/PAXG en Uni v3/v4)
       /* XAUt0 0x40461291… retirado 2026-11-05 06:45 (USDC/XAUt0 y USDT/XAUt0 s0 p1 al entrar al ranking) */
       // 2026-11-05 06:45 (Frax frxETH y sfrxETH con pools WETH/wstETH en Camelot/Uni v3/Balancer)
-      { sym: "frxETH", address: "0x178412e79c25968a32e89b11f63B33F733770c2A" }, { sym: "sfrxETH", address: "0x95aB45875cFFdba1E5f451B950bC2E42c0053f39" },
+      // frxETH 0x178412e7… y sfrxETH 0x95aB4587… verificados pero 0 pools ≥ MIN_LIQ_USD (liquidez en Curve/Balancer)
       // 2026-11-05 03:45 (Morpho MORPHO, OFT de LayerZero, con pools WETH en Uni v3)
       // MORPHO 0x40BD670A… verificado pero 0 pools ≥ MIN_LIQ_USD
       // 2026-11-04 23:45 (Animecoin ANIME con pools WETH/USDT0 en Uni v3/Camelot; Frax frxUSD con pools USDC)
