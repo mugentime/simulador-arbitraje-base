@@ -18,6 +18,7 @@ const st = { eth: ethers.parseEther("0.01063"), bal: {}, allow: {}, calmFails: 2
 const B = (t) => st.bal[lc(t)] ?? 0n; const add = (t, v) => { st.bal[lc(t)] = B(t) + v; };
 const ETHUSD = 3300n;
 const sent = [];
+const pd = (a0, a1) => { const u0 = a0 < a1 / 10n ** 10n ? a0 : a1 / 10n ** 10n; return [u0 * 2n, u0, u0 * 10n ** 10n]; };
 function exec(tx, write) {
   const to = lc(tx.to);
   if (to === lc(BASE.ROUTER)) {

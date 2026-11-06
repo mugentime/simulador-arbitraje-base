@@ -122,11 +122,47 @@ export function ethForUsdc(needUsdc, ethUsd, dec = 6) {
 }
 const noFunds = (m) => Object.assign(new Error(m), { noFunds: true });
 
+/** Proporción que el CLM acepta ahora: X crudo por estable crudo (previewDeposit con X de sobra). Infinity si solo toma X. */
+async function clmRatio(s) {
+  const r = s.run, U1 = 10n ** BigInt(s.net.stableDec);
+  const u = 1000n * U1, x = 10n ** 36n;
+  const [a0, a1] = r.usdcIs0 ? [u, x] : [x, u];
+  try {
+    const [, used0, used1] = await call(s, r.clm, "previewDeposit", [a0, a1]);
+    const [uU, uX] = r.usdcIs0 ? [used0, used1] : [used1, used0];
+    if (uU === 0n) return Infinity;
+    return Number(uX) / Number(uU);
+  } catch {
+    const [b0, b1] = await call(s, r.clm, "balances");
+    const [bU, bX] = r.usdcIs0 ? [b0, b1] : [b1, b0];
+    return bU === 0n ? Infinity : Number(bX) / Number(bU);
+  }
+}
+
+/**
+ * Rebalanceo para depositar en proporción R (X por estable, crudo) teniendo S estable y X tokens, con precio `rate` (X por estable).
+ * Devuelve cuánto estable cambiar a X o cuánto X cambiar a estable (crudo, sin comisión).
+ */
+export function rebalance(S, X, rate, R) {
+  if (!(rate > 0)) return { stableToX: 0, xToStable: 0 };
+  const V = S + X / rate; // valor total en estable
+  if (R === Infinity) return { stableToX: S, xToStable: 0 };
+  const sT = V / (1 + R / rate), xT = R * sT; // objetivo
+  if (X > xT) return { stableToX: 0, xToStable: X - xT };
+  return { stableToX: Math.max(0, S - sT), xToStable: 0 };
+}
+
 export async function enterClm(s, ctx) {
   const r = s.run, N = s.net;
   await resolve(s);
   const D = N.stableDec, U1 = 10n ** BigInt(D);
   // 1) nativo → estable (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el estable de la wallet)
+  if (r.usdcIn === undefined && s.sweepStable !== undefined) {
+    // barrido: solo el estable que sobró antes (sin pasar del saldo) + el X que haya en la wallet (paso 2)
+    const have = await bal(s, N.stable);
+    const want = ethers.parseUnits(s.sweepStable.toFixed(Math.min(6, D)), D);
+    r.ethIn = "0"; r.usdcIn = String(want < have ? want : have); await s.save();
+  }
   if (r.usdcIn === undefined) {
     const balEth = await s.provider.getBalance(s.me);
     const target = s.dcaUsd ? ethers.parseUnits(String(s.dcaUsd), D) : null;
@@ -153,18 +189,21 @@ export async function enterClm(s, ctx) {
     } else { r.ethIn = "0"; r.usdcIn = String(target); }
     await s.save();
   }
-  // 2) USDC → X en la proporción del CLM
+  // 2) rebalanceo estable/X según la proporción que el CLM acepta HOY (previewDeposit con X de sobra), incluyendo el X que ya
+  //    haya en la wallet (sobrantes de depósitos anteriores). balances() del CLM incluye la posición alternativa y no sirve.
   if (r.xIn === undefined) {
     const usdc = BigInt(r.usdcIn);
-    const [b0, b1] = await call(s, r.clm, "balances");
-    const [balU, balX] = r.usdcIs0 ? [b0, b1] : [b1, b0];
+    const xWallet = await bal(s, r.x);
     const probe = U1; // 1 unidad del estable
-    if (r.dex !== "uni") await approve(s, N.stable, r.router, usdc, "approve estable→router (cotización)");
-    const rate = Number(await slipQuote(s, N.stable, r.x, probe)) / Number(probe);
-    const f = swapFraction(rate, Number(balX), Number(balU));
-    const swapAmt = BigInt(Math.floor(Number(usdc) * f));
-    r.xIn = swapAmt > 0n ? String(await slipSwap(s, N.stable, r.x, swapAmt, probe, `swap ${N.stableSym}→X`)) : "0";
-    r.usdcForClm = String(usdc - swapAmt); await s.save();
+    if (r.dex !== "uni") await approve(s, N.stable, r.router, usdc > 0n ? usdc : U1, "approve estable→router (cotización)");
+    const rate = Number(await slipQuote(s, N.stable, r.x, probe)) / Number(probe); // X crudo por estable crudo
+    const R = await clmRatio(s); // X crudo que pide el CLM por cada estable crudo (Infinity = solo X)
+    if (usdc === 0n && xWallet === 0n) throw new Error("nada que depositar");
+    const plan = rebalance(Number(usdc), Number(xWallet), rate, R);
+    let xHave = xWallet, uHave = usdc;
+    if (plan.stableToX > 0) { const amt = BigInt(Math.floor(plan.stableToX)); xHave += await slipSwap(s, N.stable, r.x, amt, probe, `swap ${N.stableSym}→X`); uHave -= amt; }
+    else if (plan.xToStable > 0) { const amt = BigInt(Math.floor(plan.xToStable)); uHave += await slipSwap(s, r.x, N.stable, amt, amt / 100n || 1n, `swap X→${N.stableSym}`); xHave -= amt; }
+    r.xIn = String(xHave); r.usdcForClm = String(uHave); r.ratio = { R, rate, xWallet: String(xWallet) }; await s.save();
   }
   // 3) depósito en el CLM
   if (r.clmShares === undefined) {
@@ -178,7 +217,13 @@ export async function enterClm(s, ctx) {
     try { await s.sim({ to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, shares * 99n / 100n]) }); }
     catch (e) { throw retry(`deposit del CLM no pasa la simulación (${(e.shortMessage || e.message).slice(0, 120)}); ¿no está calm?`); }
     await s.send("deposit CLM", { to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, shares * 99n / 100n]) });
-    r.clmShares = String((await bal(s, r.clm)) - before); r.used = [String(used0), String(used1)]; await s.save();
+    r.clmShares = String((await bal(s, r.clm)) - before); r.used = [String(used0), String(used1)];
+    const [uU, uX] = r.usdcIs0 ? [used0, used1] : [used1, used0];
+    const rate = r.ratio?.rate || 0;
+    const leftU = Number(uAmt - uU) / Number(U1), leftXinStable = rate > 0 ? Number(xAmt - uX) / rate / Number(U1) : 0;
+    r.leftover = { stable: leftU, xAsStable: leftXinStable };
+    await s.diag(`estrategia ${s.kind}: CLM tomó ${(Number(uU) / Number(U1)).toFixed(4)} ${N.stableSym} + ${rate > 0 ? (Number(uX) / rate / Number(U1)).toFixed(4) : "?"} en X de ${(Number(uAmt) / Number(U1)).toFixed(4)} + ${rate > 0 ? (Number(xAmt) / rate / Number(U1)).toFixed(4) : "?"} ofrecidos · sobrante en wallet ≈ $${(leftU + leftXinStable).toFixed(4)} (se usa en el siguiente depósito)`);
+    await s.save();
   }
   // 4) participaciones del CLM → vault que compone
   if (r.mooShares === undefined) {

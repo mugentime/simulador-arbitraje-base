@@ -83,6 +83,25 @@ export class Strategy {
     const now = Date.now();
     const d = ((this.s.dca ??= {})[this.label] ??= { n: 0, lastAt: 0, totalUsd: 0, deposits: [], vaultId: process.env.STRATEGY_VAULT_ID || null });
     if (this.retryAt && now < this.retryAt) return;
+    // barrido inmediato de sobrantes (DCA_SWEEP=<etiqueta>): deposita el X de la wallet y el estable que sobró en depósitos anteriores
+    const sweepTag = process.env.DCA_SWEEP;
+    if (sweepTag && d.sweptTag !== sweepTag) {
+      const sl = `${this.label}-sweep-${sweepTag}`;
+      const leftStable = Object.entries(this.s.runs).filter(([k, r]) => k.startsWith(`${this.label}#`) && r.status === "hecho" && !r.swept)
+        .reduce((a, [, r]) => a + (r.leftover ? r.leftover.stable : (r.used && r.usdcForClm ? Number(BigInt(r.usdcForClm) - BigInt(r.usdcIs0 ? r.used[0] : r.used[1])) / 10 ** this.net.stableDec : 0)), 0);
+      this.run = this.s.runs[sl] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", sweep: true };
+      this.dcaUsd = null; this.sweepStable = Math.max(0, leftStable);
+      try {
+        await enterClm(this, ctx);
+        this.run.status = "hecho"; d.sweptTag = sweepTag;
+        for (const [k, r] of Object.entries(this.s.runs)) if (k.startsWith(`${this.label}#`)) r.swept = true;
+        await this.diag(`estrategia beefy-clm-dca: barrido ${sweepTag} hecho · sobrantes depositados en ${this.run.vaultId}`);
+      } catch (e) {
+        const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
+        if (e.retry) { this.retryAt = now + 60_000; } else { d.sweptTag = sweepTag; this.run.status = "error"; this.run.error = msg; await this.diag(`estrategia beefy-clm-dca: barrido falló · ${msg}`); }
+      } finally { this.sweepStable = undefined; }
+      return;
+    }
     const label = `${this.label}#${d.n + 1}`;
     if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) return;
     this.run = this.s.runs[label] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: this.dcaUsdCfg };

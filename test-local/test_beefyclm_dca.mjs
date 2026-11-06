@@ -17,6 +17,7 @@ const B = (t) => st.bal[lc(t)] ?? 0n; const add = (t, v) => { st.bal[lc(t)] = B(
 const ETHUSD = 3300n, BTCUSD = 100_000n; // cbBTC 8 decimales
 const usdcToBtc = (u) => u * 100n / BTCUSD; // 6 dec → 8 dec
 const sent = [];
+const pd = (a0, a1) => { const u0 = a0 < a1 * 1000n / 1n ? a0 : a1 * 1000n / 1n; return [u0 * 2n, u0, u0 * 1n / 1000n]; };
 function exec(tx, write) {
   const to = lc(tx.to);
   if (to === lc(BASE.ROUTER)) {
@@ -66,5 +67,11 @@ ok(d().n === 2 && !sent.slice(n0).some((t) => (t.value ?? 0n) > 0n) && st.eth < 
 mem.strategy.dca.cbbtc.lastAt -= 25 * 3600_000; s.s = mem.strategy; st.eth = ethers.parseEther("0.0021");
 await s.onBlock({ ethUsd: 3300 });
 ok(d().n === 2 && s.retryAt > Date.now() + 3500_000 && logs.some((l) => l.includes("fondos insuficientes")), "sin fondos → reintento en 1 h");
+// barrido: X sobrante en la wallet → se rebalancea y deposita sin esperar al siguiente día
+st.eth = ethers.parseEther("0.01"); add(CBBTC, 5000n); const rpBefore = B(RP); s.retryAt = 0;
+process.env.DCA_SWEEP = "s1"; await s.onBlock({ ethUsd: 3300 });
+ok(mem.strategy.dca.cbbtc.sweptTag === "s1" && B(RP) > rpBefore && B(CBBTC) < 100n, `barrido: cbBTC en wallet ${B(CBBTC)}, reward pool +${B(RP) - rpBefore}`);
+await s.onBlock({ ethUsd: 3300 }); ok(Object.keys(mem.strategy.runs).filter((k) => k.includes("-sweep-")).length === 1, "el barrido no se repite");
+delete process.env.DCA_SWEEP;
 console.log(fails ? "HAY FALLAS" : "todo OK");
 process.exit(fails ? 1 : 0);

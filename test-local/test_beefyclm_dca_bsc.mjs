@@ -20,6 +20,7 @@ const B = (t) => st.bal[lc(t)] ?? 0n; const add = (t, v) => { st.bal[lc(t)] = B(
 const ZECUSD = 500n;
 const usdcToBtc = (u) => u / ZECUSD; // USDT 18 dec → ZEC 18 dec
 const sent = [];
+const pd = (a0, a1) => { const u0 = a0 < a1 * 500n / 1n ? a0 : a1 * 500n / 1n; return [u0 * 2n, u0, u0 * 1n / 500n]; };
 function exec(tx, write) {
   const to = lc(tx.to);
   if (to === lc(N.router)) {
