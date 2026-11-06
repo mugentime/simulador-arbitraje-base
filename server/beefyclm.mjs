@@ -34,6 +34,9 @@ const C = new ethers.Interface([
   "function exactInputSingle((address tokenIn,address tokenOut,int24 tickSpacing,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)",
   "function fee() view returns (uint24)",
   "function stake(uint256 amount)",
+  "function earned(address _user) view returns (address[] rewardTokens, uint256[] earnedAmounts)",
+  "function getReward()",
+  "function deposit() payable",
   "function withdraw(uint256 amount)",
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)",
 ]);
@@ -44,6 +47,9 @@ export const UNI_QUOTER = "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a";
 // BNB Chain: docs.uniswap.org/contracts/v3/reference/deployments/bnb-deployments. En BSC no se vende nativo (nativeFee null): se usa el USDT de la wallet.
 const netsTable = () => ({
   base: { beefy: "base", stable: BASE.USDC, stableSym: "USDC", stableDec: 6, wnative: BASE.WETH, router: BASE.ROUTER, quoter: UNI_QUOTER, uniFactory: UNI_FACTORY, nativeFee: BASE.FEE },
+  // Robinhood Chain (4663): Uniswap v3 según @uniswap/sdk-core (ROBINHOOD_ADDRESSES); el "estable" de los CLM WETH-X es WETH,
+  // que se obtiene envolviendo ETH (wrapNative). resolve() verifica on-chain que router.factory() == uniFactory.
+  robinhood: { beefy: "robinhood", stable: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", stableSym: "WETH", stableDec: 18, wnative: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", router: "0xcaf681a66d020601342297493863e78c959e5cb2", quoter: "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7", uniFactory: "0x1f7d7550b1b028f7571e69a784071f0205fd2efa", nativeFee: null, wrapNative: true },
   bsc: { beefy: "bsc", stable: "0x55d398326f99059fF775485246999027B3197955", stableSym: "USDT", stableDec: 18, wnative: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", router: "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2", quoter: "0x78D78E420Da98ad378D7799bE8f4AF69033EB077", uniFactory: "0xdb1d10011ad0ff90774d0c6bb92e5c5c8b4461f7", nativeFee: null },
 });
 export const netOf = (key) => { const t = netsTable(); return t[key] ?? t.base; };
@@ -88,7 +94,10 @@ async function resolve(s) {
   const [pool] = await call(s, strat, "pool");
   const [factory] = await call(s, pool, "factory");
   let dex, router, tickSpacing = null, fee = null;
-  if (lc(factory) === lc(N.uniFactory)) { dex = "uni"; router = N.router; fee = Number((await call(s, pool, "fee"))[0]); }
+  if (lc(factory) === lc(N.uniFactory)) {
+    dex = "uni"; router = N.router; fee = Number((await call(s, pool, "fee"))[0]);
+    const [rf] = await call(s, router, "factory"); if (lc(rf) !== lc(N.uniFactory)) throw new Error(`router ${router} es de la fábrica ${rf}, no de ${N.uniFactory}`);
+  }
   else if (SLIP_ROUTERS[lc(factory)]) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)]; tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
   Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee });
@@ -159,14 +168,27 @@ export async function enterClm(s, ctx) {
   // 1) nativo → estable (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el estable de la wallet)
   if (r.usdcIn === undefined && s.sweepStable !== undefined) {
     // barrido: solo el estable que sobró antes (sin pasar del saldo) + el X que haya en la wallet (paso 2)
-    const have = await bal(s, N.stable);
+    const have0 = await bal(s, N.stable), prot = s.protectStable ?? 0n, have = have0 > prot ? have0 - prot : 0n;
     const want = ethers.parseUnits(s.sweepStable.toFixed(Math.min(6, D)), D);
     r.ethIn = "0"; r.usdcIn = String(want < have ? want : have); await s.save();
+  }
+  if (r.usdcIn === undefined && N.wrapNative && s.dcaUsd) {
+    // el "estable" es el nativo envuelto (WETH): objetivo = dcaUsd / precio; se envuelve solo lo que falte (sin tocar lo retenido)
+    if (!(ctx?.ethUsd > 0)) throw retry("sin precio del nativo");
+    const target = ethers.parseEther((s.dcaUsd / ctx.ethUsd).toFixed(18));
+    const w0 = await bal(s, N.stable), prot = s.protectStable ?? 0n, have = w0 > prot ? w0 - prot : 0n;
+    const need = have >= target ? 0n : target - have;
+    if (need > 0n) {
+      const balEth = await s.provider.getBalance(s.me);
+      if (need > spendable(balEth, s.reserve, ethers.parseEther("0.00005"))) throw noFunds(`fondos insuficientes para $${s.dcaUsd}: ${ethers.formatEther(have)} ${N.stableSym} libre y ${ethers.formatEther(balEth)} nativo (reserva ${ethers.formatEther(s.reserve)})`);
+      await s.send(`wrap nativo→${N.stableSym}`, { to: N.stable, value: need, data: C.encodeFunctionData("deposit()") });
+    }
+    r.ethIn = ethers.formatEther(need); r.usdcIn = String(target); await s.save();
   }
   if (r.usdcIn === undefined) {
     const balEth = await s.provider.getBalance(s.me);
     const target = s.dcaUsd ? ethers.parseUnits(String(s.dcaUsd), D) : null;
-    const usdcHave = target !== null ? await bal(s, N.stable) : 0n;
+    const usdcHave = target !== null ? await (async () => { const b = await bal(s, N.stable), p = s.protectStable ?? 0n; return b > p ? b - p : 0n; })() : 0n;
     let amountIn;
     if (target === null) {
       amountIn = spendable(balEth, s.reserve, ethers.parseEther("0.0003"));
@@ -242,6 +264,7 @@ export async function exitClm(s, ctx) {
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
+    if (r.gov && held > 0n) await claimRewards(s, "getReward antes de salir").catch(() => {});
     if (held > 0n) await s.send(r.gov ? "withdraw reward pool Beefy" : "withdrawAll vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("withdraw(uint256)", [held]) : C.encodeFunctionData("withdrawAll") });
     r.clmOut = String((await bal(s, r.clm)) - before); await s.save();
   }
@@ -267,4 +290,38 @@ export async function exitClm(s, ctx) {
   p.amountOutMinimum = minOut(simOut, s.slipBps, ctx?.ethUsd ? BigInt(Math.floor(Number(amt) / 1e6 / ctx.ethUsd * 1e18)) : 0n);
   await s.send("swap USDC→ETH", { to: BASE.ROUTER, data: U.encodeFunctionData("multicall", [[U.encodeFunctionData("exactInputSingle", [p]), U.encodeFunctionData("unwrapWETH9", [p.amountOutMinimum, s.me])]]) });
   await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, 6)} USDC → ETH · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
+}
+
+/** Recompensas pendientes del reward pool (gov): [{token, amount}] (crudo). */
+export async function pendingRewards(s) {
+  const r = s.run;
+  const [tokens, amounts] = await call(s, r.vault, "earned(address)", [s.me]);
+  return tokens.map((t, i) => ({ token: t, amount: amounts[i] })).filter((x) => x.amount > 0n);
+}
+/** Cobra las recompensas del reward pool. Devuelve los saldos recibidos por token (crudo). */
+export async function claimRewards(s, step = "getReward") {
+  const pend = await pendingRewards(s);
+  if (!pend.length) return [];
+  const before = await Promise.all(pend.map((p) => bal(s, p.token)));
+  await s.send(step, { to: s.run.vault, data: C.encodeFunctionData("getReward") });
+  return Promise.all(pend.map(async (p, i) => ({ token: p.token, amount: (await bal(s, p.token)) - before[i] })));
+}
+/**
+ * Retención de ganancias (demo dinámico): cobra las recompensas del reward pool y convierte las que vengan en el token X del
+ * CLM al estable; devuelve el estable obtenido (crudo) y lo que quedó en otros tokens. Lo obtenido NO se vuelve a depositar
+ * (Strategy lo suma a lo retenido y lo protege de los depósitos).
+ */
+export async function harvestProfit(s) {
+  const r = s.run, N = s.net;
+  await resolve(s);
+  if (!r.gov) return { stable: 0n, other: [] };
+  const got = await claimRewards(s, "cobrar recompensas (retener)");
+  let stable = 0n; const other = [];
+  for (const g of got) {
+    if (g.amount <= 0n) continue;
+    if (lc(g.token) === lc(N.stable)) stable += g.amount;
+    else if (lc(g.token) === lc(r.x)) stable += await slipSwap(s, r.x, N.stable, g.amount, g.amount / 100n || 1n, `swap recompensa X→${N.stableSym}`);
+    else other.push({ token: g.token, amount: String(g.amount) });
+  }
+  return { stable, other };
 }

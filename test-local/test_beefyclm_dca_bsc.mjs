@@ -23,6 +23,7 @@ const sent = [];
 const pd = (a0, a1) => { const u0 = a0 < a1 * 500n / 1n ? a0 : a1 * 500n / 1n; return [u0 * 2n, u0, u0 * 1n / 500n]; };
 function exec(tx, write) {
   const to = lc(tx.to);
+  if (to === lc(N.router) && tx.data === C.getFunction("factory").selector) return C.encodeFunctionResult("factory", [ethers.getAddress(UNI_FACTORY)]);
   if (to === lc(N.router)) {
     const p = U.parseTransaction({ data: tx.data, value: tx.value ?? 0n }).args[0];
     let out;

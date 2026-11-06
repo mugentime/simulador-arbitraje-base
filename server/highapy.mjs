@@ -10,6 +10,8 @@ export const RULES = () => ({
   exitApyPct: Number(process.env.HIGH_APY_EXIT_PCT ?? 500), // sale si el APY baja de aquí (la mitad del umbral)
   exitTvlMult: Number(process.env.HIGH_APY_EXIT_TVL_MULT ?? 3), // sale si el TVL se multiplica (dilución)
   exitHours: Number(process.env.HIGH_APY_EXIT_HOURS ?? 6), // la condición debe durar estas horas seguidas
+  rotateMult: Number(process.env.HIGH_APY_ROTATE_MULT ?? 1.5), // demo dinámico: rota si otro elegible paga ≥ ×1.5
+  rotateHours: Number(process.env.HIGH_APY_ROTATE_HOURS ?? 2), // …durante estas horas seguidas
   blocked: (process.env.HIGH_APY_BLOCKED || "").split(",").map((x) => x.trim()).filter(Boolean),
 });
 
@@ -42,4 +44,11 @@ export function exitCheck(entry, now, badSince, nowMs, rules = RULES()) {
   if (!why) return { exit: false, badSince: null };
   const since = badSince ?? nowMs;
   return { exit: !now || nowMs - since >= rules.exitHours * 3600_000, badSince: since, why };
+}
+
+/** Rotación (demo dinámico): el mejor otro elegible paga ≥ rotateMult × el actual durante rotateHours. */
+export function rotateCheck(cur, best, since, nowMs, rules = RULES()) {
+  if (!cur || !best || cur.apyPct === null || best.apyPct === null || best.apyPct < cur.apyPct * rules.rotateMult) return { rotate: false, since: null };
+  const s = since ?? nowMs;
+  return { rotate: nowMs - s >= rules.rotateHours * 3600_000, since: s, why: `rotación: ${best.id} ${best.apyPct.toFixed(0)} % vs ${cur.apyPct.toFixed(0)} % (≥ ×${rules.rotateMult} por ${rules.rotateHours} h)` };
 }

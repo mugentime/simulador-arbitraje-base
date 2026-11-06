@@ -15,7 +15,7 @@ import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { Strategy } from "./strategy.mjs";
-import { Bridger, Topup } from "./bridge.mjs";
+import { Bridger, Topup, topupTargets } from "./bridge.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
 import { MempoolWatcher } from "./mempool.mjs";
@@ -200,7 +200,7 @@ let liquidations = null;
 let liquidator = null;
 let lpLending = null;
 let revertLend = null;
-let topup = null; // TOPUP_CHAIN: mantiene fondeada otra cadena desde Base (Relay)
+let topups = []; // TOPUP_TARGETS / TOPUP_CHAIN: mantiene fondeadas otras cadenas desde Base (Relay)
 let bridger = null; // BRIDGE_RUN: gas nativo de esta cadena → USDC en Base (Relay)
 let strategy = null; // estrategia de capital (STRATEGY + STRATEGY_RUN), una ejecución por etiqueta
 let fast = null;
@@ -245,10 +245,8 @@ async function loop() {
         if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
         else { strategy.x = exec; strategy.provider = p; }
       }
-      if (process.env.TOPUP_CHAIN) {
-        if (!topup) { topup = new Topup({ executor: exec, provider: p, store, diag }); await topup.init(); }
-        else { topup.x = exec; topup.provider = p; }
-      }
+      if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
+      else for (const t of topups) { t.x = exec; t.provider = p; }
       if (process.env.BRIDGE_RUN) {
         if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
         else { bridger.x = exec; bridger.provider = p; }
@@ -278,7 +276,7 @@ async function loop() {
         revertLend?.onBlock(ctx).catch(() => {});
         strategy?.onBlock(ctx).catch(() => {});
         bridger?.onBlock(ctx).catch(() => {});
-        topup?.onBlock(ctx).catch(() => {});
+        for (const t of topups) t.onBlock(ctx).catch(() => {});
         if (lx.x.pending.length) lx.reconcile(ctx.ethUsd).catch(() => {});
         return text;
       };
@@ -318,7 +316,7 @@ const server = http.createServer(async (req, res) => {
     }
     const { open, byRoute, ...rest } = stats;
     res.writeHead(200, headers);
-    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, lpLending: lpLending?.s ?? null, revertLend: revertLend?.s ?? null, strategy: strategy?.s ?? null, bridge: bridger?.s ?? null, topup: topup?.s ?? null, fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
+    return res.end(J({ ready: true, alive: isAlive(stats, Date.now()), now: Date.now(), host: "railway", chain: { key: core.CHAIN.key, name: core.CHAIN.name, id: core.CHAIN.id, native: core.CHAIN.native, publicMempool: core.CHAIN.publicMempool, tokens: Object.fromEntries(Object.entries(core.TOKENS).map(([k, t]) => [k, t.label])) }, ...rest, version: VERSION, openEpisodes: Object.keys(open ?? {}).length, topRoutes, recent: events.slice(-25).reverse(), diag: diagLog, vaults, phase1, harvest, liq, liqExec, lpLending: lpLending?.s ?? null, revertLend: revertLend?.s ?? null, strategy: strategy?.s ?? null, bridge: bridger?.s ?? null, topup: topups[0]?.s ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), fast: fastStats, disloc: live.disloc ? live.disloc() : null }));
   }
   if (req.url.startsWith("/api/depth") || req.url.startsWith("/api/cashin")) {
     try {
@@ -340,7 +338,7 @@ const server = http.createServer(async (req, res) => {
   if (req.url.startsWith("/api/dca-report")) {
     const h = (await store.get("beefyWalletHist")) ?? [];
     const st = strategy?.s ?? (await store.get("strategy")) ?? null;
-    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, dca: st?.dca ?? null, topup: topup?.s ?? (await store.get("topup")) ?? null, snapshots: h.slice(-24 * 7) }));
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7) }));
   }
   if (req.url.startsWith("/api/beefy-wallet")) {
     const q = new URL(req.url, "http://x").searchParams;

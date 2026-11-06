@@ -104,20 +104,23 @@ const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (u
 export function topupNeed(haveUsd, targetUsd) { return haveUsd >= targetUsd ? 0 : +((targetUsd - haveUsd) * 1.02).toFixed(2); }
 
 export class Topup {
-  constructor({ executor, provider, store, diag }) {
+  constructor({ executor, provider, store, diag, cfg = null }) {
     this.x = executor; this.provider = provider; this.store = store; this.diag = diag;
-    this.chainKey = process.env.TOPUP_CHAIN || "";
-    this.token = process.env.TOPUP_TOKEN || "";
-    this.targetUsd = Number(process.env.TOPUP_TARGET_USD ?? 10);
+    // cfg {chainKey, token ("native" = ETH/nativo de destino), targetUsd}; sin cfg: TOPUP_CHAIN/TOPUP_TOKEN/TOPUP_TARGET_USD
+    this.chainKey = cfg?.chainKey ?? (process.env.TOPUP_CHAIN || "");
+    this.token = cfg?.token ?? (process.env.TOPUP_TOKEN || "");
+    this.targetUsd = cfg?.targetUsd ?? Number(process.env.TOPUP_TARGET_USD ?? 10);
+    this.storeKey = cfg?.storeKey ?? "topup";
+    this.native = this.token === "native";
     this.gasMinUsd = Number(process.env.TOPUP_GAS_MIN_USD ?? 0.5);
     this.gasUsd = Number(process.env.TOPUP_GAS_USD ?? 1);
     this.everyMs = Number(process.env.TOPUP_CHECK_MIN ?? 60) * 60_000;
     this.maxPerDay = Number(process.env.TOPUP_MAX_PER_DAY ?? 3);
     this.busy = false; this.nextAt = 0;
   }
-  get wanted() { return !!this.chainKey && ethers.isAddress(this.token) && core.CHAIN.id === BASE_ID && this.x?.wallet && this.x.mode === "live"; }
-  async init() { this.s = (await this.store.get("topup")) ?? { sends: [] }; }
-  async save() { await this.store.set("topup", this.s); }
+  get wanted() { return !!this.chainKey && (this.native || ethers.isAddress(this.token)) && core.CHAIN.id === BASE_ID && this.x?.wallet && this.x.mode === "live"; }
+  async init() { this.s = (await this.store.get(this.storeKey)) ?? { sends: [] }; }
+  async save() { await this.store.set(this.storeKey, this.s); }
 
   destProvider() {
     if (this.dp) return this.dp;
@@ -132,18 +135,23 @@ export class Topup {
     this.busy = true; this.nextAt = Date.now() + this.everyMs;
     try {
       const me = this.x.wallet.address, dp = this.destProvider();
-      const [rawTok, rawDec, nat] = await Promise.all([dp.call({ to: this.token, data: ERC20.encodeFunctionData("balanceOf", [me]) }), dp.call({ to: this.token, data: ERC20.encodeFunctionData("decimals") }), dp.getBalance(me)]);
-      const dec = Number(ERC20.decodeFunctionResult("decimals", rawDec)[0]);
-      const haveUsd = Number(ethers.formatUnits(ERC20.decodeFunctionResult("balanceOf", rawTok)[0], dec)); // estable ≈ $1
+      const nat = await dp.getBalance(me);
       const natUsd = await this.nativeUsd();
       const natHaveUsd = natUsd ? Number(ethers.formatEther(nat)) * natUsd : null;
+      let haveUsd;
+      if (this.native) { if (natHaveUsd === null) throw new Error("sin precio del nativo"); haveUsd = natHaveUsd; }
+      else {
+        const [rawTok, rawDec] = await Promise.all([dp.call({ to: this.token, data: ERC20.encodeFunctionData("balanceOf", [me]) }), dp.call({ to: this.token, data: ERC20.encodeFunctionData("decimals") })]);
+        const dec = Number(ERC20.decodeFunctionResult("decimals", rawDec)[0]);
+        haveUsd = Number(ethers.formatUnits(ERC20.decodeFunctionResult("balanceOf", rawTok)[0], dec)); // estable ≈ $1
+      }
       this.s.last = { at: new Date().toISOString(), tokenUsd: haveUsd, nativeUsd: natHaveUsd };
       const today = new Date().toISOString().slice(0, 10);
       const sentToday = this.s.sends.filter((x) => x.at.startsWith(today)).length;
       const jobs = [];
-      if (natHaveUsd !== null && natHaveUsd < this.gasMinUsd) jobs.push({ kind: "gas", usd: this.gasUsd, currency: NATIVE });
+      if (!this.native && natHaveUsd !== null && natHaveUsd < this.gasMinUsd) jobs.push({ kind: "gas", usd: this.gasUsd, currency: NATIVE });
       const need = topupNeed(haveUsd, this.targetUsd);
-      if (need > 0) jobs.push({ kind: "token", usd: need, currency: this.token });
+      if (need > 0) jobs.push({ kind: "token", usd: need, currency: this.native ? NATIVE : this.token });
       for (const j of jobs) {
         if (sentToday + 1 > this.maxPerDay) { await this.diag(`recarga ${this.chainKey}: tope de ${this.maxPerDay} envíos hoy; pendiente ${j.kind} $${j.usd}`); break; }
         await this.send(j, ctx);
@@ -191,4 +199,10 @@ export class Topup {
     this.s.sends.push(rec); if (this.s.sends.length > 100) this.s.sends.shift();
     await this.diag(`recarga ${this.chainKey}: ${j.kind === "gas" ? "gas" : "token"} $${j.usd} desde ${rec.from} de Base → ~$${p.outUsd?.toFixed?.(2) ?? "?"} en ${this.chainKey} (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · txs ${hashes.join(", ")}`);
   }
+}
+
+/** Destinos de recarga: TOPUP_TARGETS="bsc:0x55d3…:20,robinhood:native:12"; si no, TOPUP_CHAIN/TOPUP_TOKEN/TOPUP_TARGET_USD. */
+export function topupTargets(env = process.env) {
+  if (env.TOPUP_TARGETS) return env.TOPUP_TARGETS.split(",").map((x) => x.trim()).filter(Boolean).map((x, i) => { const [chainKey, token, usd] = x.split(":"); return { chainKey, token, targetUsd: Number(usd), storeKey: i === 0 && chainKey === env.TOPUP_CHAIN ? "topup" : `topup-${chainKey}` }; });
+  return env.TOPUP_CHAIN ? [{ chainKey: env.TOPUP_CHAIN, token: env.TOPUP_TOKEN || "", targetUsd: Number(env.TOPUP_TARGET_USD ?? 10), storeKey: "topup" }] : [];
 }
