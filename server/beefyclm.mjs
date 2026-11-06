@@ -134,14 +134,21 @@ const noFunds = (m) => Object.assign(new Error(m), { noFunds: true });
 /** Proporción que el CLM acepta ahora: X crudo por estable crudo (previewDeposit con X de sobra). Infinity si solo toma X. */
 async function clmRatio(s) {
   const r = s.run, U1 = 10n ** BigInt(s.net.stableDec);
-  const u = 1000n * U1, x = 10n ** 36n;
-  const [a0, a1] = r.usdcIs0 ? [u, x] : [x, u];
-  try {
-    const [, used0, used1] = await call(s, r.clm, "previewDeposit", [a0, a1]);
-    const [uU, uX] = r.usdcIs0 ? [used0, used1] : [used1, used0];
-    if (uU === 0n) return Infinity;
-    return Number(uX) / Number(uU);
-  } catch {
+  const u = 1000n * U1;
+  // X "de sobra": algunos tokens desbordan con 1e36 → se prueba con cantidades menores antes de caer a balances()
+  let first = null;
+  for (const x of [10n ** 36n, 10n ** 30n, 10n ** 27n, 10n ** 24n]) {
+    const [a0, a1] = r.usdcIs0 ? [u, x] : [x, u];
+    try {
+      const [, used0, used1] = await call(s, r.clm, "previewDeposit", [a0, a1]);
+      const [uU, uX] = r.usdcIs0 ? [used0, used1] : [used1, used0];
+      if (uU === 0n) return Infinity;
+      if (uX === x) { first ??= Number(uX) / Number(uU); continue; } // usó todo el X: no era "de sobra"
+      return Number(uX) / Number(uU);
+    } catch {}
+  }
+  if (first !== null) return first;
+  {
     const [b0, b1] = await call(s, r.clm, "balances");
     const [bU, bX] = r.usdcIs0 ? [b0, b1] : [b1, b0];
     return bU === 0n ? Infinity : Number(bX) / Number(bU);
@@ -226,6 +233,7 @@ export async function enterClm(s, ctx) {
     if (plan.stableToX > 0) { const amt = BigInt(Math.floor(plan.stableToX)); xHave += await slipSwap(s, N.stable, r.x, amt, probe, `swap ${N.stableSym}→X`); uHave -= amt; }
     else if (plan.xToStable > 0) { const amt = BigInt(Math.floor(plan.xToStable)); uHave += await slipSwap(s, r.x, N.stable, amt, amt / 100n || 1n, `swap X→${N.stableSym}`); xHave -= amt; }
     r.xIn = String(xHave); r.usdcForClm = String(uHave); r.ratio = { R, rate, xWallet: String(xWallet) }; await s.save();
+    await s.diag(`estrategia ${s.kind}: proporción del CLM R=${R === Infinity ? "solo X" : R.toExponential(3)} X/${N.stableSym} (precio ${rate.toExponential(3)}) · X en wallet ${xWallet} · plan ${plan.stableToX > 0 ? `${N.stableSym}→X ${Math.floor(plan.stableToX)}` : plan.xToStable > 0 ? `X→${N.stableSym} ${Math.floor(plan.xToStable)}` : "sin swap"}`);
   }
   // 3) depósito en el CLM
   if (r.clmShares === undefined) {
