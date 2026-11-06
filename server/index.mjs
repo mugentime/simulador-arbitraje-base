@@ -13,7 +13,7 @@ import { Liquidations } from "./liquidations.mjs";
 import { Liquidator } from "./liquidator.mjs";
 import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
-import { beefyWallet, beefyWalletLine } from "./beefywallet.mjs";
+import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { Strategy } from "./strategy.mjs";
 import { Bridger, Topup } from "./bridge.mjs";
 import { EventFeed } from "./events.mjs";
@@ -418,6 +418,7 @@ async function logBeefyWallets() {
   const list = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",").map((x) => x.trim()).filter(Boolean);
   for (const a of list) {
     try {
+      try { console.log(`${new Date().toISOString()} ${walletBalancesLine(await walletBalances(a, { provider: executor?.provider }))}`); } catch (e) { console.log(`${new Date().toISOString()} saldos wallet ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
       const h = (await store.get("beefyWalletHist")) ?? [];

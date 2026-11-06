@@ -15,7 +15,7 @@ const EXTRA_RPCS = {
   linea: ["https://rpc.linea.build", "https://linea-rpc.publicnode.com"],
   ethereum: ["https://ethereum-rpc.publicnode.com", "https://eth.llamarpc.com"],
 };
-const BEEFY_TO_KEY = { base: "base", bsc: "bsc", polygon: "polygon", arbitrum: "arbitrum", optimism: "optimism" };
+const BEEFY_TO_KEY = { base: "base", bsc: "bsc", polygon: "polygon", arbitrum: "arbitrum", optimism: "optimism", robinhood: "robinhood" };
 const iface = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function getPricePerFullShare() view returns (uint256)"]);
 
 async function getJson(url, ms = 25_000) {
@@ -122,4 +122,46 @@ export function beefyWalletLine(r) {
       `${p.netDepositedUsd !== null ? ` dep $${p.netDepositedUsd} → ${p.pnlUsd >= 0 ? "+" : ""}$${p.pnlUsd}` : ""} APY ${p.apyPct ?? "—"}% TVL $${p.tvlUsd} id ${p.id}`).join(" | ") +
     ` · historial: ${r.history.source ?? "—"} (${r.history.entries} entradas${r.history.chains.length ? ", cadenas " + r.history.chains.join("/") : ""}${r.history.error ? ", error " + r.history.error : ""})` +
     (r.errors.length ? ` · errores: ${r.errors.join(" | ")}` : "");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Saldos libres de la wallet (fuera de Beefy) en todas las cadenas: nativo + tokens de la config de cada cadena.
+const ERC20B = new ethers.Interface(["function balanceOf(address) view returns (uint256)"]);
+const NATIVE_EXTRA = { monad: { sym: "MON", rpcs: EXTRA_RPCS.monad }, ethereum: { sym: "ETH", rpcs: EXTRA_RPCS.ethereum } };
+const STABLES = new Set(["USDC", "USDT", "USDG", "DAI", "USDC.e", "USDbC", "FDUSD", "USD1"]);
+export function tokenUsd(prices, sym) {
+  if (STABLES.has(sym)) return 1;
+  const p = Number(prices?.[sym] ?? prices?.[sym.replace(/^W/, "")] ?? NaN);
+  return Number.isFinite(p) ? p : null;
+}
+export async function walletBalances(address, { provider = null } = {}) {
+  address = ethers.getAddress(address);
+  const prices = await getJson(`${API}/prices`).catch(() => ({}));
+  const chains = [
+    ...Object.values(CHAINS).map((c) => ({ key: c.key, native: c.native, rpcs: c.rpcs, tokens: Object.values(c.tokens ?? {}).map((t) => ({ sym: t.label, address: t.address, decimals: t.decimals })) })),
+    ...Object.entries(NATIVE_EXTRA).map(([key, v]) => ({ key, native: v.sym, rpcs: v.rpcs, tokens: [] })),
+  ];
+  const out = { at: new Date().toISOString(), address, totalUsd: 0, chains: [], errors: [] };
+  await Promise.all(chains.map(async (c) => {
+    try {
+      const p = c.key === core.CHAIN?.key && provider ? provider : new ethers.JsonRpcProvider(c.rpcs[0], undefined, { staticNetwork: true });
+      const nat = Number(ethers.formatEther(await p.getBalance(address)));
+      const rows = [{ sym: c.native, amount: nat, usd: nat * (tokenUsd(prices, c.native) ?? 0) }];
+      for (const t of c.tokens) {
+        try {
+          const raw = ERC20B.decodeFunctionResult("balanceOf", await p.call({ to: t.address, data: ERC20B.encodeFunctionData("balanceOf", [address]) }))[0];
+          const a = Number(raw) / 10 ** t.decimals;
+          if (a > 0) rows.push({ sym: t.sym, amount: a, usd: a * (tokenUsd(prices, t.sym) ?? 0) });
+        } catch {}
+      }
+      const usd = rows.reduce((x, r) => x + r.usd, 0);
+      out.chains.push({ chain: c.key, usd: +usd.toFixed(2), rows: rows.filter((r) => r.usd >= 0.01).map((r) => ({ ...r, amount: +r.amount.toPrecision(6), usd: +r.usd.toFixed(2) })) });
+      out.totalUsd += usd;
+    } catch (e) { out.errors.push(`${c.key}: ${(e.shortMessage || e.message).slice(0, 80)}`); }
+  }));
+  out.totalUsd = +out.totalUsd.toFixed(2); out.chains.sort((a, b) => b.usd - a.usd);
+  return out;
+}
+export function walletBalancesLine(r) {
+  return `saldos wallet ${r.address}: libre $${r.totalUsd} · ` + r.chains.filter((c) => c.usd >= 0.01).map((c) => `[${c.chain}] $${c.usd} (${c.rows.map((x) => `${x.amount} ${x.sym} $${x.usd}`).join(", ")})`).join(" | ") + (r.errors.length ? ` · errores: ${r.errors.join(" | ")}` : "");
 }
