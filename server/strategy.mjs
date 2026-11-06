@@ -133,7 +133,8 @@ export class Strategy {
   async autoTick(ctx, d, now) {
     const rules = RULES();
     let scan;
-    try { scan = await scanHighApy(this.net.beefy, rules); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
+    // solo CLM que tengan el estable de la cadena (WETH en Robinhood, USDT en BSC)
+    try { scan = await scanHighApy(this.net.beefy, rules, this.net.stable); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
     this.lastScan = scan; scan.at = new Date(now).toISOString();
     // salidas
     for (const [id, h] of Object.entries(d.holdings ?? {})) {
@@ -197,7 +198,7 @@ export class Strategy {
             const h = ((d.holdings ??= {})[d.target] ??= { since: new Date(now).toISOString(), entryApyPct: this.lastScan?.byId?.[d.target]?.apyPct ?? null, entryTvl: this.lastScan?.byId?.[d.target]?.tvl ?? null, usd: 0 });
             h.basis = String(BigInt(h.basis ?? "0") + BigInt(this.run.usdcIn ?? "0"));
             await this.diag(`estrategia dinámica: capital reinvertido en ${d.target} · ${ethers.formatUnits(this.run.usdcIn ?? "0", this.net.stableDec)} ${this.net.stableSym}`);
-          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) d.redeploy = "0"; await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló"} · ${msg}`); }
+          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) { d.target = null; d.redeployTag = now; this.autoAt = 0; } await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló; se busca otro destino"} · ${msg}`); }
           finally { this.sweepStable = undefined; }
           return;
         }

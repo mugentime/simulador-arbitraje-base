@@ -56,9 +56,9 @@ function exec(tx, write) {
 }
 const provider = { async getBalance() { return st.eth; }, async getFeeData() { return { maxFeePerGas: 1000n }; }, async estimateGas(tx) { exec(tx, false); return 200_000n; }, async call(tx) { return exec(tx, false); }, async waitForTransaction() { return { status: 1, blockNumber: 1, gasUsed: 1n }; } };
 const executor = { wallet: { address: me }, mode: "live", withSender: async (fn) => fn({ sendTransaction: async (tx) => { exec(tx, true); sent.push(tx); return { hash: "0x" + String(sent.length).padStart(64, "0") }; } }) };
-const api = { apy: { [V.a.id]: { totalApy: 400 } }, tvl: { [V.a.id]: 60_000 }, bActive: false };
-globalThis.fetch = async (url) => { const u = String(url); const j = u.endsWith("/gov-vaults") ? Object.values(V).filter((v) => v === V.a || api.bActive).map((v) => ({ id: v.id, name: v.id, chain: "robinhood", status: "active", earnContractAddress: v.rp, tokenAddress: v.clm }))
-  : u.endsWith("/cow-vaults") ? Object.values(V).map((v) => ({ chain: "robinhood", earnContractAddress: v.clm, platformId: "uniswap" })) : u.endsWith("/apy/breakdown") ? api.apy : u.endsWith("/tvl") ? { 4663: api.tvl } : [];
+const api = { apy: { [V.a.id]: { totalApy: 400 }, "uniswap-cow-robinhood-usdg-dell-rp": { totalApy: 5000 } }, tvl: { [V.a.id]: 60_000, "uniswap-cow-robinhood-usdg-dell-rp": 90_000 }, bActive: false };
+globalThis.fetch = async (url) => { const u = String(url); const j = u.endsWith("/gov-vaults") ? [...Object.values(V).filter((v) => v === V.a || api.bActive).map((v) => ({ id: v.id, name: v.id, chain: "robinhood", status: "active", earnContractAddress: v.rp, tokenAddress: v.clm })), { id: "uniswap-cow-robinhood-usdg-dell-rp", name: "USDG-DELL", chain: "robinhood", status: "active", earnContractAddress: A(0x5001), tokenAddress: A(0x5002) }]
+  : u.endsWith("/cow-vaults") ? [...Object.values(V).map((v) => ({ chain: "robinhood", earnContractAddress: v.clm, platformId: "uniswap", depositTokenAddresses: [W, v.x] })), { chain: "robinhood", earnContractAddress: A(0x5002), platformId: "uniswap", depositTokenAddresses: [A(0x5005), A(0x5006)] }] : u.endsWith("/apy/breakdown") ? api.apy : u.endsWith("/tvl") ? { 4663: api.tvl } : [];
   return { ok: true, json: async () => j }; };
 const mem = {}; const store = { get: async (k) => mem[k], set: async (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); } };
 const logs = []; const diag = async (m) => logs.push(m);

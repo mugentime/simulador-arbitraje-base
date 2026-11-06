@@ -17,16 +17,19 @@ export const RULES = () => ({
 });
 
 /** Candidatos en `chain` ordenados por APY: [{id, name, apyPct, tvl, clm, platform}]. */
-export async function scanHighApy(chain, rules = RULES()) {
+export async function scanHighApy(chain, rules = RULES(), stable = null) {
   const [govs, cows, apy, tvl] = await Promise.all([getJson("/gov-vaults"), getJson("/cow-vaults").catch(() => []), getJson("/apy/breakdown"), getJson("/tvl")]);
   const tvlById = {}; for (const b of Object.values(tvl ?? {})) for (const [k, v] of Object.entries(b ?? {})) tvlById[k] = Number(v) || 0;
   const cowByAddr = new Map(cows.filter((c) => c.chain === chain).map((c) => [String(c.earnContractAddress).toLowerCase(), c]));
   const all = govs.filter((g) => g.chain === chain && g.status === "active" && cowByAddr.has(String(g.tokenAddress).toLowerCase())).map((g) => {
     const a = Number(apy[g.id]?.totalApy ?? NaN);
-    return { id: g.id, name: g.name, apyPct: Number.isFinite(a) ? a * 100 : null, tvl: tvlById[g.id] ?? 0, clm: g.tokenAddress, platform: cowByAddr.get(String(g.tokenAddress).toLowerCase())?.platformId ?? null };
+    const cow = cowByAddr.get(String(g.tokenAddress).toLowerCase());
+    const toks = (cow?.depositTokenAddresses ?? []).map((t) => String(t).toLowerCase());
+    return { id: g.id, name: g.name, apyPct: Number.isFinite(a) ? a * 100 : null, tvl: tvlById[g.id] ?? 0, clm: g.tokenAddress, platform: cow?.platformId ?? null,
+      pairsStable: stable && toks.length ? toks.includes(String(stable).toLowerCase()) : true };
   });
   const byId = Object.fromEntries(all.map((x) => [x.id, x]));
-  const eligible = all.filter((x) => x.apyPct !== null && x.apyPct >= rules.minApyPct && x.tvl >= rules.minTvl && !rules.blocked.includes(x.id)).sort((a, b) => b.apyPct - a.apyPct);
+  const eligible = all.filter((x) => x.apyPct !== null && x.apyPct >= rules.minApyPct && x.tvl >= rules.minTvl && x.pairsStable && !rules.blocked.includes(x.id)).sort((a, b) => b.apyPct - a.apyPct);
   return { eligible, byId };
 }
 
