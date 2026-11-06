@@ -134,7 +134,7 @@ export class Strategy {
     const rules = RULES();
     let scan;
     try { scan = await scanHighApy(this.net.beefy, rules); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
-    this.lastScan = scan;
+    this.lastScan = scan; scan.at = new Date(now).toISOString();
     // salidas
     for (const [id, h] of Object.entries(d.holdings ?? {})) {
       if (h.closed) continue;

@@ -16,7 +16,7 @@ const EXTRA_RPCS = {
   ethereum: ["https://ethereum-rpc.publicnode.com", "https://eth.llamarpc.com"],
 };
 const BEEFY_TO_KEY = { base: "base", bsc: "bsc", polygon: "polygon", arbitrum: "arbitrum", optimism: "optimism", robinhood: "robinhood" };
-const iface = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function getPricePerFullShare() view returns (uint256)"]);
+const iface = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function getPricePerFullShare() view returns (uint256)", "function earned(address) view returns (address[], uint256[])"]);
 
 async function getJson(url, ms = 25_000) {
   const r = await fetch(url, { signal: AbortSignal.timeout(ms), headers: { accept: "application/json" } });
@@ -56,6 +56,8 @@ export async function beefyWallet(address, { provider = null } = {}) {
     getJson(`${API}/apy/breakdown`).catch(() => ({})), getJson(`${API}/tvl`).catch(() => ({})),
     getJson(`${API}/prices`).catch(() => ({})), getJson(`${API}/lps`).catch(() => ({})),
   ]);
+  const tokensApi = await getJson(`${API}/tokens`, 30_000).catch(() => ({})); // {chain: {SYM: {address, oracleId, decimals, symbol}}}
+  const tokByAddr = (chain, a) => { for (const t of Object.values(tokensApi?.[chain] ?? {})) if (t?.address && t.address.toLowerCase() === a.toLowerCase()) return t; return null; };
   const price = { ...prices, ...lps };
   const tvlById = {}; for (const byV of Object.values(tvl)) for (const [id, v] of Object.entries(byV ?? {})) tvlById[id] = Number(v) || 0;
   const all = [];
@@ -93,6 +95,16 @@ export async function beefyWallet(address, { provider = null } = {}) {
     const std = held.filter((x) => x.v.type === "standard");
     const pp = std.length ? await core.multicall(ethers, p, std.map((x) => [x.v.earnContractAddress, iface.encodeFunctionData("getPricePerFullShare")])) : [];
     std.forEach((x, i) => { x.ppfs = pp[i] ? BigInt(pp[i]) : 10n ** 18n; });
+    // recompensas pendientes de los reward pools (gov): earned(address) → [tokens], [montos]
+    const gov = held.filter((x) => x.v.type === "gov");
+    const er = gov.length ? await core.multicall(ethers, p, gov.map((x) => [x.v.earnContractAddress, iface.encodeFunctionData("earned", [address])])).catch(() => []) : [];
+    gov.forEach((x, i) => {
+      try {
+        const [toks, amts] = iface.decodeFunctionResult("earned", er[i]);
+        x.pending = toks.map((t, j) => { const meta = tokByAddr(chain, t); const dec = Number(meta?.decimals ?? 18); const amt = Number(amts[j]) / 10 ** dec; const px = Number(price[meta?.oracleId] ?? NaN);
+          return { token: t, symbol: meta?.symbol ?? null, amount: +amt.toPrecision(6), usd: Number.isFinite(px) ? +(amt * px).toFixed(4) : null }; }).filter((r) => r.amount > 0);
+      } catch { x.pending = null; }
+    });
     for (const x of held) {
       const v = x.v;
       const amt = underlyingAmount({ type: v.type, shares: x.shares, ppfs: x.ppfs ?? 10n ** 18n, tokenDecimals: Number(v.tokenDecimals ?? v.depositTokenDecimals ?? 18) });
@@ -103,7 +115,8 @@ export async function beefyWallet(address, { provider = null } = {}) {
       positions.push({ chain, id: v.id, name: v.name, type: v.type, platform: v.platformId, status: v.status, assets: v.assets,
         valueUsd: usd, apyPct: a.totalApy != null ? +(a.totalApy * 100).toFixed(2) : null, tvlUsd: Math.round(tvlById[v.id] ?? 0),
         netDepositedUsd: n ? +n.netUsd.toFixed(2) : null, pnlUsd: n && usd !== null ? +(usd - n.netUsd).toFixed(2) : null, txs: n?.txs ?? null,
-        firstDeposit: n?.first ?? null, url: `https://app.beefy.com/vault/${v.id}` });
+        firstDeposit: n?.first ?? null, url: `https://app.beefy.com/vault/${v.id}`,
+        pending: x.pending ?? null, pendingUsd: x.pending ? +x.pending.reduce((a, r) => a + (r.usd ?? 0), 0).toFixed(4) : null });
     }
   }
   // un CLM depositado en su vault o reward pool aparece una vez (la capa que tiene las acciones)

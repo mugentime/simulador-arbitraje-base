@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Posiciones · Beefy</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#262d36; --fg:#e6edf3; --mut:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --acc:#58a6ff; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f8fa; --panel:#fff; --line:#d0d7de; --fg:#1f2328; --mut:#656d76; --ok:#1a7f37; --bad:#cf222e; --warn:#9a6700; --acc:#0969da; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:12px; }
+  header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font:inherit; }
+  .mut { color:var(--mut); } .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:8px; margin-bottom:12px; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
+  .kpi .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .kpi .l { font-size:12px; color:var(--mut); }
+  h2 { font-size:15px; margin:18px 0 8px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px,1fr)); gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  .card h3 { margin:0; font-size:15px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .tag { font-size:11px; padding:2px 7px; border-radius:20px; border:1px solid var(--line); color:var(--mut); font-weight:500; }
+  .tag.main { color:var(--acc); border-color:var(--acc); } .tag.demo { color:var(--warn); border-color:var(--warn); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; margin-top:8px; }
+  .grid2 div { display:flex; justify-content:space-between; gap:6px; border-bottom:1px dashed var(--line); padding:2px 0; }
+  .grid2 b { font-weight:600; font-variant-numeric:tabular-nums; text-align:right; }
+  .note { font-size:12px; color:var(--mut); margin-top:8px; }
+  .bar { height:6px; background:var(--line); border-radius:4px; margin-top:6px; position:relative; overflow:hidden; }
+  .bar i { position:absolute; left:0; top:0; bottom:0; background:var(--acc); }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; font-variant-numeric:tabular-nums; }
+  th { font-size:12px; color:var(--mut); font-weight:500; }
+  td.n, th.n { text-align:right; }
+  .tbl { overflow-x:auto; }
+  a { color:var(--acc); text-decoration:none; }
+  .chart { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; position:relative; }
+  .legend { display:flex; gap:10px; flex-wrap:wrap; font-size:12px; margin-top:4px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:3px; margin-right:4px; vertical-align:middle; background:var(--c); }
+  .tip { position:absolute; pointer-events:none; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:4px 6px; font-size:12px; display:none; white-space:nowrap; }
+  details { margin-top:8px; } summary { cursor:pointer; color:var(--mut); font-size:12px; }
+  .err { color:var(--bad); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Posiciones y estrategias</h1>
+    <span id="upd" class="mut">cargando…</span>
+    <button id="reload">Actualizar</button>
+    <a href="/">Panel de arbitraje →</a>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <h2>Estrategias</h2>
+  <div class="cards" id="strats"><div class="mut">cargando…</div></div>
+
+  <h2>Valor de las posiciones (últimos 7 días, cada hora)</h2>
+  <div class="chart" id="chart"><div class="mut">cargando…</div></div>
+
+  <h2>Todas las posiciones en Beefy</h2>
+  <div class="tbl" id="pos"><div class="mut">cargando…</div></div>
+
+  <h2>Saldos libres por cadena</h2>
+  <div class="tbl" id="bal"><div class="mut">cargando…</div></div>
+
+  <h2>Candidatos ≥ 1000 % APY</h2>
+  <div class="tbl" id="cand"><div class="mut">cargando…</div></div>
+
+  <h2>Actividad reciente</h2>
+  <div class="tbl" id="act"><div class="mut">cargando…</div></div>
+  <p class="note" id="errs"></p>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+(() => {
+  const meta = document.querySelector('meta[name="stats-urls"]')?.content || "";
+  const ORIG = Object.fromEntries(meta.split(",").map((x) => x.split("=")).filter((x) => x[1]).map(([k, u]) => [k, new URL(u).origin]));
+  const BASE = ORIG.base || location.origin;
+  const EXP = { base: "https://basescan.org/tx/", bsc: "https://bscscan.com/tx/", robinhood: "https://robinhoodchain.blockscout.com/tx/", polygon: "https://polygonscan.com/tx/", arbitrum: "https://arbiscan.io/tx/", optimism: "https://optimistic.etherscan.io/tx/" };
+  const CH = { base: "Base", bsc: "BSC", robinhood: "Robinhood", polygon: "Polygon", arbitrum: "Arbitrum", optimism: "Optimism", monad: "Monad", ethereum: "Ethereum" };
+  const COLORS = ["#58a6ff", "#3fb950", "#d29922", "#bc8cff", "#f778ba", "#39c5cf", "#ff7b72", "#a5d6ff"];
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const usd = (v, d = 2) => (v == null || !Number.isFinite(+v) ? "—" : (v < 0 ? "−$" : "$") + Math.abs(+v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d }));
+  const pct = (v) => (v == null || !Number.isFinite(+v) ? "—" : Math.round(+v).toLocaleString("es-MX") + " %");
+  const sgn = (v, d = 2) => (v == null ? "—" : `<span class="${v >= 0 ? "ok" : "bad"}">${v >= 0 ? "+" : ""}${usd(v, d)}</span>`);
+  const ago = (t) => { if (!t) return "—"; const ms = Date.now() - new Date(t).getTime(); const m = Math.round(ms / 60000); return m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${(m / 60).toFixed(1)} h` : `hace ${(m / 1440).toFixed(1)} d`; };
+  const inT = (t) => { if (!t) return "—"; const m = Math.round((new Date(t).getTime() - Date.now()) / 60000); return m <= 0 ? "ya toca" : m < 60 ? `en ${m} min` : `en ${(m / 60).toFixed(1)} h`; };
+  const hm = (t) => (t ? new Date(t).toLocaleString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
+  const short = (id) => String(id || "").replace(/-rp$/, "").replace(/^(uniswap|aero)-cow-[a-z]+-/, "").toUpperCase();
+  const tx = (chain, h) => (h ? (EXP[chain] ? `<a href="${EXP[chain]}${esc(h)}" target="_blank" rel="noopener">${esc(h.slice(0, 8))}…</a>` : esc(h.slice(0, 10)) + "…") : "");
+  const get = async (u, ms = 60000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms), cache: "no-store" }); if (!r.ok) throw new Error(`${new URL(u).host}${new URL(u).pathname}: HTTP ${r.status}`); return r.json(); };
+
+  async function load() {
+    $("upd").textContent = "cargando…";
+    const errs = [];
+    const reportsP = Promise.all(Object.entries(ORIG).map(([k, o]) => get(`${o}/api/dca-report`, 30000).then((r) => ({ ...r, chain: r.chain || k })).catch((e) => { errs.push(e.message); return null; })));
+    const walletP = get(`${BASE}/api/beefy-wallet`, 90000).catch((e) => { errs.push("posiciones: " + e.message); return null; });
+    const balP = get(`${BASE}/api/wallet-balances`, 60000).catch((e) => { errs.push("saldos: " + e.message); return null; });
+    const reports = (await reportsP).filter(Boolean);
+    const baseRep = reports.find((r) => r.chain === "base");
+    renderStrats(reports, null, baseRep);
+    renderActivity(reports); renderCandidates(reports);
+    renderChart(baseRep?.snapshots ?? [], reports);
+    const [wallet, bal] = await Promise.all([walletP, balP]);
+    renderStrats(reports, wallet, baseRep); renderPositions(wallet); renderBalances(bal); renderKpis(reports, wallet, bal);
+    $("upd").textContent = "actualizado " + new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+    $("errs").innerHTML = errs.length ? `<span class="err">Sin datos de: ${errs.map(esc).join(" · ")}</span>` : "";
+  }
+
+  // estrategias: un registro por run de DCA en cada worker
+  function strategies(reports) {
+    const out = [];
+    for (const r of reports) {
+      if (!r.strategy || !r.dca) continue;
+      for (const [label, d] of Object.entries(r.dca)) {
+        const auto = r.auto;
+        const role = auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "Ancla comparativa";
+        const cls = auto?.dynamic ? "demo" : auto ? "main" : "";
+        const ids = new Set([...(d.target ? [d.target] : []), ...Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id), ...(!auto && r.strategy.vaultId ? [r.strategy.vaultId] : [])]);
+        out.push({ r, label, d, role, cls, ids: [...ids], closed: Object.entries(d.holdings ?? {}).filter(([, h]) => h.closed) });
+      }
+    }
+    const ord = { "Principal": 0, "Demo dinámico": 1, "Ancla comparativa": 2 };
+    return out.sort((a, b) => ord[a.role] - ord[b.role]);
+  }
+
+  function renderStrats(reports, wallet, baseRep) {
+    const S = strategies(reports);
+    if (!S.length) { $("strats").innerHTML = `<div class="mut">Sin estrategias activas.</div>`; return; }
+    const ethUsd = wallet?.prices?.ETH ?? baseRep?.snapshots?.at(-1)?.prices?.ETH ?? null;
+    $("strats").innerHTML = S.map((s) => {
+      const { r, d } = s; const rules = r.auto?.rules;
+      const stableUsd = r.strategy.stableSym === "WETH" ? ethUsd : 1;
+      const parts = s.ids.map((id) => {
+        const p = wallet?.positions?.find((x) => x.id === id);
+        const h = d.holdings?.[id] ?? {};
+        const live = r.auto?.byId?.[id] ?? r.auto?.candidates?.find((c) => c.id === id) ?? null;
+        // aportado: neto depositado según el historial de Beefy (incluye depósitos manuales); si no, lo que registró el DCA
+        const dep = p?.netDepositedUsd ?? (s.ids.length === 1 && !s.closed.length ? d.totalUsd : h.usd) ?? null;
+        const apy = p?.apyPct ?? live?.apyPct ?? null; const tvl = p?.tvlUsd ?? live?.tvl ?? null;
+        const peak = Math.max(h.peakApyPct ?? 0, h.entryApyPct ?? 0, apy ?? 0) || null;
+        const thr = rules ? (rules.exitFrac > 0 && peak ? Math.max(rules.exitApyPct, peak * rules.exitFrac) : rules.exitApyPct) : null;
+        const tvlLim = rules && h.entryTvl ? h.entryTvl * rules.exitTvlMult : null;
+        const watching = h.badSince ? `<span class="warn">vigilando salida desde ${hm(h.badSince)} (${rules?.exitHours} h)</span>` : h.rotateSince ? `<span class="warn">posible rotación desde ${hm(h.rotateSince)}</span>` : `<span class="ok">dentro de las reglas</span>`;
+        const margin = apy && thr ? Math.max(0, Math.min(1, (apy - thr) / Math.max(1, (peak || apy) - thr))) : null;
+        return `
+          <div class="mut" style="margin-top:8px"><a href="https://app.beefy.com/vault/${esc(id)}" target="_blank" rel="noopener">${esc(short(id))}</a> · ${CH[r.chain] ?? r.chain}</div>
+          <div class="grid2">
+            <div><span>Valor actual</span><b>${usd(p?.valueUsd)}</b></div>
+            <div><span>Aportado</span><b>${usd(dep)}</b></div>
+            <div><span>Resultado</span><b>${p?.valueUsd != null && dep ? sgn(p.valueUsd + (p.pendingUsd ?? 0) - dep) : "—"}</b></div>
+            <div><span>Recompensas por cobrar</span><b>${usd(p?.pendingUsd, 4)}</b></div>
+            <div><span>APY actual</span><b>${pct(apy)}</b></div>
+            <div><span>TVL</span><b>${usd(tvl, 0)}</b></div>
+            ${rules ? `<div><span>APY entrada / máx.</span><b>${pct(h.entryApyPct)} / ${pct(peak)}</b></div>
+            <div><span>Sale bajo</span><b>${pct(thr)}</b></div>
+            <div><span>Sale si TVL ></span><b>${usd(tvlLim, 0)}</b></div>
+            <div><span>En el vault desde</span><b>${h.since ? ago(h.since) : "—"}</b></div>` : ""}
+          </div>
+          ${margin !== null ? `<div class="bar" title="margen sobre el umbral de salida"><i style="width:${(margin * 100).toFixed(0)}%"></i></div>` : ""}
+          ${rules ? `<div class="note">${watching}</div>` : ""}`;
+      }).join("");
+      const nextAt = d.lastAt ? new Date(d.lastAt + r.strategy.everyH * 3600000).toISOString() : null;
+      const retainedUsd = d.retained && stableUsd ? Number(d.retained) / 10 ** (r.strategy.stableDec ?? 18) * stableUsd : null;
+      const lastDeps = (d.deposits ?? []).slice(-5).reverse();
+      return `<div class="card">
+        <h3>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${r.auto ? (r.auto.dynamic ? "auto · dinámico" : "auto ≥ " + r.auto.rules.minApyPct + " %") : "fijo"}</span>${r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h3>
+        <div class="grid2">
+          <div><span>Depósito diario</span><b>${usd(r.strategy.dcaUsd, 0)}</b></div>
+          <div><span>Depósitos</span><b>${d.n ?? 0} · ${usd(d.totalUsd, 0)}</b></div>
+          <div><span>Último</span><b>${d.lastAt ? ago(d.lastAt) : "—"}</b></div>
+          <div><span>Siguiente</span><b>${inT(nextAt)}</b></div>
+          ${d.retained ? `<div><span>Ganancia retenida</span><b class="ok">${usd(retainedUsd, 4)}</b></div>` : ""}
+          ${d.compound ? `<div><span>Reinversiones</span><b>${d.compound.n ?? 0} · ${usd(d.compound.totalUsd ?? 0, 4)}</b></div>` : ""}
+        </div>
+        ${parts || `<div class="note">Sin vault elegible ahora; el dinero espera en la wallet.</div>`}
+        ${d.compound?.lastSkip ? `<div class="note">Última revisión de recompensas: ${ago(d.compound.lastSkip.at)}, valían ${usd(d.compound.lastSkip.valueUsd, 4)} (mínimo $0.20).</div>` : ""}
+        ${s.closed.length ? `<div class="note">Salidas: ${s.closed.map(([id, h]) => `${esc(short(id))} ${hm(h.closed)} (${esc(h.exitWhy)})`).join(" · ")}</div>` : ""}
+        ${lastDeps.length ? `<details><summary>Últimos depósitos</summary><table><tr><th>Fecha</th><th class="n">USD</th><th>Txs</th></tr>${lastDeps.map((x) => `<tr><td>${hm(x.at)}</td><td class="n">${usd(x.usd, 0)}</td><td>${(x.txs ?? []).slice(-1).map((h) => tx(r.chain, h)).join(" ")}</td></tr>`).join("")}</table></details>` : ""}
+      </div>`;
+    }).join("");
+  }
+
+  function renderKpis(reports, wallet, bal) {
+    const S = strategies(reports);
+    const invested = S.reduce((a, s) => a + (s.d.totalUsd ?? 0), 0);
+    const pending = (wallet?.positions ?? []).reduce((a, p) => a + (p.pendingUsd ?? 0), 0);
+    const k = [
+      ["Total (Beefy + libre)", usd((wallet?.totalUsd ?? 0) + (bal?.totalUsd ?? 0))],
+      ["En Beefy", usd(wallet?.totalUsd)],
+      ["Libre en wallets", usd(bal?.totalUsd)],
+      ["Recompensas por cobrar", usd(pending, 4)],
+      ["Rendimiento estimado/día", usd(wallet?.estDailyUsd, 3)],
+      ["Aportado por los DCA", usd(invested, 0)],
+    ];
+    $("kpis").innerHTML = k.map(([l, v]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  }
+
+  function renderPositions(w) {
+    if (!w) { $("pos").innerHTML = `<div class="err">No se pudieron leer las posiciones.</div>`; return; }
+    $("pos").innerHTML = `<table><tr><th>Vault</th><th>Cadena</th><th class="n">Valor</th><th class="n">Por cobrar</th><th class="n">APY</th><th class="n">TVL</th></tr>` +
+      w.positions.map((p) => `<tr><td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.name)}</a></td><td>${CH[p.chain] ?? esc(p.chain)}</td><td class="n">${usd(p.valueUsd)}</td><td class="n">${usd(p.pendingUsd, 4)}</td><td class="n">${pct(p.apyPct)}</td><td class="n">${usd(p.tvlUsd, 0)}</td></tr>`).join("") +
+      `<tr><th>Total</th><th></th><th class="n">${usd(w.totalUsd)}</th><th></th><th></th><th></th></tr></table>`;
+  }
+
+  function renderBalances(b) {
+    if (!b) { $("bal").innerHTML = `<div class="err">No se pudieron leer los saldos.</div>`; return; }
+    $("bal").innerHTML = `<table><tr><th>Cadena</th><th>Tokens</th><th class="n">USD</th></tr>` +
+      b.chains.filter((c) => c.usd >= 0.01).map((c) => `<tr><td>${CH[c.chain] ?? esc(c.chain)}</td><td>${c.rows.map((x) => `${x.amount} ${esc(x.sym)}`).join(", ")}</td><td class="n">${usd(c.usd)}</td></tr>`).join("") +
+      `<tr><th>Total</th><th></th><th class="n">${usd(b.totalUsd)}</th></tr></table>`;
+  }
+
+  function renderCandidates(reports) {
+    const rows = reports.filter((r) => r.auto).flatMap((r) => (r.auto.candidates ?? []).map((c) => ({ ...c, chain: r.chain, at: r.auto.scannedAt, target: Object.values(r.dca ?? {}).some((d) => d.target === c.id) })));
+    $("cand").innerHTML = rows.length ? `<table><tr><th>Vault</th><th>Cadena</th><th class="n">APY</th><th class="n">TVL</th><th>Estado</th></tr>` +
+      rows.map((c) => `<tr><td><a href="https://app.beefy.com/vault/${esc(c.id)}" target="_blank" rel="noopener">${esc(short(c.id))}</a></td><td>${CH[c.chain] ?? c.chain}</td><td class="n">${pct(c.apyPct)}</td><td class="n">${usd(c.tvl, 0)}</td><td>${c.target ? '<span class="ok">destino actual</span>' : '<span class="mut">elegible</span>'}</td></tr>`).join("") + `</table><p class="note">Revisado ${ago(rows[0]?.at)} · solo cadenas donde el sistema opera (BSC, Robinhood).</p>`
+      : `<div class="mut">Ningún vault cumple ahora las reglas.</div>`;
+  }
+
+  function renderActivity(reports) {
+    const rows = reports.flatMap((r) => (r.runs ?? []).map((x) => ({ ...x, chain: r.chain }))).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 25);
+    const kind = (x) => x.label.includes("-compound") ? "reinversión" : x.label.includes("-profit-") ? "ganancia retenida" : x.label.includes("-redeploy") ? "reinversión de capital" : x.label.includes("-sweep") ? "barrido" : x.label.includes("-exit") || x.kind === "beefy-clm-exit" ? "salida" : "depósito";
+    const st = (s) => s === "hecho" ? '<span class="ok">hecho</span>' : s === "error" ? '<span class="bad">error</span>' : `<span class="warn">${esc(s)}</span>`;
+    $("act").innerHTML = rows.length ? `<table><tr><th>Cuándo</th><th>Cadena</th><th>Qué</th><th>Vault</th><th>Estado</th><th>Tx</th></tr>` +
+      rows.map((x) => `<tr><td>${hm(x.startedAt)}</td><td>${CH[x.chain] ?? x.chain}</td><td>${kind(x)}</td><td>${esc(short(x.vault))}</td><td>${st(x.status)}${x.error ? `<div class="err">${esc(x.error.slice(0, 120))}</div>` : ""}</td><td>${tx(x.chain, x.txs?.at(-1)?.hash)}</td></tr>`).join("") + `</table>` : `<div class="mut">Sin actividad.</div>`;
+  }
+
+  function renderChart(snaps, reports) {
+    const el = $("chart");
+    const S = strategies(reports); const ids = [...new Set(S.flatMap((s) => [...s.ids, ...s.closed.map(([id]) => id)]))];
+    const pts = snaps.filter((s) => s.positions).map((s) => ({ t: new Date(s.at).getTime(), v: Object.fromEntries(s.positions.map((p) => [p.id, p.valueUsd])), total: s.totalUsd }));
+    if (pts.length < 2) { el.innerHTML = `<div class="mut">Aún no hay suficientes registros (se guarda uno cada hora).</div>`; return; }
+    const series = [{ id: "total", name: "Total Beefy", vals: pts.map((p) => [p.t, p.total]) }, ...ids.map((id) => ({ id, name: short(id), vals: pts.map((p) => [p.t, p.v[id] ?? null]) }))];
+    const W = el.clientWidth - 16 || 600, H = 220, L = 46, R = 8, T = 8, B = 22;
+    const t0 = pts[0].t, t1 = pts.at(-1).t; const all = series.flatMap((s) => s.vals.map((v) => v[1]).filter((v) => v != null));
+    const vmax = Math.max(...all) * 1.08 || 1;
+    const x = (t) => L + (t - t0) / (t1 - t0 || 1) * (W - L - R), y = (v) => T + (1 - v / vmax) * (H - T - B);
+    const ticks = [0, .25, .5, .75, 1].map((f) => vmax * f);
+    let svg = `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block">`;
+    svg += ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 4}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--mut)">$${v.toFixed(v < 10 ? 1 : 0)}</text>`).join("");
+    const days = []; for (let t = new Date(t0).setHours(0, 0, 0, 0) + 86400000; t < t1; t += 86400000) days.push(t);
+    svg += days.map((t) => `<text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--mut)">${new Date(t).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}</text>`).join("");
+    series.forEach((s, i) => {
+      let d = "", pen = false;
+      for (const [t, v] of s.vals) { if (v == null) { pen = false; continue; } d += `${pen ? "L" : "M"}${x(t).toFixed(1)},${y(v).toFixed(1)}`; pen = true; }
+      svg += `<path d="${d}" fill="none" stroke="${COLORS[i % COLORS.length]}" stroke-width="${i ? 1.6 : 2.2}"${i ? "" : ' stroke-dasharray="4 3"'}/>`;
+    });
+    svg += `<line id="cx" y1="${T}" y2="${H - B}" stroke="var(--mut)" stroke-width="1" visibility="hidden"/></svg>`;
+    el.innerHTML = svg + `<div class="legend">${series.map((s, i) => `<span style="--c:${COLORS[i % COLORS.length]}">${esc(s.name)}</span>`).join("")}</div>`;
+    const sv = el.querySelector("svg"), tip = $("tip"), cx = el.querySelector("#cx");
+    sv.addEventListener("pointermove", (e) => {
+      const rect = sv.getBoundingClientRect(); const px = (e.clientX - rect.left) / rect.width * W;
+      const t = t0 + (px - L) / (W - L - R) * (t1 - t0); let k = 0; let best = Infinity; pts.forEach((p, i) => { const dd = Math.abs(p.t - t); if (dd < best) { best = dd; k = i; } });
+      cx.setAttribute("x1", x(pts[k].t)); cx.setAttribute("x2", x(pts[k].t)); cx.setAttribute("visibility", "visible");
+      tip.innerHTML = `<b>${hm(pts[k].t)}</b><br>` + series.map((s, i) => s.vals[k][1] != null ? `<span style="color:${COLORS[i % COLORS.length]}">●</span> ${esc(s.name)} ${usd(s.vals[k][1])}` : "").filter(Boolean).join("<br>");
+      tip.style.display = "block";
+      const tx0 = Math.min(e.pageX + 12, window.scrollX + document.documentElement.clientWidth - tip.offsetWidth - 8);
+      tip.style.left = tx0 + "px"; tip.style.top = (e.pageY + 12) + "px";
+    });
+    sv.addEventListener("pointerleave", () => { tip.style.display = "none"; cx.setAttribute("visibility", "hidden"); });
+  }
+
+  $("reload").onclick = load;
+  load();
+  setInterval(load, 5 * 60000);
+})();
+</script>
+</body>
+</html>
