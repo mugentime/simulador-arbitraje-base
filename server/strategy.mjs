@@ -138,7 +138,9 @@ export class Strategy {
     // salidas
     for (const [id, h] of Object.entries(d.holdings ?? {})) {
       if (h.closed) continue;
-      const c = exitCheck({ apyPct: h.entryApyPct, tvl: h.entryTvl }, scan.byId[id] ?? null, h.badSince ?? null, now, rules);
+      const nowApy = scan.byId[id]?.apyPct ?? null;
+      if (nowApy !== null) h.peakApyPct = Math.max(h.peakApyPct ?? 0, h.entryApyPct ?? 0, nowApy);
+      const c = exitCheck({ apyPct: h.entryApyPct, peakApyPct: h.peakApyPct, tvl: h.entryTvl }, scan.byId[id] ?? null, h.badSince ?? null, now, rules);
       h.badSince = c.badSince; h.lastApyPct = scan.byId[id]?.apyPct ?? null; h.lastTvl = scan.byId[id]?.tvl ?? null;
       // demo dinámico: rotación si otro vault elegible paga mucho más durante HIGH_APY_ROTATE_HOURS
       if (!c.exit && this.dynamic && id === d.target) {

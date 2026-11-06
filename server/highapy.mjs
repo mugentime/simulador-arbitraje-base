@@ -8,6 +8,7 @@ export const RULES = () => ({
   minApyPct: Number(process.env.HIGH_APY_MIN_PCT ?? 1000),
   minTvl: Number(process.env.HIGH_APY_MIN_TVL ?? 100_000),
   exitApyPct: Number(process.env.HIGH_APY_EXIT_PCT ?? 500), // sale si el APY baja de aquí (la mitad del umbral)
+  exitFrac: Number(process.env.HIGH_APY_EXIT_FRAC ?? 0), // >0: sale si el APY cae por debajo de esta fracción del máximo visto desde la entrada
   exitTvlMult: Number(process.env.HIGH_APY_EXIT_TVL_MULT ?? 3), // sale si el TVL se multiplica (dilución)
   exitHours: Number(process.env.HIGH_APY_EXIT_HOURS ?? 6), // la condición debe durar estas horas seguidas
   rotateMult: Number(process.env.HIGH_APY_ROTATE_MULT ?? 1.5), // demo dinámico: rota si otro elegible paga ≥ ×1.5
@@ -39,7 +40,7 @@ export function pickTarget(eligible, currentId) {
 export function exitCheck(entry, now, badSince, nowMs, rules = RULES()) {
   let why = null;
   if (!now) why = "el vault ya no está activo en la API";
-  else if (now.apyPct !== null && now.apyPct < rules.exitApyPct) why = `APY ${now.apyPct.toFixed(0)} % < ${rules.exitApyPct} %`;
+  else if (now.apyPct !== null && now.apyPct < exitThreshold(entry, rules)) why = `APY ${now.apyPct.toFixed(0)} % < ${exitThreshold(entry, rules).toFixed(0)} %${rules.exitFrac > 0 && entry?.peakApyPct ? ` (${(rules.exitFrac * 100).toFixed(0)} % del máximo ${entry.peakApyPct.toFixed(0)} %)` : ""}`;
   else if (entry?.tvl > 0 && now.tvl > entry.tvl * rules.exitTvlMult) why = `TVL ×${(now.tvl / entry.tvl).toFixed(1)} desde la entrada`;
   if (!why) return { exit: false, badSince: null };
   const since = badSince ?? nowMs;
@@ -51,4 +52,10 @@ export function rotateCheck(cur, best, since, nowMs, rules = RULES()) {
   if (!cur || !best || cur.apyPct === null || best.apyPct === null || best.apyPct < cur.apyPct * rules.rotateMult) return { rotate: false, since: null };
   const s = since ?? nowMs;
   return { rotate: nowMs - s >= rules.rotateHours * 3600_000, since: s, why: `rotación: ${best.id} ${best.apyPct.toFixed(0)} % vs ${cur.apyPct.toFixed(0)} % (≥ ×${rules.rotateMult} por ${rules.rotateHours} h)` };
+}
+
+/** Umbral de salida: fijo (exitApyPct) o, con exitFrac > 0, la fracción del máximo APY visto desde la entrada (el mayor de ambos). */
+export function exitThreshold(entry, rules = RULES()) {
+  const peak = Math.max(entry?.peakApyPct ?? 0, entry?.apyPct ?? 0);
+  return rules.exitFrac > 0 && peak > 0 ? Math.max(rules.exitApyPct, peak * rules.exitFrac) : rules.exitApyPct;
 }

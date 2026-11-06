@@ -19,4 +19,8 @@ c = exitCheck({ apyPct: 1700, tvl: 300000 }, { apyPct: 400, tvl: 300000 }, t0, t
 c = exitCheck({ apyPct: 1700, tvl: 300000 }, { apyPct: 1500, tvl: 1_000_000 }, t0, t0 + 7 * 3600_000, R); ok(c.exit && /TVL/.test(c.why), "TVL ×3.3 → sale");
 c = exitCheck({ apyPct: 1700, tvl: 300000 }, { apyPct: 1500, tvl: 350000 }, t0, t0 + 7 * 3600_000, R); ok(!c.exit && c.badSince === null, "se recupera → reinicia vigilancia");
 c = exitCheck({ apyPct: 1700, tvl: 300000 }, null, null, t0, R); ok(c.exit, "vault retirado → sale de inmediato");
+{ const RF = { ...R, exitFrac: 0.5, exitHours: 2 };
+  let c2 = exitCheck({ apyPct: 40000, peakApyPct: 48000, tvl: 50000 }, { apyPct: 30000, tvl: 50000 }, null, t0, RF); ok(!c2.why, "relativo: 30000 % con máximo 48000 % (umbral 24000 %) → sigue");
+  c2 = exitCheck({ apyPct: 40000, peakApyPct: 48000, tvl: 50000 }, { apyPct: 20000, tvl: 50000 }, t0, t0 + 2 * 3600_000, RF); ok(c2.exit && /máximo 48000/.test(c2.why), `relativo: 20000 % < 50 % del máximo por 2 h → sale (${c2.why})`);
+  c2 = exitCheck({ apyPct: 1200, peakApyPct: 1200, tvl: 50000 }, { apyPct: 550, tvl: 50000 }, null, t0, RF); ok(c2.why && !c2.exit, "1200 % → 550 %: bajo el 50 % del máximo (600 %) → entra en vigilancia"); }
 console.log(fails ? "HAY FALLAS" : "todo OK"); process.exit(fails ? 1 : 0);
