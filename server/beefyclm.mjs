@@ -333,3 +333,28 @@ export async function harvestProfit(s) {
   }
   return { stable, other };
 }
+
+/**
+ * Composición (STRATEGY_COMPOUND=1): valora las recompensas pendientes del reward pool; si valen ≥ minStable (crudo, en el
+ * estable), las cobra. Devuelve {value, stable, x, other} (crudo) o {skipped, value} si no alcanzan. El depósito lo hace
+ * Strategy con enterClm en modo barrido (estable cobrado + X de la wallet).
+ */
+export async function claimForCompound(s, minStable) {
+  const r = s.run, N = s.net;
+  await resolve(s);
+  if (!r.gov) return { skipped: true, value: 0n };
+  const pend = await pendingRewards(s);
+  let value = 0n;
+  for (const p of pend) {
+    if (lc(p.token) === lc(N.stable)) value += p.amount;
+    else if (lc(p.token) === lc(r.x)) { if (r.dex !== "uni") await approve(s, r.x, r.router, p.amount, "approve X→router (cotización)"); value += await slipQuote(s, r.x, N.stable, p.amount); }
+  }
+  if (value < minStable) return { skipped: true, value };
+  const got = await claimRewards(s, "cobrar recompensas (componer)");
+  const out = { value, stable: 0n, x: 0n, other: [] };
+  for (const g of got) {
+    if (g.amount <= 0n) continue;
+    if (lc(g.token) === lc(N.stable)) out.stable += g.amount; else if (lc(g.token) === lc(r.x)) out.x += g.amount; else out.other.push({ token: g.token, amount: String(g.amount) });
+  }
+  return out;
+}

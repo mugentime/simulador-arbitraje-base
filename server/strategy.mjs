@@ -5,7 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm, netOf, harvestProfit } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf, harvestProfit, claimForCompound } from "./beefyclm.mjs";
 import { scanHighApy, pickTarget, exitCheck, rotateCheck, RULES } from "./highapy.mjs";
 import * as core from "../src/core.js";
 
@@ -55,6 +55,40 @@ export class Strategy {
     // demo dinámico (STRATEGY_DYNAMIC=1, solo con STRATEGY_VAULT_ID=auto): retiene ganancias, rota y reinvierte el capital
     this.dynamic = process.env.STRATEGY_DYNAMIC === "1";
     this.profitEveryMs = Number(process.env.PROFIT_EVERY_H ?? 6) * 3600_000;
+    // composición (STRATEGY_COMPOUND=1): cobra las recompensas del reward pool y las vuelve a depositar cada COMPOUND_EVERY_H
+    this.compound = process.env.STRATEGY_COMPOUND === "1";
+    this.compoundEveryMs = Number(process.env.COMPOUND_EVERY_H ?? 24) * 3600_000;
+    this.compoundMinUsd = Number(process.env.COMPOUND_MIN_USD ?? 0.2);
+  }
+
+  /** Cobra y reinvierte las recompensas de `id` (si valen ≥ COMPOUND_MIN_USD). Pasos reanudables: cobro y depósito por separado. */
+  async compoundOnce(d, id, now, ctx) {
+    const D = this.net.stableDec;
+    const stableUsd = this.net.wrapNative ? (ctx?.ethUsd || 0) : 1;
+    const c = (d.compound ??= {});
+    if (!c.pending) {
+      const label = `${this.label}-compound-${id}-${now}`;
+      this.run = this.s.runs[label] = { kind: "beefy-clm-compound", startedAt: now, txs: [], status: "pendiente" };
+      this.vaultId = id;
+      const min = stableUsd > 0 ? ethers.parseUnits((this.compoundMinUsd / stableUsd).toFixed(Math.min(D, 12)), D) : 10n ** 30n;
+      const r = await claimForCompound(this, min);
+      if (r.skipped) { delete this.s.runs[label]; c.lastSkip = { at: new Date(now).toISOString(), id, valueUsd: +(Number(ethers.formatUnits(r.value, D)) * stableUsd).toFixed(4) }; return; }
+      this.run.status = "hecho"; this.run.claimed = { stable: String(r.stable), x: String(r.x), other: r.other };
+      c.pending = { id, stable: String(r.stable), valueUsd: Number(ethers.formatUnits(r.value, D)) * stableUsd, tag: now };
+    }
+    // depósito de lo cobrado (estable + el X que haya en la wallet) en el mismo vault
+    const p = c.pending, dl = `${this.label}-compound-dep-${p.tag}`;
+    this.run = this.s.runs[dl] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", compound: true };
+    this.vaultId = p.id; this.dcaUsd = null; this.sweepStable = Number(ethers.formatUnits(p.stable, D));
+    try {
+      await enterClm(this, ctx); this.run.status = "hecho"; c.pending = null;
+      c.n = (c.n ?? 0) + 1; c.totalUsd = +((c.totalUsd ?? 0) + p.valueUsd).toFixed(4); c.last = { at: new Date(now).toISOString(), id: p.id, usd: +p.valueUsd.toFixed(4) };
+      await this.diag(`estrategia ${this.kind}: recompensas reinvertidas en ${p.id} · ≈$${p.valueUsd.toFixed(4)} · composición ${c.n} · acumulado ≈$${c.totalUsd}`);
+    } catch (e) {
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
+      if (e.retry) { this.retryAt = now + 60_000; this.run.lastRetry = msg; }
+      else { this.run.status = "error"; this.run.error = msg; c.pending = null; await this.diag(`estrategia ${this.kind}: reinversión de recompensas falló · ${msg} (lo cobrado queda en la wallet y entra en el siguiente depósito)`); }
+    } finally { this.sweepStable = undefined; }
   }
 
   /** Cobra las recompensas de `id` y las suma a lo retenido (estable que los depósitos no tocan). */
@@ -168,6 +202,18 @@ export class Strategy {
       }
       if (!d.target) return;
       this.vaultId = d.target;
+    }
+    // composición de recompensas (una acción por llamada; reanuda un depósito pendiente)
+    if (this.compound && (d.compound?.pending || !d.compoundAt || now - d.compoundAt >= this.compoundEveryMs)) {
+      if (!d.compound?.pending) d.compoundAt = now;
+      const ids = d.compound?.pending ? [d.compound.pending.id] : process.env.STRATEGY_VAULT_ID === "auto" ? [...new Set([...Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id), d.target].filter(Boolean))] : [process.env.STRATEGY_VAULT_ID].filter(Boolean);
+      let acted = false;
+      for (const id of ids) {
+        try { const before = Object.keys(this.s.runs).length; await this.compoundOnce(d, id, now, ctx); acted ||= Object.keys(this.s.runs).length !== before || !!d.compound?.pending; }
+        catch (e) { await this.diag(`estrategia ${this.kind}: composición de ${id} falló · ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
+        if (d.compound?.pending) break;
+      }
+      if (acted) return;
     }
     // barrido inmediato de sobrantes (DCA_SWEEP=<etiqueta>): deposita el X de la wallet y el estable que sobró en depósitos anteriores
     const sweepTag = process.env.DCA_SWEEP;
