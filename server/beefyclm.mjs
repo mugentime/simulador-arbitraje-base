@@ -72,7 +72,7 @@ async function bal(s, token) { return (await call(s, token, "balanceOf", [s.me])
 async function resolve(s) {
   const r = s.run;
   if (r.vault) return;
-  const id = process.env.STRATEGY_VAULT_ID || "aero-cow-base-usdc-nvdac-vault";
+  const id = s.vaultId || process.env.STRATEGY_VAULT_ID || "aero-cow-base-usdc-nvdac-vault";
   const get = async (path) => { try { return await (await fetch(`https://api.beefy.finance${path}`, { signal: AbortSignal.timeout(20_000) })).json(); } catch { return []; } };
   const [list, govs] = await Promise.all([get("/vaults"), get("/gov-vaults")]);
   const v = [...(Array.isArray(list) ? list : []), ...(Array.isArray(govs) ? govs.map((g) => ({ ...g, type: "gov" })) : [])].find((x) => x.id === id);

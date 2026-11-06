@@ -6,6 +6,7 @@
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
 import { enterClm, exitClm, netOf } from "./beefyclm.mjs";
+import { scanHighApy, pickTarget, exitCheck, RULES } from "./highapy.mjs";
 import * as core from "../src/core.js";
 
 export const BASE = {
@@ -52,7 +53,7 @@ export class Strategy {
     this.busy = false; this.done = false;
     this.net = netOf(core.CHAIN?.key);
   }
-  get wanted() { return !!this.kind && !!this.label && this.x?.wallet && this.x.mode === "live"; }
+  get wanted() { return !!this.kind && this.kind !== "off" && !!this.label && this.x?.wallet && this.x.mode === "live"; }
 
   async init() { this.s = (await this.store.get("strategy")) ?? { runs: {} }; }
   async save() { await this.store.set("strategy", this.s); }
@@ -78,11 +79,44 @@ export class Strategy {
     return rc;
   }
 
+  /** Selección y salidas del modo automático. Devuelve true si ejecutó una salida en esta llamada. */
+  async autoTick(ctx, d, now) {
+    const rules = RULES();
+    let scan;
+    try { scan = await scanHighApy(this.net.beefy, rules); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
+    this.lastScan = scan;
+    // salidas
+    for (const [id, h] of Object.entries(d.holdings ?? {})) {
+      if (h.closed) continue;
+      const c = exitCheck({ apyPct: h.entryApyPct, tvl: h.entryTvl }, scan.byId[id] ?? null, h.badSince ?? null, now, rules);
+      h.badSince = c.badSince; h.lastApyPct = scan.byId[id]?.apyPct ?? null; h.lastTvl = scan.byId[id]?.tvl ?? null;
+      if (!c.exit) { if (c.why && h.warned !== c.why) { h.warned = c.why; await this.diag(`estrategia auto: ${id} en vigilancia (${c.why}); sale si dura ${rules.exitHours} h`); } continue; }
+      const label = `${this.label}-exit-${id}-${now}`;
+      this.run = this.s.runs[label] = { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente" };
+      this.vaultId = id;
+      try { await exitClm(this, ctx); this.run.status = "hecho"; h.closed = new Date(now).toISOString(); h.exitWhy = c.why; if (d.target === id) d.target = null; await this.diag(`estrategia auto: salida de ${id} (${c.why}) · fondos de vuelta en ${this.net.stableSym}`); }
+      catch (e) { this.run.status = "error"; this.run.error = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`estrategia auto: salida de ${id} falló · ${this.run.error}`); }
+      return true;
+    }
+    // destino
+    const prev = d.target ?? null;
+    d.target = pickTarget(scan.eligible, prev);
+    d.candidates = scan.eligible.slice(0, 5).map((x) => `${x.id} ${x.apyPct.toFixed(0)} % TVL $${Math.round(x.tvl)}`);
+    if (d.target !== prev) await this.diag(`estrategia auto: destino ${d.target ?? "ninguno (no hay vaults ≥ " + rules.minApyPct + " % con TVL ≥ $" + rules.minTvl + ")"} · candidatos: ${d.candidates.join(" | ") || "—"}`);
+    return false;
+  }
+
   /** Depósito periódico: una corrida "<etiqueta>#n" por periodo; sin fondos → reintenta cada hora; error → espera al siguiente periodo. */
   async dca(ctx) {
     const now = Date.now();
     const d = ((this.s.dca ??= {})[this.label] ??= { n: 0, lastAt: 0, totalUsd: 0, deposits: [], vaultId: process.env.STRATEGY_VAULT_ID || null });
     if (this.retryAt && now < this.retryAt) return;
+    // modo automático (STRATEGY_VAULT_ID=auto): solo vaults con APY publicado ≥ HIGH_APY_MIN_PCT; reglas de salida cada hora
+    if (process.env.STRATEGY_VAULT_ID === "auto") {
+      if (!this.autoAt || now - this.autoAt >= 3600_000) { this.autoAt = now; if (await this.autoTick(ctx, d, now)) return; }
+      if (!d.target) return;
+      this.vaultId = d.target;
+    }
     // barrido inmediato de sobrantes (DCA_SWEEP=<etiqueta>): deposita el X de la wallet y el estable que sobró en depósitos anteriores
     const sweepTag = process.env.DCA_SWEEP;
     if (sweepTag && d.sweptTag !== sweepTag) {
@@ -111,6 +145,7 @@ export class Strategy {
       this.run.status = "hecho"; this.run.endedAt = Date.now();
       d.n++; d.lastAt = now; d.totalUsd += this.dcaUsdCfg; d.deposits.push({ at: new Date(now).toISOString(), usd: this.dcaUsdCfg, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
       d.nextAt = new Date(now + this.dcaEveryMs).toISOString(); this.retryAt = 0;
+      if (this.vaultId) { const h = ((d.holdings ??= {})[this.vaultId] ??= { since: new Date(now).toISOString(), entryApyPct: this.lastScan?.byId?.[this.vaultId]?.apyPct ?? null, entryTvl: this.lastScan?.byId?.[this.vaultId]?.tvl ?? null, usd: 0 }); h.usd += this.dcaUsdCfg; }
       await this.diag(`estrategia beefy-clm-dca: depósito ${d.n} de $${this.dcaUsdCfg} en ${this.run.vaultId} · acumulado $${d.totalUsd} · siguiente ${d.nextAt}`);
     } catch (e) {
       const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
