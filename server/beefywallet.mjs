@@ -17,6 +17,36 @@ const EXTRA_RPCS = {
 };
 const BEEFY_TO_KEY = { base: "base", bsc: "bsc", polygon: "polygon", arbitrum: "arbitrum", optimism: "optimism", robinhood: "robinhood" };
 const iface = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function getPricePerFullShare() view returns (uint256)", "function earned(address) view returns (address[], uint256[])"]);
+const clmIface = new ethers.Interface(["function wants() view returns (address, address)", "function balances() view returns (uint256, uint256)", "function totalSupply() view returns (uint256)",
+  "function strategy() view returns (address)", "function pool() view returns (address)", "function slot0() view returns (uint160 sqrtPriceX96, int24 tick)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"]);
+const CLM_STABLES = new Set(["USDC", "USDT", "USDG", "USDBC", "USDC.E", "DAI", "USD1", "FDUSD", "USDE", "BUSD", "USDT0", "AUSD"]);
+
+/** Precio de token1 en token0 (unidades humanas) desde sqrtPriceX96 de un pool v3 (puro, probado). */
+export function priceFromSqrtX96(sqrtPriceX96, dec0, dec1) {
+  const r = Number(BigInt(sqrtPriceX96)) / 2 ** 96;
+  return r * r * 10 ** (dec0 - dec1); // token1 por token0
+}
+
+/** Valor on-chain de un CLM con un lado estable: precio del otro token desde el slot0 del pool del CLM (sin oráculo de Beefy,
+ *  que para algunos tokens como ZEC en BSC se queda congelado). Devuelve { valueUsd, price, symbol } o null. */
+export function clmValueFromPool({ shares, totalSupply, amount0, amount1, dec0, dec1, sym0, sym1, sqrtPriceX96 }) {
+  const s0 = CLM_STABLES.has(String(sym0).toUpperCase()), s1 = CLM_STABLES.has(String(sym1).toUpperCase());
+  if (s0 === s1 || !(totalSupply > 0n)) return null;
+  const p1in0 = priceFromSqrtX96(sqrtPriceX96, dec0, dec1); // token1 por token0
+  const px0 = s0 ? 1 : p1in0, px1 = s1 ? 1 : 1 / p1in0;   // USD por token
+  const frac = Number(shares) / Number(totalSupply);
+  const usd = (Number(amount0) / 10 ** dec0 * px0 + Number(amount1) / 10 ** dec1 * px1) * frac;
+  return { valueUsd: usd, price: s0 ? px1 : px0, symbol: s0 ? sym1 : sym0 };
+}
+
+async function clmOnchain(ethers_, p, clm, shares) {
+  const c = new ethers.Contract(clm, clmIface, p);
+  const [[t0, t1], [a0, a1], ts, strat] = await Promise.all([c.wants(), c.balances(), c.totalSupply(), c.strategy()]);
+  const pool = await new ethers.Contract(strat, clmIface, p).pool();
+  const [slot, d0, d1, s0, s1] = await Promise.all([new ethers.Contract(pool, clmIface, p).slot0(),
+    ...[t0, t1].map((t) => new ethers.Contract(t, clmIface, p).decimals()), ...[t0, t1].map((t) => new ethers.Contract(t, clmIface, p).symbol())]);
+  return clmValueFromPool({ shares, totalSupply: ts, amount0: a0, amount1: a1, dec0: Number(d0), dec1: Number(d1), sym0: s0, sym1: s1, sqrtPriceX96: slot[0] });
+}
 
 async function getJson(url, ms = 25_000) {
   const r = await fetch(url, { signal: AbortSignal.timeout(ms), headers: { accept: "application/json" } });
@@ -76,7 +106,7 @@ export async function beefyWallet(address, { provider = null } = {}) {
   const net = netDepositsByVault(history.entries);
   const chainsInHistory = [...new Set(history.entries.map((e) => e.chain).filter(Boolean))];
 
-  const positions = []; const errors = [];
+  const positions = []; const errors = []; const onchainPx = {};
   const chains = [...new Set([...chainsInHistory, "base", "monad"])];
   for (const chain of chains) {
     const list = byChain[chain] ?? [];
@@ -107,13 +137,20 @@ export async function beefyWallet(address, { provider = null } = {}) {
     });
     for (const x of held) {
       const v = x.v;
+      // CLM (o reward pool de un CLM): valor y precio del token volátil desde el pool, no del oráculo de Beefy
+      if (v.type === "cowcentrated" || (v.type === "gov" && v.tokenAddress && ethers.isAddress(v.tokenAddress))) {
+        try { x.onchain = await clmOnchain(ethers, p, v.type === "gov" ? v.tokenAddress : v.earnContractAddress, x.shares); }
+        catch (e) { if (v.type === "cowcentrated" || all.some((w) => w.type === "cowcentrated" && w.earnContractAddress?.toLowerCase() === v.tokenAddress.toLowerCase())) errors.push(`${chain} ${v.id} on-chain: ${(e.shortMessage || e.message).slice(0, 50)}`); }
+        if (x.onchain?.symbol && Number.isFinite(x.onchain.price)) onchainPx[String(x.onchain.symbol).toUpperCase()] ??= { price: x.onchain.price, chain, id: v.id };
+      }
       const amt = underlyingAmount({ type: v.type, shares: x.shares, ppfs: x.ppfs ?? 10n ** 18n, tokenDecimals: Number(v.tokenDecimals ?? v.depositTokenDecimals ?? 18) });
       const px = Number(price[v.oracleId] ?? price[v.id] ?? NaN);
-      const usd = Number.isFinite(px) ? amt * px : null;
+      const usdBeefy = Number.isFinite(px) ? amt * px : null;
+      const usd = x.onchain && Number.isFinite(x.onchain.valueUsd) ? x.onchain.valueUsd : usdBeefy;
       const a = apy[v.id] ?? {};
       const n = net[v.id];
       positions.push({ chain, id: v.id, name: v.name, type: v.type, platform: v.platformId, status: v.status, assets: v.assets,
-        valueUsd: usd, apyPct: a.totalApy != null ? +(a.totalApy * 100).toFixed(2) : null, tvlUsd: Math.round(tvlById[v.id] ?? 0),
+        valueUsd: usd, valueUsdBeefy: usdBeefy !== null ? +usdBeefy.toFixed(4) : null, valueSource: x.onchain ? "pool" : "beefy", apyPct: a.totalApy != null ? +(a.totalApy * 100).toFixed(2) : null, tvlUsd: Math.round(tvlById[v.id] ?? 0),
         netDepositedUsd: n ? +n.netUsd.toFixed(2) : null, pnlUsd: n && usd !== null ? +(usd - n.netUsd).toFixed(2) : null, txs: n?.txs ?? null,
         firstDeposit: n?.first ?? null, url: `https://app.beefy.com/vault/${v.id}`,
         pending: x.pending ?? null, pendingUsd: x.pending ? +x.pending.reduce((a, r) => a + (r.usd ?? 0), 0).toFixed(4) : null });
@@ -124,15 +161,20 @@ export async function beefyWallet(address, { provider = null } = {}) {
   const total = positions.reduce((s, x) => s + (x.valueUsd ?? 0), 0);
   const daily = positions.reduce((s, x) => s + (x.valueUsd ?? 0) * (Math.pow(1 + (x.apyPct ?? 0) / 100, 1 / 365) - 1), 0);
   const px = (k) => (Number.isFinite(Number(price[k])) ? +Number(price[k]).toFixed(4) : null);
-  return { address, at: new Date().toISOString(), totalUsd: +total.toFixed(2), estDailyUsd: +daily.toFixed(3), positions, prices: { BTC: px("BTC") ?? px("WBTC"), cbBTC: px("cbBTC"), ZEC: px("ZEC"), ETH: px("ETH"), BNB: px("BNB") },
+  // precio del pool del CLM cuando lo hay (el oráculo "ZEC" de Beefy quedó congelado en $29.7566); el de Beefy queda en pricesBeefy
+  const pick = (k) => { const o = onchainPx[k.toUpperCase()]; return o ? +o.price.toFixed(4) : px(k); };
+  return { address, at: new Date().toISOString(), totalUsd: +total.toFixed(2), estDailyUsd: +daily.toFixed(3), positions,
+    prices: { BTC: px("BTC") ?? px("WBTC"), cbBTC: pick("cbBTC"), ZEC: pick("ZEC"), ETH: px("ETH"), BNB: px("BNB") },
+    pricesBeefy: { cbBTC: px("cbBTC"), ZEC: px("ZEC") }, pricesSource: Object.fromEntries(Object.entries(onchainPx).map(([k, o]) => [k, `pool ${o.chain} ${o.id}`])),
     recent: history.entries.filter((e) => e.datetime && Date.now() - new Date(e.datetime).getTime() < 72 * 3600_000).map((e) => ({ at: e.datetime, chain: e.chain, id: e.product_key?.split(":").pop() ?? e.vault_id ?? e.display_name, name: e.display_name ?? null, tx: e.transaction_hash ?? e.tx_hash ?? e.transactionHash ?? null, usd: Number(e.usd_diff ?? e.usdDiff ?? NaN), shares: e.share_diff ?? e.shareDiff ?? null, action: e.action ?? e.type ?? null })).sort((a, b) => String(a.at).localeCompare(String(b.at))),
     history: { source: history.source, entries: history.entries.length, chains: chainsInHistory, error: history.error, sampleKeys: history.entries[0] ? Object.keys(history.entries[0]).slice(0, 20) : null },
     errors };
 }
 
 export function beefyWalletLine(r) {
-  return `beefy wallet ${r.address}: total $${r.totalUsd} · est. $${r.estDailyUsd}/día · precios ${Object.entries(r.prices ?? {}).filter(([, v]) => v !== null).map(([k, v]) => `${k} $${v}`).join(", ")} · ${r.positions.length} posiciones: ` +
-    r.positions.map((p) => `[${p.chain}] ${p.name} (${p.type}${p.status !== "active" ? ", " + p.status : ""}) $${p.valueUsd?.toFixed(2) ?? "?"}` +
+  const src = (k) => (r.pricesSource?.[k.toUpperCase()] ? ` (pool; Beefy $${r.pricesBeefy?.[k] ?? "?"})` : "");
+  return `beefy wallet ${r.address}: total $${r.totalUsd} · est. $${r.estDailyUsd}/día · precios ${Object.entries(r.prices ?? {}).filter(([, v]) => v !== null).map(([k, v]) => `${k} $${v}${src(k)}`).join(", ")} · ${r.positions.length} posiciones: ` +
+    r.positions.map((p) => `[${p.chain}] ${p.name} (${p.type}${p.status !== "active" ? ", " + p.status : ""}) $${p.valueUsd?.toFixed(2) ?? "?"}${p.valueSource === "pool" && p.valueUsdBeefy !== null && Math.abs(p.valueUsdBeefy - p.valueUsd) > 0.01 ? ` (Beefy $${p.valueUsdBeefy.toFixed(2)})` : ""}` +
       `${p.netDepositedUsd !== null ? ` dep $${p.netDepositedUsd} → ${p.pnlUsd >= 0 ? "+" : ""}$${p.pnlUsd}` : ""} APY ${p.apyPct ?? "—"}% TVL $${p.tvlUsd} id ${p.id}`).join(" | ") +
     ` · historial: ${r.history.source ?? "—"} (${r.history.entries} entradas${r.history.chains.length ? ", cadenas " + r.history.chains.join("/") : ""}${r.history.error ? ", error " + r.history.error : ""})` +
     (r.errors.length ? ` · errores: ${r.errors.join(" | ")}` : "");
