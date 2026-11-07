@@ -12,7 +12,11 @@ async function pages(url, max = 4) { const out = []; let next = null; for (let i
 export async function auditWallet(address, { days = 14, whitelist = [] } = {}) {
   const me = address.toLowerCase(), since = Date.now() - days * 86400_000, wl = whitelist.map((x) => x.toLowerCase());
   const res = { at: new Date().toISOString(), address, days, chains: {}, withdrawals: [], deposits: [], errors: [] };
-  await Promise.all(Object.entries(EXPLORERS).map(async ([chain, base]) => {
+  const viaAlchemyOk = new Set();
+  if (process.env.ALCHEMY_KEY) await Promise.all(Object.keys(ALCHEMY).map(async (chain) => {
+    try { await viaAlchemy(chain, address, since, wl, res); viaAlchemyOk.add(chain); } catch (e) { res.errors.push(`${chain}: alchemy: ${String(e.message).replace(process.env.ALCHEMY_KEY, "***").slice(0, 80)}`); }
+  }));
+  await Promise.all(Object.entries(EXPLORERS).filter(([c]) => !viaAlchemyOk.has(c)).map(async ([chain, base]) => {
     try {
       const [txs, tts] = await Promise.all([pages(`${base}/api/v2/addresses/${address}/transactions`), pages(`${base}/api/v2/addresses/${address}/token-transfers`)]);
       const recent = (x) => new Date(x.timestamp).getTime() >= since;
@@ -35,7 +39,7 @@ export async function auditWallet(address, { days = 14, whitelist = [] } = {}) {
       catch (e2) { res.errors.push(`${chain}: ${e.message.slice(0, 60)} / routescan: ${e2.message.slice(0, 60)}`); }
     }
   }));
-  if (!res.chains.bsc) { try { await viaRoutescan("bsc", address, since, wl, res); } catch (e) { res.errors.push(`bsc: routescan: ${e.message.slice(0, 60)}`); } }
+
   res.withdrawals.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   res.deposits.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   // último depósito de ETH en Base desde una cuenta (no contrato): la cuenta autorizada para retiros
@@ -73,4 +77,27 @@ async function viaRoutescan(chain, address, since, wl, res) {
     res.withdrawals.push({ chain, at: new Date(Number(t.timeStamp) * 1000).toISOString(), kind: "token", to, amount: Number(t.value) / 10 ** Number(t.tokenDecimal || 18), token: t.tokenSymbol, tx: t.hash, whitelisted: wl.includes(to) });
   }
   res.chains[chain] = { txs: txs.length, out: nOut, in: nIn, tokenTransfers: tts.length, via: "routescan" };
+}
+
+const ALCHEMY = { base: "base-mainnet", arbitrum: "arb-mainnet", optimism: "opt-mainnet", polygon: "polygon-mainnet", bsc: "bnb-mainnet", robinhood: "robinhood-mainnet" };
+async function viaAlchemy(chain, address, since, wl, res) {
+  const url = `https://${ALCHEMY[chain]}.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`;
+  const rpc = async (method, params) => { const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(25_000) }); const j = await r.json(); if (j.error) throw new Error(j.error.message); return j.result; };
+  const me = address.toLowerCase();
+  const xfers = async (dir) => { const out = []; let pageKey; for (let i = 0; i < 5; i++) { const r = await rpc("alchemy_getAssetTransfers", [{ fromBlock: "0x0", [dir]: address, category: ["external", "erc20"], withMetadata: true, excludeZeroValue: true, maxCount: "0x3e8", order: "desc", ...(pageKey ? { pageKey } : {}) }]); out.push(...r.transfers); if (!r.pageKey || Date.parse(r.transfers.at(-1)?.metadata?.blockTimestamp ?? 0) < since) break; pageKey = r.pageKey; } return out; };
+  const [outs, ins] = await Promise.all([xfers("fromAddress"), xfers("toAddress")]);
+  const codeCache = new Map();
+  const isEoa = async (a) => { a = a.toLowerCase(); if (!codeCache.has(a)) codeCache.set(a, (await rpc("eth_getCode", [a, "latest"]).catch(() => null)) === "0x"); return codeCache.get(a); };
+  const recent = (t) => Date.parse(t.metadata?.blockTimestamp ?? 0) >= since;
+  let nOut = 0, nIn = 0;
+  for (const t of outs.filter(recent)) {
+    nOut++; const to = t.to?.toLowerCase();
+    if (!to || to === me || /^0x0{40}$/.test(to)) continue;
+    if (await isEoa(to)) res.withdrawals.push({ chain, at: t.metadata.blockTimestamp, kind: t.category === "external" ? "nativo" : "token", to, amount: Number(t.value), token: t.asset ?? t.rawContract?.address, tx: t.hash, whitelisted: wl.includes(to) });
+  }
+  for (const t of ins.filter(recent)) {
+    if (t.category !== "external" || t.from?.toLowerCase() === me) continue;
+    nIn++; res.deposits.push({ chain, at: t.metadata.blockTimestamp, from: t.from.toLowerCase(), fromIsContract: !(await isEoa(t.from)), amount: Number(t.value), tx: t.hash });
+  }
+  res.chains[chain] = { txs: outs.length + ins.length, out: nOut, in: nIn, tokenTransfers: 0, via: "alchemy" };
 }
