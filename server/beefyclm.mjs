@@ -91,7 +91,7 @@ async function resolve(s) {
   const [t0, t1] = await call(s, clm, "wants");
   // par sin el estable (HIGH_APY_ANY_PAIR=1): se entra/sale cambiando el estable por los dos tokens vía Uniswap v3 (rutas cotizadas)
   const noStable = lc(t0) !== lc(N.stable) && lc(t1) !== lc(N.stable);
-  if (noStable && (process.env.HIGH_APY_ANY_PAIR !== "1" || !N.router || !N.quoter)) throw new Error(`el CLM no tiene ${N.stableSym}`);
+  if (noStable && ((process.env.HIGH_APY_ANY_PAIR !== "1" && !r.extra) || !N.router || !N.quoter)) throw new Error(`el CLM no tiene ${N.stableSym}`);
   const [strat] = await call(s, clm, "strategy");
   const [pool] = await call(s, strat, "pool");
   const [factory] = await call(s, pool, "factory");
