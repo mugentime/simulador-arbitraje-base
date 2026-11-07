@@ -92,4 +92,12 @@ await exitClm(s, { ethUsd: 600 });
 const back = Number(B(S)) / 1e18;
 ok(back > 29.9 && back < 30, `salida: ${back.toFixed(4)} USDT de vuelta (solo comisiones de swap)`);
 ok(B(ZEC) < 10n ** 13n && B(BTCB) < 10n ** 11n, "salida: se vendieron los dos tokens");
+// migración única: entra de nuevo y luego MIGRATE retira todo (queda en USDT, sin pasar a nativo) y lo vuelve a depositar
+s.run = s.s.runs["par#2"] = { kind: "beefy-clm-dca", startedAt: 3, txs: [], status: "pendiente" }; s.dcaUsd = 29; s.vaultId = null;
+await enterClm(s, { ethUsd: 600 });
+const sh0 = B(RP);
+process.env.MIGRATE = "uniswap-cow-bsc-zec-btcb-rp>uniswap-cow-bsc-zec-btcb-rp@t1";
+ok(await s.migrate({ ethUsd: 600 }) && s.s.migrations.t1.step === "entrada" && B(RP) === 0n && B(S) > 28n * 10n ** 18n, `migración: salida a USDT (${logs.at(-1)?.slice(0, 120)})`);
+ok(await s.migrate({ ethUsd: 600 }) && s.s.migrations.t1.step === "hecha" && B(RP) > 0n && B(RP) < sh0, "migración: entrada al destino (menos participaciones por las comisiones de swap)");
+ok(!(await s.migrate({ ethUsd: 600 })), "migración: no se repite");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);

@@ -223,6 +223,39 @@ export class Strategy {
     return false;
   }
 
+  /**
+   * Migración única (MIGRATE="<vault origen>><vault destino>@<etiqueta>"): retira toda la posición del origen, la deja en el
+   * estable (sin pasar a nativo) y la deposita en el destino. Pasos reanudables; una vez por etiqueta. true si actuó.
+   */
+  async migrate(ctx) {
+    const m = /^\s*([\w.-]+)\s*>\s*([\w.-]+)\s*@\s*([\w.-]+)\s*$/.exec(process.env.MIGRATE ?? "");
+    if (!m) return false;
+    const [, from, to, tag] = m;
+    const st = ((this.s.migrations ??= {})[tag] ??= { from, to, step: "salida" });
+    if (st.step === "hecha" || st.step === "error" || (st.retryAt && Date.now() < st.retryAt)) return false;
+    const now = Date.now();
+    try {
+      if (st.step === "salida") {
+        this.run = this.s.runs[`${this.label}-migrate-${tag}-exit`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", migrate: tag };
+        this.vaultId = from; this.keepStable = true;
+        await exitClm(this, ctx);
+        this.run.status = "hecho"; st.usdcOut = this.run.usdcOut; st.step = "entrada"; st.retries = 0;
+        await this.diag(`estrategia migración ${tag}: salida de ${from} · ${ethers.formatUnits(st.usdcOut ?? "0", this.net.stableDec)} ${this.net.stableSym} en la wallet · sigue la entrada a ${to}`);
+        return true;
+      }
+      this.run = this.s.runs[`${this.label}-migrate-${tag}-enter`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", migrate: tag };
+      this.vaultId = to; this.dcaUsd = null; this.sweepStable = Number(ethers.formatUnits(st.usdcOut ?? "0", this.net.stableDec));
+      await enterClm(this, ctx);
+      this.run.status = "hecho"; st.step = "hecha"; st.at = new Date(now).toISOString();
+      await this.diag(`estrategia migración ${tag}: hecha · ${from} → ${to} · ${ethers.formatUnits(this.run.usdcIn ?? "0", this.net.stableDec)} ${this.net.stableSym} depositados`);
+    } catch (e) {
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 240);
+      if ((st.retries = (st.retries ?? 0) + 1) <= 30) { st.retryAt = now + (e.retry ? 60_000 : 600_000); if (st.retries === 1 || st.retries % 10 === 0) await this.diag(`estrategia migración ${tag}: ${st.step} reintenta (${st.retries}) · ${msg}`); }
+      else { const at = st.step; st.step = "error"; st.error = msg; await this.diag(`estrategia migración ${tag}: se detiene en "${at}" tras 30 intentos · ${msg} (lo retirado queda en la wallet)`); }
+    } finally { this.vaultId = null; this.keepStable = false; this.sweepStable = undefined; }
+    return true;
+  }
+
   /** Al arrancar: verifica (sin enviar nada) que el vault del DCA principal y los de DCA_EXTRA se puedan usar. */
   async checkVaults() {
     const ids = [];
@@ -373,7 +406,7 @@ export class Strategy {
       this.busy = true;
       try {
         if (!this.checked) { this.checked = true; await this.checkVaults().catch(() => {}); }
-        if (!(await this.extraDca(ctx))) await this.dca(ctx);
+        if (!(await this.migrate(ctx)) && !(await this.extraDca(ctx))) await this.dca(ctx);
       } finally { this.busy = false; await this.save().catch(() => {}); }
       return;
     }

@@ -457,7 +457,7 @@ export async function exitClm(s, ctx) {
   }
   const amt = BigInt(r.usdcOut);
   if (amt <= 0n) throw new Error("no salió USDC del CLM");
-  if (s.net.nativeFee === null) { await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, s.net.stableDec)} ${s.net.stableSym} quedan en la wallet · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
+  if (s.net.nativeFee === null || s.keepStable) { await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, s.net.stableDec)} ${s.net.stableSym} quedan en la wallet · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   await approve(s, BASE.USDC, BASE.ROUTER, amt, "approve USDC→router");
   const p = { tokenIn: BASE.USDC, tokenOut: BASE.WETH, fee: BASE.FEE, recipient: BASE.ROUTER, amountIn: amt, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
   const simOut = U.decodeFunctionResult("exactInputSingle", await s.provider.call({ from: s.me, to: BASE.ROUTER, data: U.encodeFunctionData("exactInputSingle", [p]) }))[0];
