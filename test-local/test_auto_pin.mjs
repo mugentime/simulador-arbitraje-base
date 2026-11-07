@@ -27,7 +27,7 @@ s.lastCost = {}; // sin RPC: el reporte de costo falla y no hay datos de pérdid
 let r = await s.autoTick({}, d, now);
 ok(!r && d.target === "zec-rp", "fijo: el destino sigue siendo ZEC aunque haya otros elegibles");
 ok(d.holdings["zec-rp"].badSince === now && logs.some((l) => /zec-rp en vigilancia \(APY 340 % < 897 %/.test(l)), "APY < mitad del máximo → vigilancia");
-ok(logs.some((l) => /salida si APY < 50 % del máximo por 6 h o PnL ≤ −10 %/.test(l) && /fijo zec-rp/.test(l)), "línea de vigilancia con las reglas");
+ok(logs.some((l) => /salida si APY < 50 % del máximo por 6 h · salida si PnL ≤ −10 %/.test(l) && /fijo zec-rp/.test(l)), "línea de vigilancia con las reglas");
 ok(!d.candidates.some((c) => c.startsWith("tiny-rp")), "TVL < $100k no es elegible");
 // 2) a las 6 h: salida (exitClm falla sin RPC → se registra el intento)
 logs.length = 0;
@@ -46,4 +46,18 @@ const d3 = { n: 3, lastAt: now, holdings: { "zec-rp": { closed: new Date(now - 3
 s.lastCost = {};
 await s.autoTick({}, d3, now);
 ok(d3.target === "btcb-rp", "tras salir de ZEC el destino es el mejor elegible restante (BTCB-USDT)");
+// 5) "quedarse en el mejor": sin salida por APY; rota solo si otro elegible paga ≥ ×1.25 durante 6 h
+process.env.HIGH_APY_EXIT_FRAC = "0"; process.env.HIGH_APY_ROTATE_MULT = "1.25"; process.env.HIGH_APY_ROTATE_HOURS = "6";
+s.rotate = true; s.lastCost = {};
+const d4 = { n: 3, lastAt: now, holdings: { "zec-rp": { since: "x", entryApyPct: 1260, peakApyPct: 3710, usd: 30 } } };
+vaults["btcb-rp"].apy = 2.0; // 200 % < 340 % de ZEC
+logs.length = 0;
+r = await s.autoTick({}, d4, now);
+ok(!r && d4.target === "zec-rp" && !d4.holdings["zec-rp"].badSince && !d4.holdings["zec-rp"].rotateSince, "ZEC es el mejor: se queda, sin vigilancia aunque esté lejos de su máximo");
+vaults["btcb-rp"].apy = 5.0; // 500 % ≥ 1.25 × 340 %
+await s.autoTick({}, d4, now + 3600_000);
+ok(d4.holdings["zec-rp"].rotateSince === now + 3600_000 && d4.target === "zec-rp", "otro paga ≥ ×1.25: empieza a contar, aún no rota");
+logs.length = 0;
+r = await s.autoTick({}, d4, now + 7 * 3600_000);
+ok(r === true && logs.some((l) => /salida de zec-rp \(rotación: btcb-rp 500 % vs 340 %/.test(l) || /salida de zec-rp falló/.test(l)), "6 h después: rota al mejor");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);

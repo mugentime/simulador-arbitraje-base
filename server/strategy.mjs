@@ -60,6 +60,8 @@ export class Strategy {
     this.pin = process.env.AUTO_PIN || null;
     this.redeployOnExit = this.dynamic || process.env.AUTO_REDEPLOY === "1";
     this.lossPct = Number(process.env.HIGH_APY_EXIT_LOSS_PCT ?? 0);
+    // "quedarse en el mejor" (AUTO_ROTATE=1): rota solo si otro elegible paga ≥ HIGH_APY_ROTATE_MULT × durante HIGH_APY_ROTATE_HOURS
+    this.rotate = this.dynamic || process.env.AUTO_ROTATE === "1";
     this.profitEveryMs = Number(process.env.PROFIT_EVERY_H ?? 6) * 3600_000;
     // composición (STRATEGY_COMPOUND=1): cobra las recompensas del reward pool y las vuelve a depositar cada COMPOUND_EVERY_H
     this.compound = process.env.STRATEGY_COMPOUND === "1";
@@ -158,8 +160,8 @@ export class Strategy {
       if (!c.exit && this.lossPct > 0 && pc && pc.invested > 0 && Number.isFinite(pc.pnlPct) && pc.pnlPct <= -this.lossPct) Object.assign(c, { exit: true, why: `pérdida ${pc.pnlPct.toFixed(1)} % sobre lo invertido (≥ ${this.lossPct} %)` });
       h.badSince = c.badSince; h.lastApyPct = scan.byId[id]?.apyPct ?? null; h.lastTvl = scan.byId[id]?.tvl ?? null;
       // demo dinámico: rotación si otro vault elegible paga mucho más durante HIGH_APY_ROTATE_HOURS
-      if (!c.exit && this.dynamic && id === d.target) {
-        const rc = rotateCheck(scan.byId[id] ?? null, scan.eligible.filter((x) => x.id !== id)[0] ?? null, h.rotateSince ?? null, now, rules);
+      if (!c.exit && this.rotate && id === d.target) {
+        const rc = rotateCheck(scan.byId[id] ?? null, elig.filter((x) => x.id !== id)[0] ?? null, h.rotateSince ?? null, now, rules);
         h.rotateSince = rc.since;
         if (rc.rotate) Object.assign(c, { exit: true, why: rc.why });
       }
@@ -198,7 +200,7 @@ export class Strategy {
     // vigilancia horaria (siempre, aunque nada cambie): destino, posiciones abiertas, capital pendiente y mejores candidatos con su motivo
     const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id, h]) => `${id} APY ${h.lastApyPct?.toFixed(0) ?? "?"} % (máx. ${h.peakApyPct?.toFixed(0) ?? "?"} %, umbral ${exitThreshold({ apyPct: h.entryApyPct, peakApyPct: h.peakApyPct }, rules).toFixed(0)} %)${cost[id] && Number.isFinite(cost[id].pnlPct) ? ` PnL ${cost[id].pnlPct.toFixed(1)} %` : ""}${h.badSince ? ` en vigilancia desde ${new Date(h.badSince).toISOString().slice(11, 16)}Z` : ""}`);
     await this.diag(`estrategia auto: vigilancia · reglas APY ≥ ${rules.minApyPct} % y TVL ≥ $${rules.minTvl}` +
-      `${rules.exitFrac > 0 ? ` · salida si APY < ${Math.round(rules.exitFrac * 100)} % del máximo` : ` · salida si APY < ${rules.exitApyPct} %`} por ${rules.exitHours} h${this.lossPct > 0 ? ` o PnL ≤ −${this.lossPct} %` : ""}${this.pin ? ` · fijo ${this.pin}${pinOpen ? "" : " (ya salió)"}` : ""} · destino ${d.target ?? "ninguno"} · abiertas: ${open.join(", ") || "ninguna"}` +
+      `${rules.exitFrac > 0 ? ` · salida si APY < ${Math.round(rules.exitFrac * 100)} % del máximo por ${rules.exitHours} h` : rules.exitApyPct > 0 ? ` · salida si APY < ${rules.exitApyPct} % por ${rules.exitHours} h` : ""}${this.rotate ? ` · rota si otro elegible paga ≥ ×${rules.rotateMult} por ${rules.rotateHours} h` : ""}${this.lossPct > 0 ? ` · salida si PnL ≤ −${this.lossPct} %` : ""}${this.pin ? ` · fijo ${this.pin}${pinOpen ? "" : " (ya salió)"}` : ""} · destino ${d.target ?? "ninguno"} · abiertas: ${open.join(", ") || "ninguna"}` +
       `${d.redeploy && BigInt(d.redeploy) > 0n ? ` · por reinvertir ${ethers.formatUnits(d.redeploy, this.net.stableDec)} ${this.net.stableSym}` : ""}` +
       ` · próximo depósito ${d.target ? (d.lastAt ? new Date(d.lastAt + this.dcaEveryMs).toISOString() : "ahora") : "en pausa (sin destino)"} · top: ${watchSummary(scan.byId, rules)}`);
     return false;
