@@ -9,7 +9,7 @@ const EXPLORERS = { base: "https://base.blockscout.com", optimism: "https://opti
 async function get(url) { const r = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" } }); if (!r.ok) throw new Error(`${new URL(url).host}: HTTP ${r.status}`); return r.json(); }
 async function pages(url, max = 4) { const out = []; let next = null; for (let i = 0; i < max; i++) { const j = await get(url + (next ? (url.includes("?") ? "&" : "?") + new URLSearchParams(next) : "")); out.push(...(j.items ?? [])); if (!j.next_page_params) break; next = j.next_page_params; } return out; }
 
-export async function auditWallet(address, { days = 14, whitelist = [] } = {}) {
+export async function auditWallet(address, { days = 14, whitelist = [], provider = null } = {}) {
   const me = address.toLowerCase(), since = Date.now() - days * 86400_000, wl = whitelist.map((x) => x.toLowerCase());
   const res = { at: new Date().toISOString(), address, days, chains: {}, withdrawals: [], deposits: [], errors: [] };
   const viaAlchemyOk = new Set();
@@ -42,6 +42,16 @@ export async function auditWallet(address, { days = 14, whitelist = [] } = {}) {
 
   res.withdrawals.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   res.deposits.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  // sin explorador para Base: localizar los depósitos de ETH por saldo histórico (nodo de archivo)
+  if (!res.chains.base && provider) {
+    try {
+      const f = await findNativeDeposits(provider, address);
+      res.baseScan = f;
+      for (const d of f) for (const t of d.txs) res.deposits.push({ chain: "base", at: d.at, from: t.from, fromIsContract: (await provider.getCode(t.from)) !== "0x", amount: t.value, tx: t.hash });
+      if (f.some((d) => !d.txs.length)) res.errors.push(`base: ${f.filter((d) => !d.txs.length).length} subidas de saldo sin tx directa (internas/puente) en bloques ${f.filter((d) => !d.txs.length).map((d) => d.block).join(",")}`);
+    } catch (e) { res.errors.push(`base: saldo histórico: ${String(e.shortMessage || e.message).slice(0, 80)}`); }
+    res.deposits.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
   // último depósito de ETH en Base desde una cuenta (no contrato): la cuenta autorizada para retiros
   res.lastEthDeposit = res.deposits.find((d) => d.chain === "base" && !d.fromIsContract) ?? null;
   return res;
@@ -100,4 +110,29 @@ async function viaAlchemy(chain, address, since, wl, res) {
     nIn++; res.deposits.push({ chain, at: t.metadata.blockTimestamp, from: t.from.toLowerCase(), fromIsContract: !(await isEoa(t.from)), amount: Number(t.value), tx: t.hash });
   }
   res.chains[chain] = { txs: outs.length + ins.length, out: nOut, in: nIn, tokenTransfers: 0, via: "alchemy" };
+}
+
+/**
+ * Depósitos de nativo recientes sin explorador: muestrea el saldo hacia atrás cada `step` bloques, busca subidas y ubica el
+ * bloque exacto por búsqueda binaria; ahí lee las txs del bloque con destino a la wallet. Requiere un nodo con estado
+ * histórico (archivo) para getBalance en bloques pasados.
+ */
+export async function findNativeDeposits(provider, address, { lookback = 120_000, step = 3_000, minWei = 10n ** 15n, max = 5 } = {}) {
+  const me = address.toLowerCase();
+  const head = await provider.getBlockNumber();
+  const bal = (b) => provider.getBalance(address, b);
+  const pts = [];
+  for (let b = head; b > head - lookback; b -= step) pts.push([b, await bal(b)]);
+  const out = [];
+  for (let i = 0; i + 1 < pts.length && out.length < max; i++) {
+    const [hi, bh] = pts[i], [lo, bl] = pts[i + 1];
+    if (bh - bl < minWei) continue;
+    // primera subida ≥ minWei dentro de (lo, hi]
+    let a = lo, z = hi, ba = bl;
+    while (z - a > 1) { const m = Math.floor((a + z) / 2); const bm = await bal(m); if (bm - ba >= minWei) z = m; else { a = m; ba = bm; } }
+    const blk = await provider.getBlock(z, true);
+    const txs = (blk?.prefetchedTransactions ?? []).filter((t) => t.to?.toLowerCase() === me && t.value > 0n);
+    out.push({ block: z, at: new Date(Number(blk.timestamp) * 1000).toISOString(), increase: Number(await bal(z) - await bal(z - 1)) / 1e18, txs: txs.map((t) => ({ hash: t.hash, from: t.from.toLowerCase(), value: Number(t.value) / 1e18 })) });
+  }
+  return out;
 }

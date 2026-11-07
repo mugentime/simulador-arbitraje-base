@@ -352,7 +352,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url.startsWith("/api/withdraw-audit")) {
     const addr = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0];
-    try { res.writeHead(200, headers); return res.end(J({ guard: { whitelist: whitelist(), blocked: executor?.guard?.blocked ?? [] }, audit: lastAudit ?? (lastAudit = await auditWallet(addr, { whitelist: whitelist() })) })); }
+    try { res.writeHead(200, headers); return res.end(J({ guard: { whitelist: whitelist(), blocked: executor?.guard?.blocked ?? [] }, audit: lastAudit ?? (lastAudit = await auditWallet(addr, { whitelist: whitelist(), provider: executor?.provider })) })); }
     catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
   }
   if (req.url.startsWith("/api/wallet-balances")) {
@@ -443,7 +443,7 @@ async function logBeefyWallets() {
   for (const a of list) {
     try {
       try { console.log(`${new Date().toISOString()} ${walletBalancesLine(await walletBalances(a, { provider: executor?.provider }))}`); } catch (e) { console.log(`${new Date().toISOString()} saldos wallet ${a}: error ${e.message}`); }
-      try { lastAudit = await auditWallet(a, { whitelist: whitelist() }); console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
+      try { lastAudit = await auditWallet(a, { whitelist: whitelist(), provider: executor?.provider }); console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
