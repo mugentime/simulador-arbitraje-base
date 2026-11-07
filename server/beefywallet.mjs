@@ -125,6 +125,7 @@ export async function beefyWallet(address, { provider = null } = {}) {
   const daily = positions.reduce((s, x) => s + (x.valueUsd ?? 0) * (Math.pow(1 + (x.apyPct ?? 0) / 100, 1 / 365) - 1), 0);
   const px = (k) => (Number.isFinite(Number(price[k])) ? +Number(price[k]).toFixed(4) : null);
   return { address, at: new Date().toISOString(), totalUsd: +total.toFixed(2), estDailyUsd: +daily.toFixed(3), positions, prices: { BTC: px("BTC") ?? px("WBTC"), cbBTC: px("cbBTC"), ZEC: px("ZEC"), ETH: px("ETH"), BNB: px("BNB") },
+    recent: history.entries.filter((e) => e.datetime && Date.now() - new Date(e.datetime).getTime() < 72 * 3600_000).map((e) => ({ at: e.datetime, chain: e.chain, id: e.product_key?.split(":").pop() ?? e.vault_id ?? e.display_name, name: e.display_name ?? null, tx: e.transaction_hash ?? e.tx_hash ?? e.transactionHash ?? null, usd: Number(e.usd_diff ?? e.usdDiff ?? NaN), shares: e.share_diff ?? e.shareDiff ?? null, action: e.action ?? e.type ?? null })).sort((a, b) => String(a.at).localeCompare(String(b.at))),
     history: { source: history.source, entries: history.entries.length, chains: chainsInHistory, error: history.error, sampleKeys: history.entries[0] ? Object.keys(history.entries[0]).slice(0, 20) : null },
     errors };
 }

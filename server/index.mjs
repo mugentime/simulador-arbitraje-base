@@ -437,6 +437,7 @@ async function logBeefyWallets() {
       try { console.log(`${new Date().toISOString()} ${walletBalancesLine(await walletBalances(a, { provider: executor?.provider }))}`); } catch (e) { console.log(`${new Date().toISOString()} saldos wallet ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
+      if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
       const h = (await store.get("beefyWalletHist")) ?? [];
       h.push({ at: r.at, address: r.address, totalUsd: r.totalUsd, prices: r.prices, positions: r.positions.map((p) => ({ id: p.id, chain: p.chain, valueUsd: p.valueUsd !== null ? +p.valueUsd.toFixed(4) : null, apyPct: p.apyPct, tvlUsd: p.tvlUsd })) });
       while (h.length > 24 * 30) h.shift();
