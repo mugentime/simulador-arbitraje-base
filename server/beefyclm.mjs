@@ -100,7 +100,7 @@ async function resolve(s) {
     dex = "uni"; router = N.router; fee = Number((await call(s, pool, "fee"))[0]);
     const [rf] = await call(s, router, "factory"); if (lc(rf) !== lc(N.uniFactory)) throw new Error(`router ${router} es de la fábrica ${rf}, no de ${N.uniFactory}`);
   }
-  else if (SLIP_ROUTERS[lc(factory)]) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)]; tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
+  else if (SLIP_ROUTERS[lc(factory)] || (await discoverRouter(s, pool, factory))) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)] ?? (await discoverRouter(s, pool, factory)); tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
   else if (N.router && N.quoter) { dex = "otro"; router = N.router; } // fábrica sin router conocido: swaps por rutas Uniswap v3 cotizadas
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
   Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee, noStable });
@@ -169,6 +169,42 @@ export function rebalance(S, X, rate, R) {
   const sT = V / (1 + R / rate), xT = R * sT; // objetivo
   if (X > xT) return { stableToX: 0, xToStable: X - xT };
   return { stableToX: Math.max(0, S - sT), xToStable: 0 };
+}
+
+/**
+ * Router de una fábrica Slipstream que no está en SLIP_ROUTERS: se toman los `sender` de los últimos Swap del pool (quien llama
+ * a pool.swap es el router o un agregador) y se acepta el primero cuyo factory() sea la fábrica del pool y que cotice
+ * exactInputSingle con tickSpacing (forma Slipstream). Se guarda en el store por fábrica.
+ */
+const SWAP_TOPIC = ethers.id("Swap(address,address,int256,int256,uint160,uint128,int24)");
+const routerCache = {};
+export async function discoverRouter(s, pool, factory) {
+  const f = lc(factory);
+  if (routerCache[f] !== undefined) return routerCache[f];
+  const stored = (await s.store?.get?.("slipRouters").catch(() => null)) ?? {};
+  if (stored[f]) return (routerCache[f] = stored[f]);
+  let found = null;
+  try {
+    const head = await s.provider.getBlockNumber();
+    const senders = new Map();
+    for (let to = head, i = 0; i < 6 && senders.size < 12; i++, to -= 2000) {
+      const logs = await s.provider.getLogs({ address: pool, topics: [SWAP_TOPIC], fromBlock: Math.max(0, to - 1999), toBlock: to }).catch(() => []);
+      for (const l of logs) { const a = ethers.getAddress("0x" + l.topics[1].slice(26)); senders.set(a, (senders.get(a) ?? 0) + 1); }
+    }
+    for (const [a] of [...senders.entries()].sort((x, y) => y[1] - x[1])) {
+      try {
+        const [rf] = await call(s, a, "factory");
+        if (lc(rf) !== f) continue;
+        // debe tener exactInputSingle con tickSpacing y deadline (SwapRouter de Slipstream), que es lo que usa slipSwap
+        const sel = C.getFunction("exactInputSingle").selector.slice(2);
+        if (!(await s.provider.getCode(a)).includes(sel)) continue;
+        found = a; break;
+      } catch {}
+    }
+  } catch {}
+  routerCache[f] = found;
+  if (found) { stored[f] = found; await s.store?.set?.("slipRouters", stored).catch(() => {}); await s.diag?.(`estrategia: router Slipstream descubierto para la fábrica ${factory}: ${found} (sender de Swaps del pool ${pool})`); }
+  return found;
 }
 
 /** Verifica sin enviar nada que un vault se pueda usar (API de Beefy, CLM, pool, fábrica/rutas). Devuelve el texto de diagnóstico. */
@@ -289,6 +325,7 @@ async function enterPair(s) {
 
 export async function enterClm(s, ctx) {
   const r = s.run, N = s.net;
+  if (r.dex === "otro" && !r.noStable && r.xIn === undefined) delete r.vault; // reintento: vuelve a buscar router del pool (descubrimiento)
   await resolve(s);
   const D = N.stableDec, U1 = 10n ** BigInt(D);
   // 1) nativo → estable (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el estable de la wallet)
