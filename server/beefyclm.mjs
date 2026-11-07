@@ -101,7 +101,7 @@ async function resolve(s) {
     const [rf] = await call(s, router, "factory"); if (lc(rf) !== lc(N.uniFactory)) throw new Error(`router ${router} es de la fábrica ${rf}, no de ${N.uniFactory}`);
   }
   else if (SLIP_ROUTERS[lc(factory)]) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)]; tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
-  else if (noStable) { dex = "otro"; router = N.router; }
+  else if (N.router && N.quoter) { dex = "otro"; router = N.router; } // fábrica sin router conocido: swaps por rutas Uniswap v3 cotizadas
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
   Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee, noStable });
   await s.save();
@@ -171,6 +171,16 @@ export function rebalance(S, X, rate, R) {
   return { stableToX: Math.max(0, S - sT), xToStable: 0 };
 }
 
+/** Verifica sin enviar nada que un vault se pueda usar (API de Beefy, CLM, pool, fábrica/rutas). Devuelve el texto de diagnóstico. */
+export async function checkVault(s, id) {
+  const saved = { run: s.run, vaultId: s.vaultId, save: s.save, diag: s.diag };
+  let msg = "";
+  s.run = { txs: [] }; s.vaultId = id; s.save = async () => {}; s.diag = async (m) => { msg = m; };
+  try { await resolve(s); const r = s.run; return `${id}: OK · ${r.dex === "uni" ? `Uniswap v3 fee ${r.fee}` : r.dex === "slip" ? `Slipstream ts ${r.tickSpacing}` : "rutas Uniswap v3 (fábrica sin router conocido)"}${r.noStable ? ` · par sin ${s.net.stableSym}` : ""}`; }
+  catch (e) { return `${id}: NO se puede usar · ${(e.shortMessage || e.message).slice(0, 160)}`; }
+  finally { Object.assign(s, saved); void msg; }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Pares sin el estable: rutas estable↔token por Uniswap v3 (directa o vía el nativo envuelto), cotizadas con QuoterV2.
 const Q = new ethers.Interface([
@@ -215,11 +225,14 @@ export function pairSplit(S, rate0, rate1, R) {
   const u0 = a0 / rate0;
   return { u0, u1: S - u0 };
 }
-async function pairRatio(s) {
+/** Proporción t1/t0 (crudo) que el CLM acepta con montos reales: se ofrece el valor de S en cada token (el doble de lo necesario). */
+async function pairRatio(s, S, rate0, rate1) {
   const r = s.run;
-  for (const big of [10n ** 30n, 10n ** 27n, 10n ** 24n]) {
-    try { const [, u0, u1] = await call(s, r.clm, "previewDeposit", [big, big]); if (u0 === 0n && u1 === 0n) continue; return u0 === 0n ? Infinity : Number(u1) / Number(u0); } catch {}
-  }
+  const o0 = BigInt(Math.floor(Number(S) * rate0)), o1 = BigInt(Math.floor(Number(S) * rate1));
+  try {
+    const [, u0, u1] = await call(s, r.clm, "previewDeposit", [o0, o1]);
+    if (u0 > 0n || u1 > 0n) return u0 === 0n ? Infinity : Number(u1) / Number(u0);
+  } catch {}
   const [b0, b1] = await call(s, r.clm, "balances");
   return b0 === 0n ? Infinity : Number(b1) / Number(b0);
 }
@@ -230,13 +243,23 @@ async function enterPair(s) {
     if (S === 0n) throw new Error("nada que depositar");
     const probe = U1;
     const rate0 = Number((await bestPath(s, N.stable, r.t0, probe)).out) / Number(probe), rate1 = Number((await bestPath(s, N.stable, r.t1, probe)).out) / Number(probe);
-    const R = await pairRatio(s);
-    const sp = pairSplit(Number(S), rate0, rate1, R);
+    const R = await pairRatio(s, S, rate0, rate1);
+    // sobrantes de depósitos anteriores en este mismo vault (tokens que el CLM no tomó): entran ahora, valuados en estable
+    const carry = { t0: 0n, t1: 0n };
+    for (const [k, o] of Object.entries(s.s?.runs ?? {})) if (o !== r && o.vaultId === r.vaultId && o.leftover && !o.leftoverUsed && o.leftover.t0 !== undefined) { carry.t0 += BigInt(o.leftover.t0); carry.t1 += BigInt(o.leftover.t1); o.leftoverUsed = true; }
+    const w0 = await bal(s, r.t0), w1 = await bal(s, r.t1);
+    if (carry.t0 > w0) carry.t0 = w0; if (carry.t1 > w1) carry.t1 = w1;
+    r.carry = { t0: String(carry.t0), t1: String(carry.t1) };
+    const S2 = Number(S) + Number(carry.t0) / rate0 + Number(carry.t1) / rate1; // valor total en estable crudo
+    const want = pairSplit(S2, rate0, rate1, R); // estable a destinar a cada token, contando lo que ya hay
+    let need0 = Math.max(0, want.u0 - Number(carry.t0) / rate0), need1 = Math.max(0, want.u1 - Number(carry.t1) / rate1);
+    const tot = need0 + need1; if (tot > 0) { need0 = need0 / tot * Number(S); need1 = Number(S) - need0; }
+    const sp = { u0: need0, u1: need1 };
     const u0 = BigInt(Math.floor(sp.u0)), u1 = S - u0 > 0n ? S - u0 : 0n;
     const b0 = await bal(s, r.t0), b1 = await bal(s, r.t1);
     if (u0 > 0n) await routeSwap(s, N.stable, r.t0, u0, `swap ${N.stableSym}→token0`);
     if (u1 > 0n) await routeSwap(s, N.stable, r.t1, u1, `swap ${N.stableSym}→token1`);
-    r.a0 = String((await bal(s, r.t0)) - b0); r.a1 = String((await bal(s, r.t1)) - b1); r.ratio = { R, rate0, rate1 }; await s.save();
+    r.a0 = String((await bal(s, r.t0)) - b0 + carry.t0); r.a1 = String((await bal(s, r.t1)) - b1 + carry.t1); r.ratio = { R, rate0, rate1 }; await s.save();
     await s.diag(`estrategia ${s.kind}: par sin ${N.stableSym} · proporción R=${R === Infinity ? "solo token1" : R.toExponential(3)} · ${ethers.formatUnits(S, N.stableDec)} ${N.stableSym} → token0 ${r.a0} + token1 ${r.a1}`);
   }
   if (r.clmShares === undefined) {
@@ -321,14 +344,14 @@ export async function enterClm(s, ctx) {
     const usdc = BigInt(r.usdcIn);
     const xWallet = await bal(s, r.x);
     const probe = U1; // 1 unidad del estable
-    if (r.dex !== "uni") await approve(s, N.stable, r.router, usdc > 0n ? usdc : U1, "approve estable→router (cotización)");
-    const rate = Number(await slipQuote(s, N.stable, r.x, probe)) / Number(probe); // X crudo por estable crudo
+    if (r.dex === "slip") await approve(s, N.stable, r.router, usdc > 0n ? usdc : U1, "approve estable→router (cotización)");
+    const rate = Number(r.dex === "otro" ? (await bestPath(s, N.stable, r.x, probe)).out : await slipQuote(s, N.stable, r.x, probe)) / Number(probe); // X crudo por estable crudo
     const R = await clmRatio(s); // X crudo que pide el CLM por cada estable crudo (Infinity = solo X)
     if (usdc === 0n && xWallet === 0n) throw new Error("nada que depositar");
     const plan = rebalance(Number(usdc), Number(xWallet), rate, R);
     let xHave = xWallet, uHave = usdc;
-    if (plan.stableToX > 0) { const amt = BigInt(Math.floor(plan.stableToX)); xHave += await slipSwap(s, N.stable, r.x, amt, probe, `swap ${N.stableSym}→X`); uHave -= amt; }
-    else if (plan.xToStable > 0) { const amt = BigInt(Math.floor(plan.xToStable)); uHave += await slipSwap(s, r.x, N.stable, amt, amt / 100n || 1n, `swap X→${N.stableSym}`); xHave -= amt; }
+    if (plan.stableToX > 0) { const amt = BigInt(Math.floor(plan.stableToX)); xHave += r.dex === "otro" ? await routeSwap(s, N.stable, r.x, amt, `swap ${N.stableSym}→X`) : await slipSwap(s, N.stable, r.x, amt, probe, `swap ${N.stableSym}→X`); uHave -= amt; }
+    else if (plan.xToStable > 0) { const amt = BigInt(Math.floor(plan.xToStable)); uHave += r.dex === "otro" ? await routeSwap(s, r.x, N.stable, amt, `swap X→${N.stableSym}`) : await slipSwap(s, r.x, N.stable, amt, amt / 100n || 1n, `swap X→${N.stableSym}`); xHave -= amt; }
     r.xIn = String(xHave); r.usdcForClm = String(uHave); r.ratio = { R, rate, xWallet: String(xWallet) }; await s.save();
     await s.diag(`estrategia ${s.kind}: proporción del CLM R=${R === Infinity ? "solo X" : R.toExponential(3)} X/${N.stableSym} (precio ${rate.toExponential(3)}) · X en wallet ${xWallet} · plan ${plan.stableToX > 0 ? `${N.stableSym}→X ${Math.floor(plan.stableToX)}` : plan.xToStable > 0 ? `X→${N.stableSym} ${Math.floor(plan.xToStable)}` : "sin swap"}`);
   }
@@ -391,7 +414,7 @@ export async function exitClm(s, ctx) {
       r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(g0); await s.save();
     } else {
     const xGot = (await bal(s, r.x)) - bX0;
-    const uFromX = xGot > 0n ? await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`) : 0n;
+    const uFromX = xGot > 0n ? (r.dex === "otro" ? await routeSwap(s, r.x, s.net.stable, xGot, `swap X→${s.net.stableSym}`) : await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`)) : 0n;
     r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
     }
   }
@@ -434,7 +457,7 @@ export async function harvestProfit(s) {
   for (const g of got) {
     if (g.amount <= 0n) continue;
     if (lc(g.token) === lc(N.stable)) stable += g.amount;
-    else if (lc(g.token) === lc(r.x)) stable += await slipSwap(s, r.x, N.stable, g.amount, g.amount / 100n || 1n, `swap recompensa X→${N.stableSym}`);
+    else if (lc(g.token) === lc(r.x)) stable += r.dex === "otro" ? await routeSwap(s, r.x, N.stable, g.amount, `swap recompensa X→${N.stableSym}`) : await slipSwap(s, r.x, N.stable, g.amount, g.amount / 100n || 1n, `swap recompensa X→${N.stableSym}`);
     else other.push({ token: g.token, amount: String(g.amount) });
   }
   return { stable, other };
