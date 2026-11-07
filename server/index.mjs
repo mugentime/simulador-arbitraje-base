@@ -14,6 +14,7 @@ import { Liquidator } from "./liquidator.mjs";
 import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
+import { dcaCostReport } from "./dcacost.mjs";
 import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
@@ -454,6 +455,14 @@ async function logBeefyWallets() {
     } catch (e) { console.log(`${new Date().toISOString()} beefy wallet ${a}: error ${e.message}`); }
   }
 }
+// costo del DCA (precio promedio de entrada y PnL = precio + comisiones + rango/IL): cada hora en el worker que hace el DCA
+async function logDcaCost() {
+  if (!strategy || strategy.kind !== "beefy-clm-dca" || !strategy.x?.wallet) return;
+  try { for (const l of await dcaCostReport(strategy, { ethUsd: strategy.lastCtx?.ethUsd ?? null })) console.log(`${new Date().toISOString()} ${l}`); }
+  catch (e) { console.log(`${new Date().toISOString()} dca costo: error ${e.message}`); }
+}
+setTimeout(logDcaCost, 4 * 60_000);
+setInterval(logDcaCost, 60 * 60_000);
 setTimeout(logBeefyWallets, 2 * 60_000);
 setInterval(logBeefyWallets, Number(process.env.BEEFY_WALLET_EVERY_MIN ?? 60) * 60_000);
 setInterval(logCashIn, 6 * 3600_000);

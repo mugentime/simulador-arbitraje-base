@@ -274,6 +274,7 @@ export class Strategy {
   }
 
   async onBlock(ctx) {
+    this.lastCtx = ctx;
     if (this.kind === "beefy-clm-dca") {
       if (this.busy || !this.wanted) return;
       this.busy = true;
