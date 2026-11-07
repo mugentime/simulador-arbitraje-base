@@ -57,6 +57,9 @@ const PORT = Number(process.env.PORT || 8080);
 const CHAIN_ID = BigInt(CHAIN_CFG.id);
 const EXECUTE_MODE = (process.env.EXECUTE_MODE || "simulate").toLowerCase() === "live" ? "live" : "simulate";
 const AUTO_DEPLOY = process.env.AUTO_DEPLOY === "1";
+// DCA_ONLY=1 (Jose, 2026-11-07): sin búsqueda de arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos. Solo la
+// estrategia de capital (DCA en Beefy), recargas entre cadenas y los reportes horarios; un ciclo liviano cada DCA_TICK_S (60 s).
+const DCA_ONLY = process.env.DCA_ONLY === "1";
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const VERSION = {
   commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "local").slice(0, 7),
@@ -196,7 +199,7 @@ async function wsLoop() {
 let stopping = false;
 process.on("uncaughtException", (e) => { console.error("excepción no capturada:", e); diag(`servidor: excepción ${(e?.message || String(e)).slice(0, 100)}`).catch(() => {}); });
 process.on("unhandledRejection", (e) => { console.error("promesa rechazada:", e); diag(`servidor: rechazo ${(e?.message || String(e)).slice(0, 100)}`).catch(() => {}); });
-wsLoop();
+if (!DCA_ONLY) wsLoop();
 const live = {}; // referencias en memoria del worker en curso (stats, vstats, events) para que el panel vea cada bloque
 let executor = null;
 let harvester = null;
@@ -226,10 +229,11 @@ async function loop() {
         core.applyChain(cfg); chainVerified = true;
         await diag(`cadena: ${Object.keys(cfg.tokens).length} tokens, ${cfg.factories.length} factories, ${cfg.lenders.length} prestamistas verificados${disabled.length ? ` · desactivado: ${disabled.join(" · ")}` : ""}`);
       }
-      const exec = new Executor({ provider: p, store, diag, mode: EXECUTE_MODE, autoDeploy: AUTO_DEPLOY });
+      const exec = new Executor({ provider: p, store, diag, mode: EXECUTE_MODE, autoDeploy: DCA_ONLY ? false : AUTO_DEPLOY });
       await exec.init();
       let nb = 0;
       executor = exec;
+      if (DCA_ONLY) { await dcaOnlyLoop(exec, p); continue; }
       const hv = new Harvester({ provider: p, store, diag, executor: exec, mode: EXECUTE_MODE, logsProvider: logsProviderFor(p, url) });
       await hv.init();
       harvester = hv;
@@ -291,6 +295,41 @@ async function loop() {
       await diag(`servidor: error ${e.shortMessage || e.message}; reintento en 20 s`);
       await new Promise((r) => setTimeout(r, 20_000));
     }
+  }
+}
+
+/** Modo solo DCA: estrategia, puentes y recargas con un ctx mínimo ({ethUsd} del nativo vía api.beefy.finance), una tanda de 1 h. */
+const NATIVE_ORACLE = { bsc: "BNB", polygon: "POL" };
+let nativeUsdCache = { at: 0, v: null };
+async function nativeUsd() {
+  if (Date.now() - nativeUsdCache.at < 5 * 60_000 && nativeUsdCache.v) return nativeUsdCache.v;
+  try {
+    const j = await (await fetch("https://api.beefy.finance/prices", { signal: AbortSignal.timeout(15_000) })).json();
+    const k = NATIVE_ORACLE[CHAIN_CFG.key] ?? "ETH"; const v = Number(j[k] ?? j["W" + k] ?? NaN);
+    if (Number.isFinite(v) && v > 0) nativeUsdCache = { at: Date.now(), v };
+  } catch {}
+  return nativeUsdCache.v;
+}
+async function dcaOnlyLoop(exec, p) {
+  if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
+    if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
+    else { strategy.x = exec; strategy.provider = p; }
+  }
+  if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
+  else for (const t of topups) { t.x = exec; t.provider = p; }
+  if (process.env.BRIDGE_RUN) {
+    if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
+    else { bridger.x = exec; bridger.provider = p; }
+  }
+  await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
+  const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
+  let n = 0;
+  while (!stopping && Date.now() < until) {
+    const ethUsd = await nativeUsd();
+    const ctx = { ethUsd, dcaOnly: true };
+    if (++n % 60 === 0) await exec.refreshBalance().catch(() => {});
+    await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
+    await new Promise((r) => setTimeout(r, tick));
   }
 }
 
@@ -434,7 +473,7 @@ async function logCashIn() {
       vs.map((v) => v.watched ? `${v.vault} ${v.apyPct}% TVL ${f(v.tvlUsd)} [${v.dex} ${v.feeBps}bps, ${v.poolsOfPair} pools] prof ${f(v.sellDepthUsd["1%"])}/${f(v.sellDepthUsd["2%"])}/${f(v.sellDepthUsd["5%"])} · ${v.bySize.map((s) => `$${f(s.depositUsd)}: ${(s.entryCostUsd + s.exitCostUsd).toFixed(0)}/${s.dailyUsd}/${s.breakevenDays}d (APY ${s.effectiveApyPct}%)`).join(" ")}` : `${v.vault} ${v.apyPct}% TVL ${f(v.tvlUsd)} [par no vigilado]`).join(" | "));
   } catch (e) { console.log(`${new Date().toISOString()} cashin: error ${e.message}`); }
 }
-setTimeout(logCashIn, 6 * 60_000);
+if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada BEEFY_WALLET_EVERY_MIN (60) minutos (solo Base);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
 let lastAudit = null;
@@ -465,9 +504,10 @@ setTimeout(logDcaCost, 4 * 60_000);
 setInterval(logDcaCost, 60 * 60_000);
 setTimeout(logBeefyWallets, 2 * 60_000);
 setInterval(logBeefyWallets, Number(process.env.BEEFY_WALLET_EVERY_MIN ?? 60) * 60_000);
-setInterval(logCashIn, 6 * 3600_000);
-// resumen periódico en los logs de Railway
+if (!DCA_ONLY) setInterval(logCashIn, 6 * 3600_000);
+// resumen periódico en los logs de Railway (no en modo solo DCA: no hay arbitraje que resumir)
 setInterval(async () => {
+  if (DCA_ONLY) return;
   const st = await store.get("stats");
   const p1 = executor?.p1;
   const vs = live.vstats;
@@ -494,5 +534,4 @@ async function logPairs() {
     console.log(`${new Date().toISOString()} pares: ${rows.length} vigilados (${CHAIN_CFG.key}; p=pools, e=episodios/% bloques desajustado, pico bps, r=rutas rentables/episodios, ok/rv=simulaciones, s=puntuación; mejor→peor) · ${pairLine(rows)}`);
   } catch (e) { console.log(`${new Date().toISOString()} pares: error ${e.message}`); }
 }
-setTimeout(logPairs, 5 * 60_000);
-setInterval(logPairs, 30 * 60_000);
+if (!DCA_ONLY) { setTimeout(logPairs, 5 * 60_000); setInterval(logPairs, 30 * 60_000); }
