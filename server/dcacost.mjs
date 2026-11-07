@@ -203,6 +203,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
       const fz = (fees[id] ??= backfillFees(hist, id) ?? { since: new Date(now).toISOString(), at: now, usd: 0 });
       fees[id] = accrueFees(fz, { now, valueUsd, apy: apyNow });
       const priceRange = b.pnl - fees[id].usd;
+      (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing };
       const xPct = valueUsd > 0 ? xNow * price / valueUsd * 100 : 0;
       out.push(`dca costo ${id}: ${deps.length} depósitos DCA ($${dca.usd.toFixed(2)})${rs.length > deps.length ? ` + ${rs.length - deps.length} barridos/otros` : ""}` +
         ` · invertido ${f2(b.invested)}${prior ? ` (incl. previo ${f2(prior)})` : ""} · precio medio de entrada DCA ${px(dca.price)}${dca.missing ? ` (${dca.missing} sin precio)` : ""} · ${symX} hoy ${px(price)}${dca.price ? ` (${pc((price / dca.price - 1) * 100)} vs entrada)` : ""}` +

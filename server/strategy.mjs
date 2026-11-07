@@ -6,7 +6,8 @@
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
 import { enterClm, exitClm, netOf, harvestProfit, claimForCompound } from "./beefyclm.mjs";
-import { scanHighApy, pickTarget, exitCheck, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
+import { scanHighApy, pickTarget, exitCheck, exitThreshold, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
+import { dcaCostReport } from "./dcacost.mjs";
 import * as core from "../src/core.js";
 
 export const BASE = {
@@ -54,6 +55,11 @@ export class Strategy {
     this.net = netOf(core.CHAIN?.key);
     // demo dinámico (STRATEGY_DYNAMIC=1, solo con STRATEGY_VAULT_ID=auto): retiene ganancias, rota y reinvierte el capital
     this.dynamic = process.env.STRATEGY_DYNAMIC === "1";
+    // modo auto con vault fijo (AUTO_PIN=<id>): deposita ahí mientras no salga; al salir (APY o pérdida) el capital va al mejor
+    // elegible (AUTO_REDEPLOY=1, sin rotación ni retención) y el DCA sigue en ese destino. HIGH_APY_EXIT_LOSS_PCT: sale si PnL ≤ −X %.
+    this.pin = process.env.AUTO_PIN || null;
+    this.redeployOnExit = this.dynamic || process.env.AUTO_REDEPLOY === "1";
+    this.lossPct = Number(process.env.HIGH_APY_EXIT_LOSS_PCT ?? 0);
     this.profitEveryMs = Number(process.env.PROFIT_EVERY_H ?? 6) * 3600_000;
     // composición (STRATEGY_COMPOUND=1): cobra las recompensas del reward pool y las vuelve a depositar cada COMPOUND_EVERY_H
     this.compound = process.env.STRATEGY_COMPOUND === "1";
@@ -136,12 +142,19 @@ export class Strategy {
     // solo CLM que tengan el estable de la cadena (WETH en Robinhood, USDT en BSC)
     try { scan = await scanHighApy(this.net.beefy, rules, this.net.stable); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
     this.lastScan = scan; scan.at = new Date(now).toISOString();
+    // vaults de los que se salió en las últimas 24 h no vuelven a ser destino (evita salir y re-entrar al mismo)
+    const elig = scan.eligible.filter((x) => { const h = d.holdings?.[x.id]; return !(h?.closed && now - Date.parse(h.closed) < 24 * 3600_000); });
+    // PnL on-chain por vault (línea "dca costo") para la regla de pérdida
+    let cost = {};
+    if (this.lossPct > 0) { try { await dcaCostReport(this, { ethUsd: ctx?.ethUsd ?? null }); cost = this.lastCost ?? {}; } catch {} }
     // salidas
     for (const [id, h] of Object.entries(d.holdings ?? {})) {
       if (h.closed) continue;
       const nowApy = scan.byId[id]?.apyPct ?? null;
       if (nowApy !== null) h.peakApyPct = Math.max(h.peakApyPct ?? 0, h.entryApyPct ?? 0, nowApy);
       const c = exitCheck({ apyPct: h.entryApyPct, peakApyPct: h.peakApyPct, tvl: h.entryTvl }, scan.byId[id] ?? null, h.badSince ?? null, now, rules);
+      const pc = cost[id];
+      if (!c.exit && this.lossPct > 0 && pc && pc.invested > 0 && Number.isFinite(pc.pnlPct) && pc.pnlPct <= -this.lossPct) Object.assign(c, { exit: true, why: `pérdida ${pc.pnlPct.toFixed(1)} % sobre lo invertido (≥ ${this.lossPct} %)` });
       h.badSince = c.badSince; h.lastApyPct = scan.byId[id]?.apyPct ?? null; h.lastTvl = scan.byId[id]?.tvl ?? null;
       // demo dinámico: rotación si otro vault elegible paga mucho más durante HIGH_APY_ROTATE_HOURS
       if (!c.exit && this.dynamic && id === d.target) {
@@ -157,16 +170,17 @@ export class Strategy {
         if (this.dynamic) await this.takeProfit(d, id, h, now, "antes de salir").catch(() => {});
         this.run = this.s.runs[label];
         await exitClm(this, ctx); this.run.status = "hecho"; h.closed = new Date(now).toISOString(); h.exitWhy = c.why; if (d.target === id) d.target = null;
-        if (this.dynamic && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = pickTarget(scan.eligible.filter((x) => x.id !== id), null); }
-        await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.dynamic ? ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}` : ""}`);
+        if (this.redeployOnExit && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = pickTarget(elig.filter((x) => x.id !== id), null); }
+        await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.redeployOnExit ? ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}` : ""}`);
       }
       catch (e) { this.run.status = "error"; this.run.error = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`estrategia auto: salida de ${id} falló · ${this.run.error}`); }
       return true;
     }
     // destino
     const prev = d.target ?? null;
-    d.target = pickTarget(scan.eligible, prev);
-    d.candidates = scan.eligible.slice(0, 5).map((x) => `${x.id} ${x.apyPct.toFixed(0)} % TVL $${Math.round(x.tvl)}`);
+    const pinOpen = this.pin && !d.holdings?.[this.pin]?.closed;
+    d.target = pinOpen ? this.pin : pickTarget(elig, prev);
+    d.candidates = elig.slice(0, 5).map((x) => `${x.id} ${x.apyPct.toFixed(0)} % TVL $${Math.round(x.tvl)}`);
     if (d.target !== prev) await this.diag(`estrategia auto: destino ${d.target ?? "ninguno (no hay vaults ≥ " + rules.minApyPct + " % con TVL ≥ $" + rules.minTvl + ")"} · candidatos: ${d.candidates.join(" | ") || "—"}`);
     // capital olvidado: REDEPLOY_ADD="<monto>@<etiqueta>" lo suma a lo pendiente de reinvertir (una vez por etiqueta; tope = estable libre en la wallet)
     const add = this.dynamic ? parseRedeployAdd(process.env.REDEPLOY_ADD) : null;
@@ -181,8 +195,9 @@ export class Strategy {
       } catch (e) { await this.diag(`estrategia dinámica: REDEPLOY_ADD falló · ${(e.shortMessage || e.message || String(e)).slice(0, 120)}`); }
     }
     // vigilancia horaria (siempre, aunque nada cambie): destino, posiciones abiertas, capital pendiente y mejores candidatos con su motivo
-    const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id, h]) => `${id} APY ${h.lastApyPct?.toFixed(0) ?? "?"} %${h.badSince ? " en vigilancia" : ""}`);
-    await this.diag(`estrategia auto: vigilancia · reglas APY ≥ ${rules.minApyPct} % y TVL ≥ $${rules.minTvl} · destino ${d.target ?? "ninguno"} · abiertas: ${open.join(", ") || "ninguna"}` +
+    const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id, h]) => `${id} APY ${h.lastApyPct?.toFixed(0) ?? "?"} % (máx. ${h.peakApyPct?.toFixed(0) ?? "?"} %, umbral ${exitThreshold({ apyPct: h.entryApyPct, peakApyPct: h.peakApyPct }, rules).toFixed(0)} %)${cost[id] && Number.isFinite(cost[id].pnlPct) ? ` PnL ${cost[id].pnlPct.toFixed(1)} %` : ""}${h.badSince ? ` en vigilancia desde ${new Date(h.badSince).toISOString().slice(11, 16)}Z` : ""}`);
+    await this.diag(`estrategia auto: vigilancia · reglas APY ≥ ${rules.minApyPct} % y TVL ≥ $${rules.minTvl}` +
+      `${rules.exitFrac > 0 ? ` · salida si APY < ${Math.round(rules.exitFrac * 100)} % del máximo` : ` · salida si APY < ${rules.exitApyPct} %`} por ${rules.exitHours} h${this.lossPct > 0 ? ` o PnL ≤ −${this.lossPct} %` : ""}${this.pin ? ` · fijo ${this.pin}${pinOpen ? "" : " (ya salió)"}` : ""} · destino ${d.target ?? "ninguno"} · abiertas: ${open.join(", ") || "ninguna"}` +
       `${d.redeploy && BigInt(d.redeploy) > 0n ? ` · por reinvertir ${ethers.formatUnits(d.redeploy, this.net.stableDec)} ${this.net.stableSym}` : ""}` +
       ` · próximo depósito ${d.target ? (d.lastAt ? new Date(d.lastAt + this.dcaEveryMs).toISOString() : "ahora") : "en pausa (sin destino)"} · top: ${watchSummary(scan.byId, rules)}`);
     return false;
@@ -205,6 +220,8 @@ export class Strategy {
           this.protectStable = BigInt(d.retained ?? "0");
           return;
         }
+      }
+      if (this.redeployOnExit) {
         // reinversión del capital que salió de un vault (rotación o salida) en el nuevo destino
         if (d.redeploy && BigInt(d.redeploy) > 0n && d.target) {
           const rl = `${this.label}-redeploy-${d.redeployTag ?? 0}`;
