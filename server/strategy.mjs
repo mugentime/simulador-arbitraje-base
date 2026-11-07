@@ -6,7 +6,7 @@
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
 import { enterClm, exitClm, netOf, harvestProfit, claimForCompound } from "./beefyclm.mjs";
-import { scanHighApy, pickTarget, exitCheck, rotateCheck, RULES } from "./highapy.mjs";
+import { scanHighApy, pickTarget, exitCheck, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
 import * as core from "../src/core.js";
 
 export const BASE = {
@@ -168,6 +168,23 @@ export class Strategy {
     d.target = pickTarget(scan.eligible, prev);
     d.candidates = scan.eligible.slice(0, 5).map((x) => `${x.id} ${x.apyPct.toFixed(0)} % TVL $${Math.round(x.tvl)}`);
     if (d.target !== prev) await this.diag(`estrategia auto: destino ${d.target ?? "ninguno (no hay vaults ≥ " + rules.minApyPct + " % con TVL ≥ $" + rules.minTvl + ")"} · candidatos: ${d.candidates.join(" | ") || "—"}`);
+    // capital olvidado: REDEPLOY_ADD="<monto>@<etiqueta>" lo suma a lo pendiente de reinvertir (una vez por etiqueta; tope = estable libre en la wallet)
+    const add = this.dynamic ? parseRedeployAdd(process.env.REDEPLOY_ADD) : null;
+    if (add && d.redeployAddTag !== add.tag) {
+      try {
+        let amt = ethers.parseUnits(add.amount, this.net.stableDec);
+        const free = BigInt(await new ethers.Contract(this.net.stable, ["function balanceOf(address) view returns (uint256)"], this.provider).balanceOf(this.me)) - BigInt(d.retained ?? "0") - BigInt(d.redeploy ?? "0");
+        if (amt > free) amt = free > 0n ? free : 0n;
+        d.redeployAddTag = add.tag;
+        if (amt > 0n) { d.redeploy = String(BigInt(d.redeploy ?? "0") + amt); d.redeployTag = now; }
+        await this.diag(`estrategia dinámica: REDEPLOY_ADD ${add.tag} · +${ethers.formatUnits(amt, this.net.stableDec)} ${this.net.stableSym} pendientes de reinvertir (total ${ethers.formatUnits(d.redeploy ?? "0", this.net.stableDec)})`);
+      } catch (e) { await this.diag(`estrategia dinámica: REDEPLOY_ADD falló · ${(e.shortMessage || e.message || String(e)).slice(0, 120)}`); }
+    }
+    // vigilancia horaria (siempre, aunque nada cambie): destino, posiciones abiertas, capital pendiente y mejores candidatos con su motivo
+    const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id, h]) => `${id} APY ${h.lastApyPct?.toFixed(0) ?? "?"} %${h.badSince ? " en vigilancia" : ""}`);
+    await this.diag(`estrategia auto: vigilancia · reglas APY ≥ ${rules.minApyPct} % y TVL ≥ $${rules.minTvl} · destino ${d.target ?? "ninguno"} · abiertas: ${open.join(", ") || "ninguna"}` +
+      `${d.redeploy && BigInt(d.redeploy) > 0n ? ` · por reinvertir ${ethers.formatUnits(d.redeploy, this.net.stableDec)} ${this.net.stableSym}` : ""}` +
+      ` · próximo depósito ${d.target ? (d.lastAt ? new Date(d.lastAt + this.dcaEveryMs).toISOString() : "ahora") : "en pausa (sin destino)"} · top: ${watchSummary(scan.byId, rules)}`);
     return false;
   }
 

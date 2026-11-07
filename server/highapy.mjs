@@ -33,6 +33,28 @@ export async function scanHighApy(chain, rules = RULES(), stable = null) {
   return { eligible, byId };
 }
 
+/** Por qué un vault no es elegible (null si lo es). */
+export function ineligibleWhy(x, rules = RULES()) {
+  if (x.apyPct === null) return "sin APY";
+  if (x.apyPct < rules.minApyPct) return `APY < ${rules.minApyPct} %`;
+  if (x.tvl < rules.minTvl) return `TVL < $${rules.minTvl}`;
+  if (!x.pairsStable) return "sin el estable de la cadena";
+  if (rules.blocked.includes(x.id)) return "bloqueado";
+  return null;
+}
+
+/** Línea de vigilancia horaria: los n vaults de mayor APY de la cadena con su motivo de descarte (puro, probado). */
+export function watchSummary(byId, rules = RULES(), n = 3) {
+  return Object.values(byId ?? {}).filter((x) => x.apyPct !== null).sort((a, b) => b.apyPct - a.apyPct).slice(0, n)
+    .map((x) => { const w = ineligibleWhy(x, rules); return `${x.id} ${x.apyPct.toFixed(0)} % TVL $${Math.round(x.tvl)}${w ? ` (descartado: ${w})` : " (elegible)"}`; }).join(" | ") || "—";
+}
+
+/** REDEPLOY_ADD="<monto>@<etiqueta>": capital a reinvertir que quedó en la wallet (una vez por etiqueta). null si no aplica. */
+export function parseRedeployAdd(v) {
+  const m = /^\s*([0-9]*\.?[0-9]+)\s*@\s*([\w.-]+)\s*$/.exec(v ?? "");
+  return m && Number(m[1]) > 0 ? { amount: m[1], tag: m[2] } : null;
+}
+
 /** Elige destino: se queda con el actual si sigue elegible (evita rotar por ruido); si no, el de mayor APY. */
 export function pickTarget(eligible, currentId) {
   if (currentId && eligible.some((x) => x.id === currentId)) return currentId;
