@@ -55,17 +55,19 @@ export function classify(step, dx, ds) {
  * reward: depósito pagado con recompensas (composición): entra al vault sin costo y no cuenta como invertido.
  */
 export function ledger(moves) {
-  const L = { q: 0, qCost: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, rewardX: 0, rewardS: 0, buys: { x: 0, s: 0 }, sells: { x: 0, s: 0 }, wd: { x: 0, s: 0 } };
+  const L = { q: 0, qCost: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, extIn: 0, rewardX: 0, rewardS: 0, buys: { x: 0, s: 0 }, sells: { x: 0, s: 0 }, wd: { x: 0, s: 0 } };
   for (const m of moves) {
     if (m.type === "compra") { L.q += m.x; L.qCost += m.s; L.buys.x += m.x; L.buys.s += m.s; }
     else if (m.type === "ingresoX") { L.q += m.x; }
-    else if (m.type === "venta") { const c = L.q > 0 ? L.qCost * Math.min(1, m.x / L.q) : 0; L.qCost -= c; L.q = Math.max(0, L.q - m.x); L.sells.x += m.x; L.sells.s += m.s; }
+    else if (m.type === "venta") { if (m.x > L.q && m.x > 0) L.extIn += (m.x - L.q) / m.x * m.s; // X que ya estaba en la wallet (capital externo)
+      const c = L.q > 0 ? L.qCost * Math.min(1, m.x / L.q) : 0; L.qCost -= c; L.q = Math.max(0, L.q - m.x); L.sells.x += m.x; L.sells.s += m.s; }
     else if (m.type === "deposito") {
       const fromInv = Math.min(m.x, L.q), c = L.q > 0 ? L.qCost * (fromInv / L.q) : 0;
       L.q -= fromInv; L.qCost -= c;
       if (m.reward) { L.rewardX += m.x; L.rewardS += m.s; continue; }
       // X que no venía de una compra registrada (p. ej. ya estaba en la wallet): se valora al precio de ese depósito si se conoce
       const extra = m.x - fromInv;
+      if (extra > 0 && m.price > 0) L.extIn += extra * m.price; // X depositado que no salió de una compra registrada
       L.xIn += m.x; L.xCost += c + (extra > 0 && m.price > 0 ? extra * m.price : 0); L.sIn += m.s; L.depS += m.s;
     } else if (m.type === "retiro") {
       // sale del vault con su parte del costo: el X vuelve a la wallet (una venta posterior lo descuenta a ese costo)
@@ -127,6 +129,7 @@ export function strategyPnl(vaults, prior, nowMs) {
     sobranteS += left; sobranteX += L.q * v.price; // se suma entre vaults: lo que sale de uno y entra a otro se compensa
     posiciones += v.valueUsd; recompensas += v.rewardsUsd; comisiones += v.feesUsd;
     for (const d of v.deps) { flows.push(d); n++; }
+    if (L.extIn > 0.005 && v.deps[0]) flows.push({ at: v.deps[0].at, usd: L.extIn, extra: true });
   }
   // estable depositado de más (p. ej. USDC que ya estaba en la wallet) también es capital aportado: se suma al primer aporte
   if (sobranteS < 0 && flows.length) { const f0 = flows.reduce((a, f) => (Date.parse(f.at) || f.at) < (Date.parse(a.at) || a.at) ? f : a); flows.push({ at: f0.at, usd: -sobranteS, extra: true }); }
@@ -251,7 +254,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
     hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
     while (hist.length > 24 * 90) hist.shift();
     await s.store.set("dcaStrategyHist", hist).catch(() => {});
-    out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.extra >= 0.005 ? ` + ${f2(t.extra)} de estable que ya estaba en la wallet` : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
+    out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.extra >= 0.005 ? ` + ${f2(t.extra)} que ya estaba en la wallet` : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
       ` · valor ${f2(t.valor)} = posiciones ${f2(t.posiciones)}${t.recompensas ? ` + recompensas ${f2(t.recompensas)}` : ""}${t.sobranteS + t.sobranteX >= 0.005 ? ` + sobrante en wallet ${f2(t.sobranteS + t.sobranteX)}` : ""}` +
       ` · PnL ${sg(t.pnl)} (${pc(t.pnlPct)}) = comisiones est. ${sg(t.comisiones)} + precio/rango ${sg(t.precio)}` +
       ` · capital-día ${t.capDias.toFixed(1)} → ${pc(t.diarioPct)} por día${t.dias >= 7 ? ` (anualizado ${pc(t.anualPct)})` : " (anualizado desde 7 días)"} · vaults: ${agg.map((a) => `${a.id} ${f2(a.valueUsd)}`).join(", ")}`);

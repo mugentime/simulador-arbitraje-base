@@ -109,4 +109,7 @@ ok(near(st.comisiones, 0.7) && near(st.precio, -7.2), "desglose comisiones / pre
 // estable depositado de más (ya estaba en la wallet) cuenta como aportado
 const st2 = strategyPnl([{ newMoney: 20, L: ledger([{ type: "deposito", x: 0, s: 26.12 }]), valueUsd: 26.1, rewardsUsd: 0, feesUsd: 0, price: 1, deps: [{ at: T0, usd: 10 }, { at: T0 + day, usd: 10 }] }], [{ at: new Date(T0).toISOString(), usd: 4.75 }], T0 + 2 * day);
 ok(near(st2.aportado, 30.87) && near(st2.extra, 6.12) && near(st2.pnl, 26.1 - 30.87), "estable extra de la wallet suma al aportado");
+// X que ya estaba en la wallet y se vendió en el barrido: capital externo
+const st3 = strategyPnl([{ newMoney: 20, L: ledger([{ type: "compra", x: 0.0001, s: 7.4 }, { type: "deposito", x: 0, s: 2.6 }, { type: "venta", x: 0.00018, s: 13.5 }, { type: "deposito", x: 0, s: 13.5 }, { type: "deposito", x: 0, s: 10 }]), valueUsd: 26.1, rewardsUsd: 0, feesUsd: 0, price: 75000, deps: [{ at: T0, usd: 10 }, { at: T0 + day, usd: 10 }] }], [], T0 + 2 * day);
+ok(near(st3.extra, 13.5 * 0.00008 / 0.00018) && near(st3.aportado, 20 + st3.extra + Math.max(0, -(20 - 7.4 + 13.5 - 26.1))), "venta de X que no se compró en el DCA cuenta como aportado");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);
