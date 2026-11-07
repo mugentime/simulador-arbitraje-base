@@ -10,6 +10,7 @@
 // Línea horaria "dca costo" en los logs del worker que hace el DCA (Base: cbBTC-USDC; BSC: el vault que toque).
 import { ethers } from "ethers";
 import { priceFromSqrtX96 } from "./beefywallet.mjs";
+import { CHAINS } from "../src/chains.js";
 
 const TRANSFER = ethers.id("Transfer(address,address,uint256)");
 const I = new ethers.Interface([
@@ -93,6 +94,24 @@ export function breakdown({ L, prior = 0, price, valueUsd, rewardsUsd = 0 }) {
     priceEffect: hodl - invested, fees: rewardsUsd, rangeIl: valueUsd - hodl, total };
 }
 
+/** Suma comisiones estimadas: valor × ((1+APY)^(h/8760) − 1) por las horas desde la última lectura (máx. 2 h por lectura) (puro, probado). */
+export function accrueFees(f, { now, valueUsd, apy }) {
+  const h = Math.min(2, Math.max(0, (now - (f.at ?? now)) / 3600_000));
+  const add = Number.isFinite(apy) && apy > -1 && valueUsd > 0 ? valueUsd * (Math.pow(1 + apy, h / 8760) - 1) : 0;
+  return { ...f, at: now, usd: +(f.usd + add).toFixed(6) };
+}
+
+/** Comisiones estimadas desde la serie horaria guardada ({at, positions:[{id, valueUsd, apyPct}]}) (puro, probado). */
+export function backfillFees(hist, id) {
+  let f = null;
+  for (const e of hist ?? []) {
+    const ps = (e.positions ?? []).find((x) => x.id === id), at = Date.parse(e.at);
+    if (!ps || !Number.isFinite(at) || !(ps.valueUsd > 0)) continue;
+    f = f ? accrueFees(f, { now: at, valueUsd: ps.valueUsd, apy: Number(ps.apyPct) / 100 }) : { since: new Date(at).toISOString(), at, usd: 0 };
+  }
+  return f;
+}
+
 const f2 = (n) => (n === null || !Number.isFinite(n) ? "—" : (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2));
 const sg = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "−") + "$" + Math.abs(n).toFixed(2));
 const pc = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(1) + " %");
@@ -108,7 +127,11 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
   const cache = (await s.store.get("dcaCostRc")) ?? {};
   const p = s.provider, me = lc(s.me), S = s.net.stable, D = s.net.stableDec;
   const call = async (to, fn, args = []) => I.decodeFunctionResult(fn, await p.call({ to, data: I.encodeFunctionData(fn, args) }));
-  const out = [];
+  const out = [], alt = {};
+  const apy = await fetch("https://api.beefy.finance/apy/breakdown", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json()).catch(() => ({}));
+  const fees = (await s.store.get("dcaCostFees")) ?? {};
+  const hist = (await s.store.get("beefyWalletHist").catch(() => null)) ?? []; // serie horaria de "beefy wallet" (solo el worker de Base)
+  const now = Date.now();
   for (const [id, rs] of Object.entries(byVault)) {
     try {
       const m = rs[rs.length - 1], X = m.x;
@@ -127,7 +150,12 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
         for (const t of r.txs) {
           let fl = cache[t.hash];
           if (!fl) {
-            const rc = await p.getTransactionReceipt(t.hash).catch(() => null);
+            let rc = await p.getTransactionReceipt(t.hash).catch(() => null);
+            // algunos RPC no guardan el índice de txs viejas: se prueba con los demás de la cadena
+            for (const url of rc ? [] : (CHAINS[s.net.beefy]?.rpcs ?? [])) {
+              rc = await (alt[url] ??= new ethers.JsonRpcProvider(url, undefined, { staticNetwork: true, batchMaxCount: 1 })).getTransactionReceipt(t.hash).catch(() => null);
+              if (rc) break;
+            }
             if (!rc) { missing++; continue; }
             const w = walletFlows(rc.logs, me, [X, S]);
             fl = cache[t.hash] = { x: String(w[lc(X)]), s: String(w[lc(S)]) };
@@ -139,7 +167,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
           moves.push({ type, x: Math.abs(dx), s: Math.abs(ds), reward, price: runPrice ?? runBuyPx });
         }
         // depósitos DCA "#n": dólares nuevos y precio de X en ese momento (para el precio medio DCA puro)
-        if (/#\d+$/.test(r.k) && r.status === "hecho") deps.push({ at: r.startedAt, usd: Number(BigInt(r.usdcIn ?? "0")) / 10 ** D, price: runPrice ?? runBuyPx });
+        if (/#\d+$/.test(r.k) && r.status === "hecho") deps.push({ at: r.startedAt, usd: Number(BigInt(r.usdcIn ?? "0")) / 10 ** D || Number(r.usd) || 0, price: runPrice ?? runBuyPx });
       }
       const L = ledger(moves);
       // posición actual: acciones del vault (reward pool 1:1 con el CLM; vault normal con ppfs) + CLM suelto en la wallet
@@ -170,15 +198,22 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
       const b = breakdown({ L, prior, price, valueUsd, rewardsUsd });
       const dca = dcaAvgPrice(deps);
       const closed = clmShares === 0n;
+      // comisiones estimadas: valor × APY publicado de Beefy, integrado hora a hora desde que corre este reporte
+      const apyNow = Number(apy?.[id]?.totalApy ?? NaN);
+      const fz = (fees[id] ??= backfillFees(hist, id) ?? { since: new Date(now).toISOString(), at: now, usd: 0 });
+      fees[id] = accrueFees(fz, { now, valueUsd, apy: apyNow });
+      const priceRange = b.pnl - fees[id].usd;
+      const xPct = valueUsd > 0 ? xNow * price / valueUsd * 100 : 0;
       out.push(`dca costo ${id}: ${deps.length} depósitos DCA ($${dca.usd.toFixed(2)})${rs.length > deps.length ? ` + ${rs.length - deps.length} barridos/otros` : ""}` +
-        ` · invertido ${f2(b.invested)} = ${f2(L.sIn)} ${s.net.stableSym} + ${L.xIn.toPrecision(6)} ${symX} a precio medio ${px(b.avgX)}${prior ? ` + previo ${f2(prior)}` : ""}` +
-        ` · precio ${symX} hoy ${px(price)} (vs medio ${b.avgX ? pc((price / b.avgX - 1) * 100) : "—, sin X"}) · precio medio DCA ${px(dca.price)}${dca.missing ? ` (${dca.missing} sin precio)` : ""}${dca.price ? ` → hoy ${pc((price / dca.price - 1) * 100)}` : ""}` +
-        ` · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${sNow.toFixed(2)} ${s.net.stableSym} + ${xNow.toPrecision(5)} ${symX}, ${valueUsd > 0 ? Math.round(xNow * price / valueUsd * 100) : 0} % en ${symX})`} + recompensas ${f2(rewardsUsd)}${rw.length ? ` [${rw.join(", ")}]` : ""}` +
-        ` · PnL ${sg(b.pnl)} (${pc(b.pnlPct)}) = precio ${sg(b.priceEffect)} + comisiones ${sg(b.fees)} + rango/IL ${sg(b.rangeIl)} · hodl ${f2(b.hodl)}` +
+        ` · invertido ${f2(b.invested)}${prior ? ` (incl. previo ${f2(prior)})` : ""} · precio medio de entrada DCA ${px(dca.price)}${dca.missing ? ` (${dca.missing} sin precio)` : ""} · ${symX} hoy ${px(price)}${dca.price ? ` (${pc((price / dca.price - 1) * 100)} vs entrada)` : ""}` +
+        ` · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${sNow.toFixed(2)} ${s.net.stableSym} + ${xNow.toPrecision(5)} ${symX} = ${Math.round(xPct)} % en ${symX})`}${rewardsUsd || rw.length ? ` + recompensas ${f2(rewardsUsd)}${rw.length ? ` [${rw.join(", ")}]` : ""}` : ""}` +
+        ` · PnL ${sg(b.pnl)} (${pc(b.pnlPct)}) = comisiones est. ${sg(fees[id].usd)} (APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"}, desde ${fees[id].since.slice(0, 16)}Z) + precio/rango ${sg(priceRange)}` +
+        ` · lo depositado entró como ${f2(L.sIn)} ${s.net.stableSym} + ${L.xIn.toPrecision(5)} ${symX}${b.avgX ? ` (a $${b.avgX.toFixed(2)})` : ""} → hodl ${f2(b.hodl)}` +
         `${L.q > 0 ? ` · ${symX} en wallet ${L.q.toPrecision(5)} (${f2(L.q * price)})` : ""}${L.rewardX || L.rewardS ? ` · reinvertido de recompensas ${L.rewardS.toFixed(3)} ${s.net.stableSym} + ${L.rewardX.toPrecision(4)} ${symX}` : ""}` +
-        `${L.wd.x || L.wd.s ? ` · retirado ${L.wd.s.toFixed(2)} ${s.net.stableSym} + ${L.wd.x.toPrecision(5)} ${symX}` : ""}${missing ? ` · ${missing} recibos no disponibles` : ""}`);
+        `${L.wd.x || L.wd.s ? ` · retirado ${L.wd.s.toFixed(2)} ${s.net.stableSym} + ${L.wd.x.toPrecision(5)} ${symX}` : ""}${missing ? ` · ${missing} recibos no disponibles (invertido incompleto)` : ""}`);
     } catch (e) { out.push(`dca costo ${id}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
   }
   await s.store.set("dcaCostRc", cache).catch(() => {});
+  await s.store.set("dcaCostFees", fees).catch(() => {});
   return out;
 }

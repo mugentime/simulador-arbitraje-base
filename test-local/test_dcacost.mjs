@@ -1,6 +1,6 @@
 // Costo del DCA: flujos de la wallet en recibos, clasificación, costo promedio, precio medio DCA, desglose y reporte con un provider simulado
 import { ethers } from "ethers";
-import { walletFlows, classify, ledger, dcaAvgPrice, breakdown, dcaCostReport } from "../server/dcacost.mjs";
+import { walletFlows, classify, ledger, dcaAvgPrice, breakdown, dcaCostReport, accrueFees, backfillFees } from "../server/dcacost.mjs";
 let fails = 0; const ok = (c, m) => { console.log((c ? "OK " : "FALLA ") + m); if (!c) fails++; };
 const near = (a, b, e = 1e-9) => Math.abs(a - b) <= e * Math.max(1, Math.abs(b));
 const T = ethers.id("Transfer(address,address,uint256)");
@@ -82,8 +82,16 @@ const lines = await dcaCostReport(s);
 console.log(lines.join("\n"));
 const units = 10 / 1300 + 20 / 1327.5, avgP = 30 / units;
 ok(lines.length === 1 && lines[0].includes("2 depósitos DCA ($30.00)"), "reporte: 2 depósitos de $30");
-ok(lines[0].includes(`a precio medio $${avgP.toLocaleString("en-US", { maximumFractionDigits: 2 })}`), `reporte: precio medio ${avgP.toFixed(2)}`);
+const dcaP = 30 / (10 / 1300 + 20 / 1327.5);
+ok(lines[0].includes(`precio medio de entrada DCA $${dcaP.toLocaleString("en-US", { maximumFractionDigits: 2 })}`), `reporte: precio medio de entrada ${dcaP.toFixed(2)}`);
+ok(lines[0].includes("invertido $30.00"), "reporte: invertido $30");
 // valor: 10 % del CLM = 0.1 ZEC + 100 USDT
 ok(lines[0].includes(`valor $${(0.1 * P + 100).toFixed(2)}`) && lines[0].includes("recompensas $0.10"), "reporte: valor del CLM y recompensas");
 ok(store.m.dcaCostRc && store.m.dcaCostRc["0xb1"], "recibos en caché");
+// comisiones estimadas
+const a = accrueFees({ at: 0, usd: 0 }, { now: 3600_000, valueUsd: 100, apy: 3.65 });
+ok(near(a.usd, 100 * (Math.pow(4.65, 1 / 8760) - 1), 1e-6), "comisiones de 1 h a APY 365 %");
+ok(accrueFees({ at: 0, usd: 1 }, { now: 10 * 3600_000, valueUsd: 100, apy: 3.65 }).usd < 1 + 100 * (Math.pow(4.65, 3 / 8760) - 1), "máx. 2 h por lectura (huecos no inflan)");
+const bf = backfillFees([{ at: "2026-11-07T00:00:00Z", positions: [{ id: "v", valueUsd: 30, apyPct: 1000 }] }, { at: "2026-11-07T01:00:00Z", positions: [{ id: "v", valueUsd: 30, apyPct: 1000 }] }, { at: "2026-11-07T02:00:00Z", positions: [{ id: "w", valueUsd: 9 }] }], "v");
+ok(bf && bf.since === "2026-11-07T00:00:00.000Z" && near(bf.usd, 30 * (Math.pow(11, 1 / 8760) - 1), 1e-5), "relleno desde la serie horaria");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);
