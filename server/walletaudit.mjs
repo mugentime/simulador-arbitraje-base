@@ -3,7 +3,7 @@
 // propia wallet (nativo y tokens) y los depósitos ENTRANTES de nativo desde EOAs (para identificar la cuenta del último
 // depósito de ETH, la única autorizada a recibir retiros).
 const EXPLORERS = { base: "https://base.blockscout.com", optimism: "https://optimism.blockscout.com", arbitrum: "https://arbitrum.blockscout.com", polygon: "https://polygon.blockscout.com", robinhood: "https://robinhoodchain.blockscout.com" };
-async function get(url) { const r = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { accept: "application/json" } }); if (!r.ok) throw new Error(`${new URL(url).host}: HTTP ${r.status}`); return r.json(); }
+async function get(url) { const r = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" } }); if (!r.ok) throw new Error(`${new URL(url).host}: HTTP ${r.status}`); return r.json(); }
 async function pages(url, max = 4) { const out = []; let next = null; for (let i = 0; i < max; i++) { const j = await get(url + (next ? (url.includes("?") ? "&" : "?") + new URLSearchParams(next) : "")); out.push(...(j.items ?? [])); if (!j.next_page_params) break; next = j.next_page_params; } return out; }
 
 export async function auditWallet(address, { days = 14, whitelist = [] } = {}) {
