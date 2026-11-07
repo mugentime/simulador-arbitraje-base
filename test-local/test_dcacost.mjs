@@ -104,6 +104,9 @@ const st = strategyPnl([
 ], [{ at: new Date(T0).toISOString(), usd: 5 }], T0 + 3 * day);
 // aportado 45; estable sobrante = (30−20+19−20+9) + (10−0+0−38+0) = 18 − 28 = −10 → 0 (los 28 de B vienen de A); valor 38.4+0.1
 ok(near(st.aportado, 45) && near(st.sobranteS, 0) && near(st.valor, 38.5) && near(st.pnl, -6.5), "estrategia: aportado, valor y PnL con cambio de vault");
-ok(near(st.capDias, 5 * 3 + 20 * 3 + 10 * 2 + 10 * 1) && near(st.anualPct, -6.5 / 105 * 365 * 100), "capital-día y rendimiento anualizado ponderan cada depósito por sus días");
+ok(near(st.capDias, 5 * 3 + 20 * 3 + 10 * 2 + 10 * 1) && near(st.anualPct, -6.5 / 105 * 365 * 100) && near(st.diarioPct, -6.5 / 105 * 100), "capital-día y rendimiento anualizado ponderan cada depósito por sus días");
 ok(near(st.comisiones, 0.7) && near(st.precio, -7.2), "desglose comisiones / precio");
+// estable depositado de más (ya estaba en la wallet) cuenta como aportado
+const st2 = strategyPnl([{ newMoney: 20, L: ledger([{ type: "deposito", x: 0, s: 26.12 }]), valueUsd: 26.1, rewardsUsd: 0, feesUsd: 0, price: 1, deps: [{ at: T0, usd: 10 }, { at: T0 + day, usd: 10 }] }], [{ at: new Date(T0).toISOString(), usd: 4.75 }], T0 + 2 * day);
+ok(near(st2.aportado, 30.87) && near(st2.extra, 6.12) && near(st2.pnl, 26.1 - 30.87), "estable extra de la wallet suma al aportado");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);

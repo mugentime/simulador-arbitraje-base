@@ -128,12 +128,15 @@ export function strategyPnl(vaults, prior, nowMs) {
     posiciones += v.valueUsd; recompensas += v.rewardsUsd; comisiones += v.feesUsd;
     for (const d of v.deps) { flows.push(d); n++; }
   }
+  // estable depositado de más (p. ej. USDC que ya estaba en la wallet) también es capital aportado: se suma al primer aporte
+  if (sobranteS < 0 && flows.length) { const f0 = flows.reduce((a, f) => (Date.parse(f.at) || f.at) < (Date.parse(a.at) || a.at) ? f : a); flows.push({ at: f0.at, usd: -sobranteS, extra: true }); }
   for (const f of flows) { aportado += f.usd; const at = typeof f.at === "number" ? f.at : Date.parse(f.at); if (Number.isFinite(at)) { capDias += f.usd * Math.max(0, nowMs - at) / 86400_000; first = first === null ? at : Math.min(first, at); } }
   sobranteS = Math.max(0, sobranteS);
   valor = posiciones + recompensas + sobranteS + sobranteX;
   const pnl = valor - aportado;
-  return { aportado, valor, posiciones, recompensas, sobranteS, sobranteX, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
-    capDias, anualPct: capDias > 0 ? pnl / capDias * 365 * 100 : null, n, desde: first };
+  const extra = flows.filter((f) => f.extra).reduce((a, f) => a + f.usd, 0);
+  return { aportado, extra, valor, posiciones, recompensas, sobranteS, sobranteX, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+    capDias, diarioPct: capDias > 0 ? pnl / capDias * 100 : null, anualPct: capDias > 0 ? pnl / capDias * 365 * 100 : null, dias: first !== null ? (nowMs - first) / 86400_000 : 0, n, desde: first };
 }
 
 const f2 = (n) => (n === null || !Number.isFinite(n) ? "—" : (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2));
@@ -248,10 +251,10 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
     hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
     while (hist.length > 24 * 90) hist.shift();
     await s.store.set("dcaStrategyHist", hist).catch(() => {});
-    out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
+    out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.extra >= 0.005 ? ` + ${f2(t.extra)} de estable que ya estaba en la wallet` : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
       ` · valor ${f2(t.valor)} = posiciones ${f2(t.posiciones)}${t.recompensas ? ` + recompensas ${f2(t.recompensas)}` : ""}${t.sobranteS + t.sobranteX >= 0.005 ? ` + sobrante en wallet ${f2(t.sobranteS + t.sobranteX)}` : ""}` +
       ` · PnL ${sg(t.pnl)} (${pc(t.pnlPct)}) = comisiones est. ${sg(t.comisiones)} + precio/rango ${sg(t.precio)}` +
-      ` · capital-día ${t.capDias.toFixed(1)} → rendimiento anualizado ${pc(t.anualPct)} · vaults: ${agg.map((a) => `${a.id} ${f2(a.valueUsd)}`).join(", ")}`);
+      ` · capital-día ${t.capDias.toFixed(1)} → ${pc(t.diarioPct)} por día${t.dias >= 7 ? ` (anualizado ${pc(t.anualPct)})` : " (anualizado desde 7 días)"} · vaults: ${agg.map((a) => `${a.id} ${f2(a.valueUsd)}`).join(", ")}`);
   }
   await s.store.set("dcaCostRc", cache).catch(() => {});
   await s.store.set("dcaCostFees", fees).catch(() => {});
