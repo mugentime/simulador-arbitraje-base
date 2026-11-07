@@ -208,10 +208,10 @@ export async function discoverRouter(s, pool, factory) {
 }
 
 /** Verifica sin enviar nada que un vault se pueda usar (API de Beefy, CLM, pool, fábrica/rutas). Devuelve el texto de diagnóstico. */
-export async function checkVault(s, id) {
+export async function checkVault(s, id, { extra = false } = {}) {
   const saved = { run: s.run, vaultId: s.vaultId, save: s.save, diag: s.diag };
   let msg = "";
-  s.run = { txs: [] }; s.vaultId = id; s.save = async () => {}; s.diag = async (m) => { msg = m; };
+  s.run = { txs: [], extra }; s.vaultId = id; s.save = async () => {}; s.diag = async (m) => { msg = m; };
   try { await resolve(s); const r = s.run; return `${id}: OK · ${r.dex === "uni" ? `Uniswap v3 fee ${r.fee}` : r.dex === "slip" ? `Slipstream ts ${r.tickSpacing}` : "rutas Uniswap v3 (fábrica sin router conocido)"}${r.noStable ? ` · par sin ${s.net.stableSym}` : ""}`; }
   catch (e) { return `${id}: NO se puede usar · ${(e.shortMessage || e.message).slice(0, 160)}`; }
   finally { Object.assign(s, saved); void msg; }

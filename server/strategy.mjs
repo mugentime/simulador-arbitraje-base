@@ -260,9 +260,9 @@ export class Strategy {
   async checkVaults() {
     const ids = [];
     const main = process.env.STRATEGY_VAULT_ID === "auto" ? process.env.AUTO_PIN : process.env.STRATEGY_VAULT_ID;
-    if (main) ids.push(main);
-    for (const e of parseDcaExtra(process.env.DCA_EXTRA, this.dcaUsdCfg)) { try { ids.push(await resolveVaultSpec(e.spec, this.net.beefy)); } catch (err) { await this.diag(`estrategia ${this.kind}: verificación · "${e.spec}" no encontrado (${err.message})`); } }
-    for (const id of ids) { this.run = { txs: [] }; await this.diag(`estrategia ${this.kind}: verificación · ${await checkVault(this, id)}`); }
+    if (main) ids.push({ id: main });
+    for (const e of parseDcaExtra(process.env.DCA_EXTRA, this.dcaUsdCfg)) { try { ids.push({ id: await resolveVaultSpec(e.spec, this.net.beefy), extra: true }); } catch (err) { await this.diag(`estrategia ${this.kind}: verificación · "${e.spec}" no encontrado (${err.message})`); } }
+    for (const { id, extra } of ids) { this.run = { txs: [] }; await this.diag(`estrategia ${this.kind}: verificación · ${await checkVault(this, id, { extra })}`); }
     this.run = null;
   }
 
