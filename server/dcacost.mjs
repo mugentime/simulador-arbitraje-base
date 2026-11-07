@@ -55,7 +55,7 @@ export function classify(step, dx, ds) {
  * reward: depósito pagado con recompensas (composición): entra al vault sin costo y no cuenta como invertido.
  */
 export function ledger(moves) {
-  const L = { q: 0, qCost: 0, xIn: 0, xCost: 0, sIn: 0, rewardX: 0, rewardS: 0, buys: { x: 0, s: 0 }, sells: { x: 0, s: 0 }, wd: { x: 0, s: 0 } };
+  const L = { q: 0, qCost: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, rewardX: 0, rewardS: 0, buys: { x: 0, s: 0 }, sells: { x: 0, s: 0 }, wd: { x: 0, s: 0 } };
   for (const m of moves) {
     if (m.type === "compra") { L.q += m.x; L.qCost += m.s; L.buys.x += m.x; L.buys.s += m.s; }
     else if (m.type === "ingresoX") { L.q += m.x; }
@@ -66,7 +66,7 @@ export function ledger(moves) {
       if (m.reward) { L.rewardX += m.x; L.rewardS += m.s; continue; }
       // X que no venía de una compra registrada (p. ej. ya estaba en la wallet): se valora al precio de ese depósito si se conoce
       const extra = m.x - fromInv;
-      L.xIn += m.x; L.xCost += c + (extra > 0 && m.price > 0 ? extra * m.price : 0); L.sIn += m.s;
+      L.xIn += m.x; L.xCost += c + (extra > 0 && m.price > 0 ? extra * m.price : 0); L.sIn += m.s; L.depS += m.s;
     } else if (m.type === "retiro") {
       // sale del vault con su parte del costo: el X vuelve a la wallet (una venta posterior lo descuenta a ese costo)
       const fx = L.xIn > 0 ? Math.min(1, m.x / L.xIn) : 0, cx = L.xCost * fx;
@@ -112,6 +112,30 @@ export function backfillFees(hist, id) {
   return f;
 }
 
+/**
+ * PnL de la estrategia completa con los depósitos diarios (puro, probado). vaults: [{newMoney, L, valueUsd, rewardsUsd, feesUsd, price, deps:[{at, usd}]}],
+ * prior: [{at, usd}]. Aportado = dinero nuevo (depósitos DCA + previo). Valor = posiciones + recompensas + lo que quedó en la wallet
+ * de esos aportes (estable sin depositar y X comprado sin depositar). Rendimiento anualizado sobre capital-día (cada depósito pesa
+ * por los días que lleva invertido), comparable con un APY.
+ */
+export function strategyPnl(vaults, prior, nowMs) {
+  let aportado = 0, valor = 0, posiciones = 0, recompensas = 0, sobranteS = 0, sobranteX = 0, comisiones = 0, capDias = 0, n = 0, first = null;
+  const flows = [...prior.map((p) => ({ at: p.at, usd: p.usd }))];
+  for (const v of vaults) {
+    const L = v.L;
+    const left = v.newMoney - L.buys.s + L.sells.s - L.depS + L.wd.s; // estable de los aportes que sigue en la wallet
+    sobranteS += left; sobranteX += L.q * v.price; // se suma entre vaults: lo que sale de uno y entra a otro se compensa
+    posiciones += v.valueUsd; recompensas += v.rewardsUsd; comisiones += v.feesUsd;
+    for (const d of v.deps) { flows.push(d); n++; }
+  }
+  for (const f of flows) { aportado += f.usd; const at = typeof f.at === "number" ? f.at : Date.parse(f.at); if (Number.isFinite(at)) { capDias += f.usd * Math.max(0, nowMs - at) / 86400_000; first = first === null ? at : Math.min(first, at); } }
+  sobranteS = Math.max(0, sobranteS);
+  valor = posiciones + recompensas + sobranteS + sobranteX;
+  const pnl = valor - aportado;
+  return { aportado, valor, posiciones, recompensas, sobranteS, sobranteX, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+    capDias, anualPct: capDias > 0 ? pnl / capDias * 365 * 100 : null, n, desde: first };
+}
+
 const f2 = (n) => (n === null || !Number.isFinite(n) ? "—" : (n < 0 ? "−" : "") + "$" + Math.abs(n).toFixed(2));
 const sg = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "−") + "$" + Math.abs(n).toFixed(2));
 const pc = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(1) + " %");
@@ -132,6 +156,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
   const fees = (await s.store.get("dcaCostFees")) ?? {};
   const hist = (await s.store.get("beefyWalletHist").catch(() => null)) ?? []; // serie horaria de "beefy wallet" (solo el worker de Base)
   const now = Date.now();
+  const agg = [], priors = [];
   for (const [id, rs] of Object.entries(byVault)) {
     try {
       const m = rs[rs.length - 1], X = m.x;
@@ -203,6 +228,8 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
       const fz = (fees[id] ??= backfillFees(hist, id) ?? { since: new Date(now).toISOString(), at: now, usd: 0 });
       fees[id] = accrueFees(fz, { now, valueUsd, apy: apyNow });
       const priceRange = b.pnl - fees[id].usd;
+      agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd, feesUsd: fees[id].usd, price, deps: deps.map((x) => ({ at: x.at, usd: x.usd })) });
+      if (PRIOR[id]) priors.push(PRIOR[id]);
       (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing };
       const xPct = valueUsd > 0 ? xNow * price / valueUsd * 100 : 0;
       out.push(`dca costo ${id}: ${deps.length} depósitos DCA ($${dca.usd.toFixed(2)})${rs.length > deps.length ? ` + ${rs.length - deps.length} barridos/otros` : ""}` +
@@ -213,6 +240,18 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
         `${L.q > 0 ? ` · ${symX} en wallet ${L.q.toPrecision(5)} (${f2(L.q * price)})` : ""}${L.rewardX || L.rewardS ? ` · reinvertido de recompensas ${L.rewardS.toFixed(3)} ${s.net.stableSym} + ${L.rewardX.toPrecision(4)} ${symX}` : ""}` +
         `${L.wd.x || L.wd.s ? ` · retirado ${L.wd.s.toFixed(2)} ${s.net.stableSym} + ${L.wd.x.toPrecision(5)} ${symX}` : ""}${missing ? ` · ${missing} recibos no disponibles (invertido incompleto)` : ""}`);
     } catch (e) { out.push(`dca costo ${id}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
+  }
+  if (agg.length) {
+    const t = strategyPnl(agg, priors, now);
+    s.lastStrategy = { at: now, ...t };
+    const hist = (await s.store.get("dcaStrategyHist").catch(() => null)) ?? [];
+    hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
+    while (hist.length > 24 * 90) hist.shift();
+    await s.store.set("dcaStrategyHist", hist).catch(() => {});
+    out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
+      ` · valor ${f2(t.valor)} = posiciones ${f2(t.posiciones)}${t.recompensas ? ` + recompensas ${f2(t.recompensas)}` : ""}${t.sobranteS + t.sobranteX >= 0.005 ? ` + sobrante en wallet ${f2(t.sobranteS + t.sobranteX)}` : ""}` +
+      ` · PnL ${sg(t.pnl)} (${pc(t.pnlPct)}) = comisiones est. ${sg(t.comisiones)} + precio/rango ${sg(t.precio)}` +
+      ` · capital-día ${t.capDias.toFixed(1)} → rendimiento anualizado ${pc(t.anualPct)} · vaults: ${agg.map((a) => `${a.id} ${f2(a.valueUsd)}`).join(", ")}`);
   }
   await s.store.set("dcaCostRc", cache).catch(() => {});
   await s.store.set("dcaCostFees", fees).catch(() => {});

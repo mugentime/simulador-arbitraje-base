@@ -1,6 +1,6 @@
 // Costo del DCA: flujos de la wallet en recibos, clasificación, costo promedio, precio medio DCA, desglose y reporte con un provider simulado
 import { ethers } from "ethers";
-import { walletFlows, classify, ledger, dcaAvgPrice, breakdown, dcaCostReport, accrueFees, backfillFees } from "../server/dcacost.mjs";
+import { walletFlows, classify, ledger, dcaAvgPrice, breakdown, dcaCostReport, accrueFees, backfillFees, strategyPnl } from "../server/dcacost.mjs";
 let fails = 0; const ok = (c, m) => { console.log((c ? "OK " : "FALLA ") + m); if (!c) fails++; };
 const near = (a, b, e = 1e-9) => Math.abs(a - b) <= e * Math.max(1, Math.abs(b));
 const T = ethers.id("Transfer(address,address,uint256)");
@@ -70,7 +70,7 @@ const rcs = {
 const store = { m: {}, async get(k) { return this.m[k]; }, async set(k, v) { this.m[k] = v; } };
 const meta = { vaultId: "zec-rp", vault: RP, gov: true, clm: CLM, x: X, usdcIs0: false, pool: POOL, status: "hecho" };
 const s = {
-  me: ME, store, net: { stable: S, stableSym: "USDT", stableDec: 18, wnative: "0x6666666666666666666666666666666666666666" },
+  me: ME, store, net: { beefy: "bsc", stable: S, stableSym: "USDT", stableDec: 18, wnative: "0x6666666666666666666666666666666666666666" },
   provider: { call: async ({ to, data }) => ans(to, data), getTransactionReceipt: async (h) => ({ logs: rcs[h] }) },
   s: { runs: {
     "dca#1": { ...meta, startedAt: 1, usdcIn: String(10n * E), ratio: { rate: 1 / 1300 }, txs: [{ step: "approve swap USDT→X", hash: "0xa0" }, { step: "swap USDT→X", hash: "0xa1" }, { step: "deposit CLM", hash: "0xa2" }] },
@@ -81,7 +81,7 @@ rcs["0xa0"] = [];
 const lines = await dcaCostReport(s);
 console.log(lines.join("\n"));
 const units = 10 / 1300 + 20 / 1327.5, avgP = 30 / units;
-ok(lines.length === 1 && lines[0].includes("2 depósitos DCA ($30.00)"), "reporte: 2 depósitos de $30");
+ok(lines.length === 2 && lines[1].startsWith("dca estrategia bsc") && lines[0].includes("2 depósitos DCA ($30.00)"), "reporte: 2 depósitos de $30");
 const dcaP = 30 / (10 / 1300 + 20 / 1327.5);
 ok(lines[0].includes(`precio medio de entrada DCA $${dcaP.toLocaleString("en-US", { maximumFractionDigits: 2 })}`), `reporte: precio medio de entrada ${dcaP.toFixed(2)}`);
 ok(lines[0].includes("invertido $30.00"), "reporte: invertido $30");
@@ -94,4 +94,16 @@ ok(near(a.usd, 100 * (Math.pow(4.65, 1 / 8760) - 1), 1e-6), "comisiones de 1 h a
 ok(accrueFees({ at: 0, usd: 1 }, { now: 10 * 3600_000, valueUsd: 100, apy: 3.65 }).usd < 1 + 100 * (Math.pow(4.65, 3 / 8760) - 1), "máx. 2 h por lectura (huecos no inflan)");
 const bf = backfillFees([{ at: "2026-11-07T00:00:00Z", positions: [{ id: "v", valueUsd: 30, apyPct: 1000 }] }, { at: "2026-11-07T01:00:00Z", positions: [{ id: "v", valueUsd: 30, apyPct: 1000 }] }, { at: "2026-11-07T02:00:00Z", positions: [{ id: "w", valueUsd: 9 }] }], "v");
 ok(bf && bf.since === "2026-11-07T00:00:00.000Z" && near(bf.usd, 30 * (Math.pow(11, 1 / 8760) - 1), 1e-5), "relleno desde la serie horaria");
+// PnL de la estrategia con depósitos diarios y cambio de vault (A sale, su capital entra a B)
+const day = 86400_000, T0 = Date.parse("2026-11-01T00:00:00Z");
+const LA = ledger([{ type: "compra", x: 0.01, s: 10 }, { type: "deposito", x: 0.01, s: 10 }, { type: "compra", x: 0.01, s: 10 }, { type: "deposito", x: 0.01, s: 0 }, { type: "retiro", x: 0.02, s: 9 }, { type: "venta", x: 0.02, s: 19 }]);
+const LB = ledger([{ type: "deposito", x: 0, s: 28 }, { type: "deposito", x: 0, s: 10 }]);
+const st = strategyPnl([
+  { newMoney: 30, L: LA, valueUsd: 0, rewardsUsd: 0, feesUsd: 0.5, price: 1000, deps: [{ at: T0, usd: 20 }, { at: T0 + day, usd: 10 }] },
+  { newMoney: 10, L: LB, valueUsd: 38.4, rewardsUsd: 0.1, feesUsd: 0.2, price: 1, deps: [{ at: T0 + 2 * day, usd: 10 }] },
+], [{ at: new Date(T0).toISOString(), usd: 5 }], T0 + 3 * day);
+// aportado 45; estable sobrante = (30−20+19−20+9) + (10−0+0−38+0) = 18 − 28 = −10 → 0 (los 28 de B vienen de A); valor 38.4+0.1
+ok(near(st.aportado, 45) && near(st.sobranteS, 0) && near(st.valor, 38.5) && near(st.pnl, -6.5), "estrategia: aportado, valor y PnL con cambio de vault");
+ok(near(st.capDias, 5 * 3 + 20 * 3 + 10 * 2 + 10 * 1) && near(st.anualPct, -6.5 / 105 * 365 * 100), "capital-día y rendimiento anualizado ponderan cada depósito por sus días");
+ok(near(st.comisiones, 0.7) && near(st.precio, -7.2), "desglose comisiones / precio");
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);
