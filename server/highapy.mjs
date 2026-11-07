@@ -26,7 +26,7 @@ export async function scanHighApy(chain, rules = RULES(), stable = null) {
     const cow = cowByAddr.get(String(g.tokenAddress).toLowerCase());
     const toks = (cow?.depositTokenAddresses ?? []).map((t) => String(t).toLowerCase());
     return { id: g.id, name: g.name, apyPct: Number.isFinite(a) ? a * 100 : null, tvl: tvlById[g.id] ?? 0, clm: g.tokenAddress, platform: cow?.platformId ?? null,
-      pairsStable: stable && toks.length ? toks.includes(String(stable).toLowerCase()) : true };
+      pairsStable: process.env.HIGH_APY_ANY_PAIR === "1" || (stable && toks.length ? toks.includes(String(stable).toLowerCase()) : true) };
   });
   const byId = Object.fromEntries(all.map((x) => [x.id, x]));
   const eligible = all.filter((x) => x.apyPct !== null && x.apyPct >= rules.minApyPct && x.tvl >= rules.minTvl && x.pairsStable && !rules.blocked.includes(x.id)).sort((a, b) => b.apyPct - a.apyPct);

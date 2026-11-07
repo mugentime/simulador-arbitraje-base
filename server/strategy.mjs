@@ -143,7 +143,8 @@ export class Strategy {
     try { scan = await scanHighApy(this.net.beefy, rules, this.net.stable); } catch (e) { await this.diag(`estrategia auto: no se pudo leer Beefy (${e.message})`); return false; }
     this.lastScan = scan; scan.at = new Date(now).toISOString();
     // vaults de los que se salió en las últimas 24 h no vuelven a ser destino (evita salir y re-entrar al mismo)
-    const elig = scan.eligible.filter((x) => { const h = d.holdings?.[x.id]; return !(h?.closed && now - Date.parse(h.closed) < 24 * 3600_000); });
+    // …ni los que fallaron al entrar en las últimas 24 h (p. ej. una fábrica sin router conocido)
+    const elig = scan.eligible.filter((x) => { const h = d.holdings?.[x.id]; return !(h?.closed && now - Date.parse(h.closed) < 24 * 3600_000) && !(d.failed?.[x.id] && now - d.failed[x.id] < 24 * 3600_000); });
     // PnL on-chain por vault (línea "dca costo") para la regla de pérdida
     let cost = {};
     if (this.lossPct > 0) { try { await dcaCostReport(this, { ethUsd: ctx?.ethUsd ?? null }); cost = this.lastCost ?? {}; } catch {} }
@@ -232,7 +233,7 @@ export class Strategy {
             const h = ((d.holdings ??= {})[d.target] ??= { since: new Date(now).toISOString(), entryApyPct: this.lastScan?.byId?.[d.target]?.apyPct ?? null, entryTvl: this.lastScan?.byId?.[d.target]?.tvl ?? null, usd: 0 });
             h.basis = String(BigInt(h.basis ?? "0") + BigInt(this.run.usdcIn ?? "0"));
             await this.diag(`estrategia dinámica: capital reinvertido en ${d.target} · ${ethers.formatUnits(this.run.usdcIn ?? "0", this.net.stableDec)} ${this.net.stableSym}`);
-          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) { d.target = null; d.redeployTag = now; this.autoAt = 0; } await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló; se busca otro destino"} · ${msg}`); }
+          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) { (d.failed ??= {})[d.target] = now; d.target = null; d.redeployTag = now; this.autoAt = 0; } await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló; se busca otro destino"} · ${msg}`); }
           finally { this.sweepStable = undefined; }
           return;
         }

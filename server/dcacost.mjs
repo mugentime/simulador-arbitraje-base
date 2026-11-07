@@ -11,6 +11,7 @@
 import { ethers } from "ethers";
 import { priceFromSqrtX96 } from "./beefywallet.mjs";
 import { CHAINS } from "../src/chains.js";
+import { bestPath } from "./beefyclm.mjs";
 
 const TRANSFER = ethers.id("Transfer(address,address,uint256)");
 const I = new ethers.Interface([
@@ -147,6 +148,47 @@ const sg = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "
 const pc = (n) => (n === null || !Number.isFinite(n) ? "—" : (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(1) + " %");
 const px = (n) => (n === null || !Number.isFinite(n) ? "—" : "$" + (n >= 100 ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : n.toPrecision(5)));
 
+/** Vault de un par sin el estable (p. ej. ZEC-BTCB): invertido = estable gastado en los swaps − estable recibido al salir;
+ *  valor = participaciones × balances del CLM, con cada token valuado por su mejor ruta Uniswap v3 al estable. */
+async function pairReport(s, id, rs, { cache, alt, fees, apy, now, agg, call }) {
+  const m = rs[rs.length - 1], S = s.net.stable, D = s.net.stableDec, me = lc(s.me);
+  let spent = 0, received = 0, missing = 0;
+  for (const r of rs) for (const t of r.txs) {
+    if (/^approve|^stake|^deposit vault/.test(t.step)) continue;
+    let fl = cache[t.hash];
+    if (!fl) {
+      let rc = await s.provider.getTransactionReceipt(t.hash).catch(() => null);
+      for (const url of rc ? [] : (CHAINS[s.net.beefy]?.rpcs ?? [])) { rc = await (alt[url] ??= new ethers.JsonRpcProvider(url, undefined, { staticNetwork: true, batchMaxCount: 1 })).getTransactionReceipt(t.hash).catch(() => null); if (rc) break; }
+      if (!rc) { missing++; continue; }
+      const w = walletFlows(rc.logs, me, [m.t0, m.t1, S]);
+      fl = cache[t.hash] = { x: String(w[lc(m.t0)]), x1: String(w[lc(m.t1)]), s: String(w[lc(S)]) };
+    }
+    const ds = Number(BigInt(fl.s)) / 10 ** D;
+    if (ds < 0) spent -= ds; else received += ds;
+  }
+  const dec = async (t) => Number((await call(t, "decimals"))[0]), sym = async (t) => (await call(t, "symbol"))[0];
+  const [d0, d1, s0, s1] = await Promise.all([dec(m.t0), dec(m.t1), sym(m.t0), sym(m.t1)]);
+  const px = async (t, d) => Number((await bestPath(s, t, S, 10n ** BigInt(Math.max(0, d - 4)))).out) / 10 ** D * 1e4; // precio con 1e-4 unidades
+  const [p0, p1] = await Promise.all([px(m.t0, d0), px(m.t1, d1)]);
+  let shares = (await call(m.vault, "balanceOf", [s.me]))[0];
+  if (!m.gov) { const pp = (await call(m.vault, "getPricePerFullShare"))[0]; shares = shares * pp / 10n ** 18n; }
+  shares += (await call(m.clm, "balanceOf", [s.me]))[0];
+  const [[a0, a1], [ts]] = await Promise.all([call(m.clm, "balances"), call(m.clm, "totalSupply")]);
+  const frac = ts > 0n ? Number(shares) / Number(ts) : 0;
+  const q0 = Number(a0) / 10 ** d0 * frac, q1 = Number(a1) / 10 ** d1 * frac;
+  const valueUsd = q0 * p0 + q1 * p1, invested = spent - received, closed = shares === 0n;
+  const apyNow = Number(apy?.[id]?.totalApy ?? NaN);
+  fees[id] = accrueFees(fees[id] ?? { since: new Date(now).toISOString(), at: now, usd: 0 }, { now, valueUsd, apy: apyNow });
+  const pnl = valueUsd - invested, pnlPct = invested > 0 ? pnl / invested * 100 : null;
+  const deps = rs.filter((r) => /#\d+$/.test(r.k) && r.status === "hecho").map((r) => ({ at: r.startedAt, usd: Number(BigInt(r.usdcIn ?? "0")) / 10 ** D || Number(r.usd) || 0 }));
+  const L = { q: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, extIn: 0, buys: { x: 0, s: spent }, sells: { x: 0, s: received }, wd: { x: 0, s: 0 } };
+  agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd: 0, feesUsd: fees[id].usd, price: 0, deps });
+  (s.lastCost ??= {})[id] = { at: now, invested, value: valueUsd, rewards: 0, pnl, pnlPct, closed, missing };
+  return `dca costo ${id}: par sin ${s.net.stableSym} · invertido ${f2(invested)} (${s.net.stableSym} gastado ${f2(spent)}${received ? ` − recibido ${f2(received)}` : ""}) · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${q0.toPrecision(5)} ${s0} a ${px2(p0)} + ${q1.toPrecision(5)} ${s1} a ${px2(p1)})`}` +
+    ` · PnL ${sg(pnl)} (${pc(pnlPct)}) = comisiones est. ${sg(fees[id].usd)} (APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"}) + precio/rango ${sg(pnl - fees[id].usd)}${missing ? ` · ${missing} recibos no disponibles` : ""}`;
+}
+const px2 = (n) => (Number.isFinite(n) ? "$" + (n >= 100 ? n.toFixed(2) : n.toPrecision(5)) : "—");
+
 /** Calcula el costo de cada vault del DCA y devuelve las líneas para el log. `s` = Strategy (provider, me, net, s.runs, store). */
 export async function dcaCostReport(s, { ethUsd = null } = {}) {
   if (s.net?.wrapNative) return []; // cadenas donde el "estable" es WETH (Robinhood): los montos no serían USD
@@ -166,6 +208,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
   for (const [id, rs] of Object.entries(byVault)) {
     try {
       const m = rs[rs.length - 1], X = m.x;
+      if (m.noStable) { out.push(await pairReport(s, id, rs, { cache, alt, fees, apy, now, agg, call })); continue; }
       const dX = Number((await call(X, "decimals"))[0]), symX = (await call(X, "symbol"))[0];
       // precio de hoy desde el pool del CLM
       const [sq] = await call(m.pool, "slot0");

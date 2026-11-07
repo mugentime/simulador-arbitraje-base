@@ -89,7 +89,9 @@ async function resolve(s) {
   const gov = v.type === "gov";
   if (!gov) { const [want] = await call(s, vault, "want"); if (lc(want) !== lc(clm)) throw new Error(`want del vault ${want} ≠ CLM ${clm}`); }
   const [t0, t1] = await call(s, clm, "wants");
-  if (lc(t0) !== lc(N.stable) && lc(t1) !== lc(N.stable)) throw new Error(`el CLM no tiene ${N.stableSym}`);
+  // par sin el estable (HIGH_APY_ANY_PAIR=1): se entra/sale cambiando el estable por los dos tokens vía Uniswap v3 (rutas cotizadas)
+  const noStable = lc(t0) !== lc(N.stable) && lc(t1) !== lc(N.stable);
+  if (noStable && (process.env.HIGH_APY_ANY_PAIR !== "1" || !N.router || !N.quoter)) throw new Error(`el CLM no tiene ${N.stableSym}`);
   const [strat] = await call(s, clm, "strategy");
   const [pool] = await call(s, strat, "pool");
   const [factory] = await call(s, pool, "factory");
@@ -99,10 +101,11 @@ async function resolve(s) {
     const [rf] = await call(s, router, "factory"); if (lc(rf) !== lc(N.uniFactory)) throw new Error(`router ${router} es de la fábrica ${rf}, no de ${N.uniFactory}`);
   }
   else if (SLIP_ROUTERS[lc(factory)]) { dex = "slip"; router = SLIP_ROUTERS[lc(factory)]; tickSpacing = Number((await call(s, pool, "tickSpacing"))[0]); }
+  else if (noStable) { dex = "otro"; router = N.router; }
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
-  Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee });
+  Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee, noStable });
   await s.save();
-  await s.diag(`estrategia ${s.kind}: ${id} · ${gov ? "reward pool" : "vault"} ${vault} · CLM ${clm} · pool ${pool} (${dex === "uni" ? `Uniswap v3 fee ${fee}` : `Slipstream tickSpacing ${tickSpacing}`}) · router ${router}`);
+  await s.diag(`estrategia ${s.kind}: ${id} · ${gov ? "reward pool" : "vault"} ${vault} · CLM ${clm} · pool ${pool} (${dex === "uni" ? `Uniswap v3 fee ${fee}` : dex === "slip" ? `Slipstream tickSpacing ${tickSpacing}` : "fábrica no soportada para swaps en el pool; rutas Uniswap v3"}${noStable ? `; par sin ${N.stableSym}` : ""}) · router ${router}`);
 }
 
 const slipParams = (s, tokenIn, tokenOut, amountIn, min = 0n) => ({ tokenIn, tokenOut, tickSpacing: s.run.tickSpacing, recipient: s.me, deadline: BigInt(Math.floor(Date.now() / 1000) + 600), amountIn, amountOutMinimum: min, sqrtPriceLimitX96: 0n });
@@ -168,6 +171,99 @@ export function rebalance(S, X, rate, R) {
   return { stableToX: Math.max(0, S - sT), xToStable: 0 };
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Pares sin el estable: rutas estable↔token por Uniswap v3 (directa o vía el nativo envuelto), cotizadas con QuoterV2.
+const Q = new ethers.Interface([
+  "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)",
+  "function exactInput((bytes path,address recipient,uint256 amountIn,uint256 amountOutMinimum)) payable returns (uint256 amountOut)",
+]);
+const FEES = [100, 500, 2500, 3000, 10000];
+/** Ruta v3 codificada (token, fee, token, …) (puro, probado). */
+export function encodePath(tokens, fees) { return ethers.solidityPacked(tokens.flatMap((t, i) => (i < fees.length ? ["address", "uint24"] : ["address"])), tokens.flatMap((t, i) => (i < fees.length ? [t, fees[i]] : [t]))); }
+/** Mejor ruta para `amountIn` de tokenIn→tokenOut: directa en cada comisión o vía el nativo envuelto. */
+export async function bestPath(s, tokenIn, tokenOut, amountIn) {
+  const W = s.net.wnative, cands = [];
+  for (const f of FEES) cands.push({ tokens: [tokenIn, tokenOut], fees: [f] });
+  if (W && lc(W) !== lc(tokenIn) && lc(W) !== lc(tokenOut)) for (const f1 of [500, 3000, 100, 10000]) for (const f2 of [500, 3000, 100, 10000]) cands.push({ tokens: [tokenIn, W, tokenOut], fees: [f1, f2] });
+  let best = null;
+  for (const c of cands) {
+    const path = encodePath(c.tokens, c.fees);
+    try { const [out] = Q.decodeFunctionResult("quoteExactInput", await s.provider.call({ to: s.net.quoter, data: Q.encodeFunctionData("quoteExactInput", [path, amountIn]) })); if (!best || out > best.out) best = { path, out, desc: c.fees.join("/") + (c.tokens.length > 2 ? " vía nativo" : "") }; } catch {}
+  }
+  if (!best || best.out === 0n) throw new Error(`sin ruta Uniswap v3 de ${tokenIn} a ${tokenOut}`);
+  return best;
+}
+/** Swap por la mejor ruta, con salida mínima = cotización − deslizamiento y control de impacto (cotización chica × escala, 2 %). */
+export async function routeSwap(s, tokenIn, tokenOut, amountIn, step) {
+  if (amountIn <= 0n) return 0n;
+  const b = await bestPath(s, tokenIn, tokenOut, amountIn);
+  const small = amountIn / 50n;
+  let ref = 0n;
+  if (small > 0n) { try { const [o] = Q.decodeFunctionResult("quoteExactInput", await s.provider.call({ to: s.net.quoter, data: Q.encodeFunctionData("quoteExactInput", [b.path, small]) })); ref = o * amountIn / small; } catch {} }
+  const min = minOut(b.out, s.slipBps, ref);
+  await approve(s, tokenIn, s.net.router, amountIn, `approve ${step}`);
+  const before = await bal(s, tokenOut);
+  await s.send(`${step} (${b.desc})`, { to: s.net.router, data: Q.encodeFunctionData("exactInput", [{ path: b.path, recipient: s.me, amountIn, amountOutMinimum: min }]) });
+  return (await bal(s, tokenOut)) - before;
+}
+/** Reparto del estable S entre t0 y t1 para depositar en proporción R = t1/t0 (crudo); rate_i = token_i crudo por estable crudo (puro, probado). */
+export function pairSplit(S, rate0, rate1, R) {
+  if (!(rate0 > 0) || !(rate1 > 0)) return { u0: 0, u1: 0 };
+  if (R === 0) return { u0: S, u1: 0 };
+  if (R === Infinity) return { u0: 0, u1: S };
+  const a0 = S / (1 / rate0 + R / rate1);
+  const u0 = a0 / rate0;
+  return { u0, u1: S - u0 };
+}
+async function pairRatio(s) {
+  const r = s.run;
+  for (const big of [10n ** 30n, 10n ** 27n, 10n ** 24n]) {
+    try { const [, u0, u1] = await call(s, r.clm, "previewDeposit", [big, big]); if (u0 === 0n && u1 === 0n) continue; return u0 === 0n ? Infinity : Number(u1) / Number(u0); } catch {}
+  }
+  const [b0, b1] = await call(s, r.clm, "balances");
+  return b0 === 0n ? Infinity : Number(b1) / Number(b0);
+}
+async function enterPair(s) {
+  const r = s.run, N = s.net, U1 = 10n ** BigInt(N.stableDec);
+  if (r.a0 === undefined) {
+    const S = BigInt(r.usdcIn);
+    if (S === 0n) throw new Error("nada que depositar");
+    const probe = U1;
+    const rate0 = Number((await bestPath(s, N.stable, r.t0, probe)).out) / Number(probe), rate1 = Number((await bestPath(s, N.stable, r.t1, probe)).out) / Number(probe);
+    const R = await pairRatio(s);
+    const sp = pairSplit(Number(S), rate0, rate1, R);
+    const u0 = BigInt(Math.floor(sp.u0)), u1 = S - u0 > 0n ? S - u0 : 0n;
+    const b0 = await bal(s, r.t0), b1 = await bal(s, r.t1);
+    if (u0 > 0n) await routeSwap(s, N.stable, r.t0, u0, `swap ${N.stableSym}→token0`);
+    if (u1 > 0n) await routeSwap(s, N.stable, r.t1, u1, `swap ${N.stableSym}→token1`);
+    r.a0 = String((await bal(s, r.t0)) - b0); r.a1 = String((await bal(s, r.t1)) - b1); r.ratio = { R, rate0, rate1 }; await s.save();
+    await s.diag(`estrategia ${s.kind}: par sin ${N.stableSym} · proporción R=${R === Infinity ? "solo token1" : R.toExponential(3)} · ${ethers.formatUnits(S, N.stableDec)} ${N.stableSym} → token0 ${r.a0} + token1 ${r.a1}`);
+  }
+  if (r.clmShares === undefined) {
+    const a0 = BigInt(r.a0), a1 = BigInt(r.a1);
+    if (a0 > 0n) await approve(s, r.t0, r.clm, a0, "approve token0→CLM");
+    if (a1 > 0n) await approve(s, r.t1, r.clm, a1, "approve token1→CLM");
+    const [shares, used0, used1] = await call(s, r.clm, "previewDeposit", [a0, a1]);
+    if (shares === 0n) throw retry("previewDeposit da 0 participaciones");
+    const before = await bal(s, r.clm);
+    try { await s.sim({ to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, shares * 99n / 100n]) }); }
+    catch (e) { throw retry(`deposit del CLM no pasa la simulación (${(e.shortMessage || e.message).slice(0, 120)}); ¿no está calm?`); }
+    await s.send("deposit CLM", { to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, shares * 99n / 100n]) });
+    r.clmShares = String((await bal(s, r.clm)) - before); r.used = [String(used0), String(used1)];
+    r.leftover = { t0: String(a0 - used0), t1: String(a1 - used1) };
+    await s.diag(`estrategia ${s.kind}: CLM tomó token0 ${used0} de ${a0} + token1 ${used1} de ${a1} · sobrante queda en la wallet`);
+    await s.save();
+  }
+  if (r.mooShares === undefined) {
+    const sh = BigInt(r.clmShares);
+    await approve(s, r.clm, r.vault, sh, "approve CLM→vault");
+    const before = await bal(s, r.vault);
+    await s.send(r.gov ? "stake reward pool Beefy" : "deposit vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
+    r.mooShares = String((await bal(s, r.vault)) - before); await s.save();
+  }
+  await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} nativo → ${ethers.formatUnits(r.usdcIn, N.stableDec)} ${N.stableSym} → CLM ${r.clmShares} → vault ${r.mooShares} · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
+}
+
 export async function enterClm(s, ctx) {
   const r = s.run, N = s.net;
   await resolve(s);
@@ -218,6 +314,7 @@ export async function enterClm(s, ctx) {
     } else { r.ethIn = "0"; r.usdcIn = String(target); }
     await s.save();
   }
+  if (r.noStable) return enterPair(s);
   // 2) rebalanceo estable/X según la proporción que el CLM acepta HOY (previewDeposit con X de sobra), incluyendo el X que ya
   //    haya en la wallet (sobrantes de depósitos anteriores). balances() del CLM incluye la posición alternativa y no sirve.
   if (r.xIn === undefined) {
@@ -279,15 +376,24 @@ export async function exitClm(s, ctx) {
   if (r.usdcOut === undefined) {
     const sh = await bal(s, r.clm);
     const bU0 = await bal(s, s.net.stable), bX0 = await bal(s, r.x);
+    if (r.noStable) r.b1Before = String(await bal(s, r.t1));
     if (sh > 0n) {
       const [m0, m1] = await call(s, r.clm, "previewWithdraw", [sh]);
       try { await s.sim({ to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) }); }
       catch (e) { throw retry(`withdraw del CLM no pasa la simulación (${(e.shortMessage || e.message).slice(0, 120)})`); }
       await s.send("withdraw CLM", { to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) });
     }
+    if (r.noStable) {
+      const b1 = await bal(s, r.t1);
+      const g0 = (await bal(s, r.t0)) - bX0, g1 = b1 - (r.b1Before ? BigInt(r.b1Before) : 0n);
+      if (g0 > 0n) await routeSwap(s, r.t0, s.net.stable, g0, `swap token0→${s.net.stableSym}`);
+      if (g1 > 0n) await routeSwap(s, r.t1, s.net.stable, g1, `swap token1→${s.net.stableSym}`);
+      r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(g0); await s.save();
+    } else {
     const xGot = (await bal(s, r.x)) - bX0;
     const uFromX = xGot > 0n ? await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`) : 0n;
     r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
+    }
   }
   const amt = BigInt(r.usdcOut);
   if (amt <= 0n) throw new Error("no salió USDC del CLM");
