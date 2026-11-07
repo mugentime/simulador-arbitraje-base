@@ -15,6 +15,8 @@ import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { RULES } from "./highapy.mjs";
+import { auditWallet, auditLine } from "./walletaudit.mjs";
+import { whitelist } from "./withdrawguard.mjs";
 import { Strategy } from "./strategy.mjs";
 import { Bridger, Topup, topupTargets } from "./bridge.mjs";
 import { EventFeed } from "./events.mjs";
@@ -348,6 +350,11 @@ const server = http.createServer(async (req, res) => {
       usdcIn: r.usdcIn ?? null, usdcOut: r.usdcOut ?? null, txs: (r.txs ?? []).map((t) => (typeof t === "string" ? { hash: t } : { step: t.step ?? t.name ?? null, hash: t.hash ?? null })) })).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 30);
     res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7) }));
   }
+  if (req.url.startsWith("/api/withdraw-audit")) {
+    const addr = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0];
+    try { res.writeHead(200, headers); return res.end(J({ guard: { whitelist: whitelist(), blocked: executor?.guard?.blocked ?? [] }, audit: lastAudit ?? (lastAudit = await auditWallet(addr, { whitelist: whitelist() })) })); }
+    catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/api/wallet-balances")) {
     const addr = new URL(req.url, "http://x").searchParams.get("address") || (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0];
     try { res.writeHead(200, headers); return res.end(J(await walletBalances(addr, { provider: executor?.provider }))); }
@@ -429,12 +436,14 @@ async function logCashIn() {
 setTimeout(logCashIn, 6 * 60_000);
 // posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada BEEFY_WALLET_EVERY_MIN (60) minutos (solo Base);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
+let lastAudit = null;
 async function logBeefyWallets() {
   if (CHAIN_CFG.key !== "base") return;
   const list = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",").map((x) => x.trim()).filter(Boolean);
   for (const a of list) {
     try {
       try { console.log(`${new Date().toISOString()} ${walletBalancesLine(await walletBalances(a, { provider: executor?.provider }))}`); } catch (e) { console.log(`${new Date().toISOString()} saldos wallet ${a}: error ${e.message}`); }
+      try { lastAudit = await auditWallet(a, { whitelist: whitelist() }); console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));

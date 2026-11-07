@@ -1,3 +1,4 @@
+import { WithdrawGuard } from "./withdrawguard.mjs";
 // Fase 1: ejecución del protocolo con el contrato ArbExecutor desplegado en Base.
 //
 // Modos (variable EXECUTE_MODE):
@@ -237,6 +238,8 @@ export class Executor {
     this.provider = provider; this.store = store; this.diag = diag; this.mode = mode; this.autoDeploy = autoDeploy;
     this.iface = new ethers.Interface(ART.abi);
     this.wallet = process.env.PRIVATE_KEY ? new ethers.Wallet(process.env.PRIVATE_KEY.trim(), provider) : null;
+    // guardia de retiros: toda tx firmada pasa por WithdrawGuard.check (server/withdrawguard.mjs)
+    this.guard = this.wallet ? new WithdrawGuard({ provider, me: this.wallet.address, diag: (m) => this.diag(m) }) : null;
     this.limits = {
       maxGasUsd: Number(process.env.MAX_GAS_USD ?? 0.25),
       maxTxPerHour: Number(process.env.MAX_TX_PER_HOUR ?? 20),
@@ -287,7 +290,8 @@ export class Executor {
       for (let i = 0; i < this.sendRpcs.length; i++) {
         const w = this.sender();
         const t0 = Date.now();
-        try { return await fn(w); } catch (e) {
+        try { return await fn(this.guard ? this.guard.wrap(w) : w); } catch (e) {
+          if (e?.code === "WITHDRAW_BLOCKED") throw e;
           lastErr = e;
           const m = sendErrMsg(e);
           if (/nonce|replacement/i.test(m)) { this.sendSigner?.reset?.(); throw e; } // nonce desincronizado: se resincroniza y se reporta
@@ -772,7 +776,7 @@ export class Executor {
     this.sending = true;
     try {
       let data = this.iface.encodeFunctionData("execute", [[plan.source, plan.lender, plan.token, plan.amount, plan.minProfit, plan.hops]]);
-      const w = this.wallet.connect(this.provider);
+      const w = this.guard ? this.guard.wrap(this.wallet.connect(this.provider)) : this.wallet.connect(this.provider);
       const [nonce, netGp, head] = await Promise.all([
         this.provider.getTransactionCount(this.wallet.address, "latest"),
         this.provider.send("eth_gasPrice", []).then(BigInt).catch(() => MIN_BUNDLE_GAS_PRICE),
@@ -856,7 +860,7 @@ export class Executor {
   }
 
   async sendAsBundle(plan, rec, gas, ethUsd, data, now) {
-    const w = this.wallet.connect(this.provider);
+    const w = this.guard ? this.guard.wrap(this.wallet.connect(this.provider)) : this.wallet.connect(this.provider);
     const pre = process.env.BUNDLE_PREFETCH === "0" ? null : bundlePreFresh(this.bundlePre, Date.now(), core.CHAIN.blockMs);
     const [nonce, netGp, head] = pre ? [pre.nonce, pre.gasPrice, Math.max(pre.head, this.lastChainBlock || 0)] : await Promise.all([
       this.provider.getTransactionCount(this.wallet.address, "latest"),
