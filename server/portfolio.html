@@ -70,6 +70,40 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 .err { color: var(--bad); font-size: 12px; }
 .flash { animation: flash 1.2s ease-out; } @keyframes flash { from { background: var(--accbg); } to { background: transparent; } }
 @media (max-width: 640px) { .kpi b { font-size: 19px; } .grid { grid-template-columns: 1fr; } .hide-s { display: none; } td.name { white-space: normal; min-width: 150px; } td, th { padding: 7px 5px; } .tag { font-size: 10px; } }
+
+/* análisis: códigos de color (paleta de estado fija + par divergente azul/rojo) */
+:root { --pos: #2a78d6; --neg: #e34948; --st-good: #0ca30c; --st-warn: #fab219; --st-serious: #ec835a; --st-crit: #d03b3b; --st-neutral: #898781; --grid: #e1e0d9; --fee: #1baf7a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pos: #3987e5; --neg: #e66767; --grid: #2c2c2a; --fee: #199e70; } }
+:root[data-theme="dark"] { --pos: #3987e5; --neg: #e66767; --grid: #2c2c2a; --fee: #199e70; }
+.hero { display: grid; grid-template-columns: minmax(240px, 1.3fr) repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.hero .main { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.hero .main > span { color: var(--mut); font-size: 12px; display: block; }
+.hero .main b { font-size: 40px; font-weight: 650; letter-spacing: -.02em; display: block; line-height: 1.15; margin: 4px 0; }
+.hero .main small { color: var(--mut); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 9px 2px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--ink); white-space: nowrap; }
+.badge i { width: 14px; height: 14px; border-radius: 50%; display: inline-grid; place-items: center; font-style: normal; font-size: 9px; color: #fff; }
+.badge.good i { background: var(--st-good); } .badge.warn i { background: var(--st-warn); color: #0b0b0b; } .badge.serious i { background: var(--st-serious); } .badge.crit i { background: var(--st-crit); } .badge.neutral i { background: var(--st-neutral); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; color: var(--mut); font-size: 12px; margin: 2px 0 12px; }
+.legend .sw { display: inline-block; width: 12px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.rank { width: 100%; }
+.rank .row { display: grid; grid-template-columns: minmax(130px, 1.1fr) 112px minmax(140px, 2fr) 92px 78px; gap: 10px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line); cursor: default; }
+.rank .row:last-child { border-bottom: 0; } .rank .row:hover { background: var(--soft); }
+.rank .row.head { color: var(--mut); font-size: 12px; padding-top: 0; } .rank .row.head:hover { background: none; }
+.rank .nm b { font-weight: 600; } .rank .nm div { color: var(--mut); font-size: 12px; }
+.rank .num { text-align: right; } .rank .num div { color: var(--mut); font-size: 11px; }
+.dv { position: relative; height: 22px; }
+.dv .axis { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mut); opacity: .55; }
+.dv .b { position: absolute; top: 4px; height: 14px; }
+.dv .b.p { background: var(--pos); border-radius: 0 4px 4px 0; } .dv .b.n { background: var(--neg); border-radius: 4px 0 0 4px; }
+.split { display: flex; height: 4px; margin-top: 3px; gap: 2px; } .split i { display: block; height: 100%; border-radius: 2px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.why h3 { font-size: 14px; margin: 0 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.why .big { font-size: 26px; font-weight: 650; margin: 2px 0 6px; }
+.why ul { margin: 6px 0 0; padding-left: 0; list-style: none; } .why li { margin: 5px 0; padding-left: 20px; position: relative; font-size: 13px; }
+.why li::before { position: absolute; left: 0; top: 0; font-weight: 700; } .why li.plus::before { content: "+"; color: var(--pos); } .why li.minus::before { content: "−"; color: var(--neg); } .why li.info::before { content: "•"; color: var(--mut); }
+.sugg { list-style: none; margin: 0; padding: 0; counter-reset: s; } .sugg li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.sugg li:last-child { border-bottom: 0; } .sugg .why2 { color: var(--mut); font-size: 12px; margin-top: 2px; }
+@media (max-width: 760px) { .hero { grid-template-columns: 1fr 1fr; } .hero .main { grid-column: 1 / -1; } .rank .row { grid-template-columns: 1fr 96px 70px; } .rank .row .hs { display: none; } .pair { grid-template-columns: 1fr; } .hero .main b { font-size: 32px; } .sugg li { grid-template-columns: 1fr; gap: 4px; } }
 </style>
 </head>
 <body>
@@ -82,9 +116,26 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     <button id="theme" title="Tema claro / oscuro">◐</button>
   </header>
 
+  <section id="analysis">
+    <div class="hero" id="hero"><div class="main"><span>Ganancia real (sin contar lo depositado)</span><b class="mut">…</b><small>cargando reportes de los workers</small></div></div>
+    <div class="legend" id="legend"></div>
+    <div class="card">
+      <h2>1 · Ranking de vaults por ganancia real <span class="mut" style="font-weight:400;font-size:12px">ordenado por rendimiento diario sobre el capital invertido</span></h2>
+      <div class="rank" id="rank"><div class="mut">cargando…</div></div>
+      <div class="note">Ganancia real = valor de la posición + recompensas por cobrar − todo lo que se metió (depósitos, barridos, saldo previo). No crece por depositar más. Se divide en <b>comisiones</b> (lo que paga el vault) y <b>precio/rango</b> (subida o bajada del token y efecto del rango del CLM). %/día = ganancia ÷ capital-día (cada dólar pesa por los días que lleva invertido).</div>
+    </div>
+    <div class="pair" id="bestworst"></div>
+    <div class="card">
+      <h2>2 · Sugerencias de esta corrida <span class="mut" style="font-weight:400;font-size:12px" id="suggAt"></span></h2>
+      <ol class="sugg" id="sugg"><li class="mut">cargando…</li></ol>
+      <details id="suggHistWrap"><summary>Corridas anteriores</summary><div id="suggHist" class="note"></div></details>
+    </div>
+    <h2 style="font-size:15px;margin:18px 0 8px">3 · Detalle</h2>
+  </section>
+
   <div class="kpis" id="kpis"></div>
   <div class="prices" id="prices"></div>
-  <div class="alerts" id="alerts"></div>
+  <div class="alerts" id="alerts" hidden></div>
 
   <div class="card">
     <h2>Valor en el tiempo <span class="mut" style="font-weight:400;font-size:12px" id="chg"></span>
@@ -193,7 +244,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 
   // ------------------------------------------------------------------ render
   function render(changed) {
-    renderLive(); renderKpis(); renderAlerts(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
+    renderLive(); renderKpis(); renderAlerts(); renderAnalysis(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
     $("errs").innerHTML = (S.reportErrs ?? []).length ? `<span class="err">Sin reporte de: ${S.reportErrs.map(esc).join(" · ")}</span>` : "";
   }
   function renderLive() {
@@ -255,6 +306,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const baseFree = (p.balances?.chains ?? []).find((c) => c.chain === "base")?.usd ?? null;
     const daily = strategies().reduce((a, s) => a + (s.r.strategy?.dcaUsd ?? 0), 0);
     if (fin(baseFree) && daily > 0 && baseFree < daily * 2) A.push(["bad", `Fondos en Base para menos de 2 días de depósitos (${usd(baseFree)} libres; ≈ ${usd(daily, 0)}/día).`]);
+    S.alerts = A;
     $("alerts").innerHTML = A.map(([c, t]) => `<div class="alert ${c}">${t}</div>`).join("");
   }
 
@@ -371,6 +423,144 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
         ${(d.deposits ?? []).length ? `<details><summary>Últimos depósitos</summary><table>${(d.deposits ?? []).slice(-6).reverse().map((x) => `<tr><td>${hm(x.at)}</td><td class="n">${usd(x.usd, 0)}</td><td>${(x.txs ?? []).slice(-1).map((h) => tx(r.chain, h)).join("")}</td></tr>`).join("")}</table></details>` : ""}
       </div>`;
     }).join("");
+  }
+
+  // ------------------------------------------------------------------ análisis: ganancia real, jerarquía, mejor/peor, sugerencias
+  // Veredicto (paleta de estado fija, siempre con ícono + texto): ganando / neutro / débil / perdiendo
+  const VERDICT = {
+    good: { cls: "good", ic: "▲", txt: "Ganando" }, neutral: { cls: "neutral", ic: "●", txt: "Neutro" },
+    warn: { cls: "warn", ic: "▼", txt: "Débil" }, crit: { cls: "crit", ic: "✕", txt: "Perdiendo" },
+  };
+  const badge = (k, extra = "") => { const v = VERDICT[k]; return `<span class="badge ${v.cls}"><i>${v.ic}</i>${v.txt}${extra}</span>`; };
+  const verdictOf = (pnlPct) => (!fin(pnlPct) ? "neutral" : pnlPct >= 0.5 ? "good" : pnlPct > -0.5 ? "neutral" : pnlPct > -5 ? "warn" : "crit");
+  const PRIO = { act: { k: "crit", t: "Acción" }, check: { k: "warn", t: "Revisar" }, info: { k: "neutral", t: "Info" }, ok: { k: "good", t: "Bien" } };
+
+  /** Un registro por vault con su ganancia real. Fuente 1: costo del bot (recibos on-chain). Fuente 2: historial de Beefy (netDeposited). */
+  function vaultRows() {
+    const pos = S.pf?.wallet?.positions ?? [], mg = managerOf(), out = new Map(), s24 = snapAgo(24);
+    const costOf = {}; for (const r of S.reports) for (const [id, c] of Object.entries(r.cost ?? {})) costOf[id] = { ...c, chain: r.chain };
+    for (const x of pos) {
+      const c = costOf[x.id], st = mg[x.id];
+      let inv = null, pnl = null, fees = null, price = null, daily = null, src = null, days = null;
+      if (c && fin(c.pnl) && c.invested > 0.5) {
+        inv = c.invested; pnl = c.pnl; fees = c.fees ?? null; price = fin(c.priceRange) ? c.priceRange : fin(fees) ? pnl - fees : null; daily = c.dailyPct ?? null; days = c.days ?? null; src = "bot";
+      } else if (fin(x.netDepositedUsd) && x.netDepositedUsd > 0.5) {
+        inv = x.netDepositedUsd; pnl = (x.valueUsd ?? 0) + (x.pendingUsd ?? 0) - inv; src = "beefy";
+        const t0 = x.firstDeposit ? Date.parse(x.firstDeposit) : NaN;
+        if (Number.isFinite(t0)) { days = (Date.now() - t0) / 86400000; daily = days > 0.05 ? pnl / (inv * days) * 100 : null; }
+      }
+      const wasApy = s24?.apy?.[x.id], h = st?.d?.holdings?.[x.id];
+      out.set(x.id, { id: x.id, name: x.name ?? short(x.id), chain: x.chain, x, c, st, role: st ? st.role : c ? "DCA del bot" : "manual", inv, pnl, pnlPct: inv ? pnl / inv * 100 : null, fees, price, daily, days, src,
+        apy: x.apyPct, apy24: wasApy, apyEntry: h?.entryApyPct ?? null, tvl: x.tvlUsd, value: x.valueUsd, pending: x.pendingUsd ?? 0 });
+    }
+    return [...out.values()];
+  }
+
+  /** Razones (por qué) de un vault, con signo: + ayuda, − resta, • contexto. */
+  function reasons(v) {
+    const R = [];
+    if (fin(v.fees)) R.push([v.fees >= 0 ? "plus" : "minus", `Comisiones ganadas ${usd(v.fees, 2)}${apyOk(v.apy) ? ` (APY actual ${pct(v.apy, v.apy < 100 ? 1 : 0)})` : ""}.`]);
+    if (fin(v.price) && Math.abs(v.price) >= 0.01) {
+      const c = v.c, tok = c?.sym ? esc(c.sym) : "el token";
+      const mv = fin(c?.priceVsEntryPct) ? `${tok} está ${c.priceVsEntryPct >= 0 ? "+" : ""}${pct(c.priceVsEntryPct, 1)} vs tu precio medio de entrada${fin(c?.xPct) ? ` y ${pct(c.xPct)} de la posición está en ${tok}` : ""}` : "movimiento de precio y rango del CLM";
+      R.push([v.price >= 0 ? "plus" : "minus", `Precio/rango ${v.price >= 0 ? "+" : ""}${usd(v.price, 2)}: ${mv}.`]);
+    } else if (v.src === "beefy") R.push(["info", "Sin desglose comisiones/precio (posición manual: solo el total de Beefy)."]);
+    if (apyOk(v.apy) && apyOk(v.apyEntry) && v.apyEntry > 0 && v.apy < v.apyEntry * 0.5) R.push(["minus", `El APY cayó de ${pct(v.apyEntry)} al entrar a ${pct(v.apy)} hoy: rinde menos de la mitad de lo esperado.`]);
+    else if (apyOk(v.apy) && apyOk(v.apy24) && v.apy24 > 0 && v.apy < v.apy24 * 0.5) R.push(["minus", `El APY cayó a menos de la mitad en 24 h (${pct(v.apy24)} → ${pct(v.apy)}).`]);
+    else if (apyOk(v.apy) && v.apy >= 100) R.push(["plus", `APY alto y vigente (${pct(v.apy)}).`]);
+    if (fin(v.apy) && !apyOk(v.apy)) R.push(["minus", "Beefy publica un APY irreal: no es una cifra confiable."]);
+    if (fin(v.tvl) && v.tvl < 1000) R.push(["minus", `Vault diminuto (TVL ${usd(v.tvl, 0)}): el APY es volátil y tú eres ${pct((v.value ?? 0) / v.tvl * 100)} del vault.`]);
+    else if (fin(v.tvl) && v.tvl >= 100000) R.push(["plus", `Vault grande (TVL ${usdK(v.tvl)}): comisiones más estables.`]);
+    if (v.pending >= 0.05) R.push(["info", `${usd(v.pending, 3)} en recompensas por cobrar (ya incluidas en la ganancia).`]);
+    if (fin(v.days) && v.days < 1) R.push(["info", `Solo ${(v.days * 24).toFixed(0)} h de historia: el ranking aún es preliminar.`]);
+    return R;
+  }
+
+  function renderAnalysis() {
+    if (!S.pf) return;
+    const rows = vaultRows().filter((v) => fin(v.pnl));
+    const scored = rows.map((v) => ({ ...v, score: fin(v.daily) ? v.daily : (v.pnlPct ?? 0) / Math.max(1, v.days ?? 1) })).sort((a, b) => b.score - a.score || b.pnl - a.pnl);
+    const tot = scored.reduce((a, v) => ({ inv: a.inv + v.inv, pnl: a.pnl + v.pnl, fees: a.fees + (v.fees ?? 0), price: a.price + (fin(v.price) ? v.price : 0), noSplit: a.noSplit + (fin(v.fees) ? 0 : v.pnl) }), { inv: 0, pnl: 0, fees: 0, price: 0, noSplit: 0 });
+    // capital-día de todas las posiciones (bot: del costo; manuales: invertido × días desde el primer depósito)
+    let capDays = 0, pnlCd = 0;
+    for (const v of scored) { const cd = v.src === "bot" ? (v.c?.capDays ?? 0) : fin(v.days) ? v.inv * v.days : 0; if (cd > 0) { capDays += cd; pnlCd += v.pnl; } }
+    const dailyPct = capDays > 0 ? pnlCd / capDays * 100 : null;
+    const totPct = tot.inv ? tot.pnl / tot.inv * 100 : null, vk = verdictOf(totPct);
+    const pos = S.pf.wallet?.positions ?? [], estDay = pos.reduce((a, x) => a + dailyOf(x), 0);
+    // 0 · veredicto general
+    $("hero").innerHTML = `<div class="main"><span>Ganancia real de todas las posiciones (sin contar lo depositado)</span><b class="${tot.pnl >= 0 ? "" : ""}">${tot.pnl >= 0 ? "+" : "−"}${usd(Math.abs(tot.pnl))}</b>
+        <small>${badge(vk)} &nbsp;${sgnP(totPct, 2)} sobre ${usd(tot.inv)} invertidos en ${scored.length} vaults</small></div>
+      <div class="kpi"><span>Comisiones ganadas</span><b>${sgnU(tot.fees)}</b><small>lo que pagaron los vaults</small></div>
+      <div class="kpi"><span>Efecto precio / rango</span><b>${sgnU(tot.price)}</b><small>${Math.abs(tot.noSplit) >= 0.01 ? `+ ${sgnU(tot.noSplit)} sin desglose (manuales)` : "subida o bajada de los tokens"}</small></div>
+      <div class="kpi"><span>Rendimiento real por día</span><b>${fin(dailyPct) ? `${dailyPct >= 0 ? "+" : ""}${pct(dailyPct, 2)}` : "—"}</b><small>${fin(dailyPct) ? `≈ ${pct((Math.pow(1 + dailyPct / 100, 365) - 1) * 100, 0)} al año · ` : ""}estimado por APY ${usd(estDay, 3)}/día</small></div>`;
+    $("legend").innerHTML = `<b style="color:var(--ink);font-weight:600">Códigos:</b> ${badge("good")} ≥ +0.5 % ${badge("neutral")} entre −0.5 % y +0.5 % ${badge("warn")} entre −5 % y −0.5 % ${badge("crit")} ≤ −5 % · <span><i class="sw" style="background:var(--pos)"></i>ganancia</span><span><i class="sw" style="background:var(--neg)"></i>pérdida</span><span><i class="sw" style="background:var(--fee)"></i>comisiones</span><span><i class="sw" style="background:var(--mut)"></i>precio/rango</span>`;
+    // 1 · ranking (barras divergentes, eje en cero)
+    const maxAbs = Math.max(0.01, ...scored.map((v) => Math.abs(v.pnl)));
+    const hasNeg = scored.some((v) => v.pnl < 0), hasPos = scored.some((v) => v.pnl > 0);
+    const zero = hasNeg && hasPos ? 50 : hasNeg ? 100 : 0, span = hasNeg && hasPos ? 50 : 100;
+    $("rank").innerHTML = scored.length ? `<div class="row head"><div>Vault</div><div>Veredicto</div><div class="hs">Ganancia real</div><div class="num">$ · %</div><div class="num hs">%/día</div></div>` + scored.map((v, i) => {
+      const w = Math.abs(v.pnl) / maxAbs * span, left = v.pnl >= 0 ? zero : zero - w;
+      return `<div class="row" data-i="${i}"><div class="nm"><b>${i + 1}. <a href="https://app.beefy.com/vault/${esc(v.id)}" target="_blank" rel="noopener">${esc(v.name)}</a></b><div>${CH[v.chain] ?? esc(v.chain)} · ${esc(v.role)} · invertido ${usd(v.inv)}</div></div>
+        <div>${badge(verdictOf(v.pnlPct))}</div>
+        <div class="hs"><div class="dv"><div class="axis" style="left:${zero}%"></div><div class="b ${v.pnl >= 0 ? "p" : "n"}" style="left:${left.toFixed(2)}%;width:${Math.max(0.6, w).toFixed(2)}%"></div></div>
+          <div class="mut" style="font-size:11px;margin-top:2px">${fin(v.fees) ? `<i class="sw" style="background:var(--fee)"></i>comisiones ${sgnU(v.fees)} &nbsp; <i class="sw" style="background:var(--mut)"></i>precio ${sgnU(v.price)}` : "sin desglose (historial de Beefy)"}</div></div>
+        <div class="num"><b>${sgnU(v.pnl)}</b><div>${sgnP(v.pnlPct, 2)}</div></div>
+        <div class="num hs">${fin(v.daily) ? `${v.daily >= 0 ? "+" : ""}${pct(v.daily, 2)}` : "—"}<div>${fin(v.days) ? `${v.days < 1 ? (v.days * 24).toFixed(0) + " h" : v.days.toFixed(1) + " d"}` : ""}</div></div></div>`;
+    }).join("") : `<div class="mut">Aún no hay costo registrado para calcular la ganancia real.</div>`;
+    const tip = $("tip");
+    $("rank").querySelectorAll(".row[data-i]").forEach((el) => {
+      const v = scored[Number(el.dataset.i)];
+      el.onmousemove = (ev) => { tip.style.display = "block"; tip.style.left = Math.min(ev.clientX + 14, innerWidth - 260) + "px"; tip.style.top = ev.clientY + 12 + "px";
+        tip.innerHTML = `<b>${esc(v.name)}</b><br>Valor ${usd(v.value)} + por cobrar ${usd(v.pending, 3)}<br>− invertido ${usd(v.inv)}<br>= <b>${v.pnl >= 0 ? "+" : ""}${usd(v.pnl)}</b>${fin(v.fees) ? `<br>comisiones ${sgnU(v.fees)} · precio ${sgnU(v.price)}` : ""}<br><span class="mut">fuente: ${v.src === "bot" ? "recibos on-chain del bot" : "historial de Beefy"}</span>`; };
+      el.onmouseleave = () => { tip.style.display = "none"; };
+    });
+    // mejor y peor (con al menos $1 invertido)
+    const elig = scored.filter((v) => v.inv >= 1);
+    const best = elig[0], worst = elig.length > 1 ? elig[elig.length - 1] : null;
+    const card = (v, title) => `<div class="card why"><h3>${title} ${badge(verdictOf(v.pnlPct))}</h3>
+      <div><b><a href="https://app.beefy.com/vault/${esc(v.id)}" target="_blank" rel="noopener">${esc(v.name)}</a></b> <span class="mut">${CH[v.chain] ?? esc(v.chain)} · ${esc(v.role)}</span></div>
+      <div class="big">${sgnU(v.pnl)} <span style="font-size:14px">${sgnP(v.pnlPct, 2)}</span> <span class="mut" style="font-size:13px;font-weight:400">${fin(v.daily) ? `· ${v.daily >= 0 ? "+" : ""}${pct(v.daily, 2)}/día` : ""}</span></div>
+      <div class="mut" style="font-size:12px">Por qué:</div><ul>${reasons(v).map(([c, t]) => `<li class="${c}">${t}</li>`).join("")}</ul></div>`;
+    $("bestworst").innerHTML = (best ? card(best, "🏆 Mejor vault") : "") + (worst && worst.id !== best?.id ? card(worst, "⚠️ Peor vault") : "");
+    // 2 · sugerencias de esta corrida
+    const sg = suggestions(scored, best, worst);
+    const runAt = Math.max(0, ...S.reports.flatMap((r) => Object.values(r.cost ?? {}).map((c) => c.at ?? 0)), S.pf.at ? Date.parse(S.pf.at) : 0);
+    $("suggAt").textContent = runAt ? `corrida ${hm(runAt)} · ${sg.filter((x) => x.p === "act").length} acciones, ${sg.filter((x) => x.p === "check").length} por revisar` : "";
+    $("sugg").innerHTML = sg.map((x) => `<li><div>${badge(PRIO[x.p].k, "").replace(VERDICT[PRIO[x.p].k].txt, PRIO[x.p].t)}</div><div><b>${x.t}</b>${x.w ? `<div class="why2">${x.w}</div>` : ""}</div></li>`).join("");
+    // historial por corrida (en este navegador): una entrada por hora
+    try {
+      const key = "pp-sugg-hist", H = JSON.parse(store.get(key) || "[]"), hour = Math.floor(runAt / 3600000);
+      if (runAt && !H.some((e) => e.h === hour)) { H.push({ h: hour, at: runAt, pnl: +tot.pnl.toFixed(2), items: sg.map((x) => `${PRIO[x.p].t}: ${x.t.replace(/<[^>]+>/g, "")}`) }); while (H.length > 24) H.shift(); store.set(key, JSON.stringify(H)); }
+      const prev = H.filter((e) => e.h !== hour).reverse();
+      $("suggHist").innerHTML = prev.length ? prev.map((e) => `<div style="margin:6px 0"><b>${hm(e.at)}</b> · ganancia real ${e.pnl >= 0 ? "+" : ""}$${e.pnl.toFixed(2)}<br>${e.items.map(esc).join("<br>")}</div>`).join("") : "Aún no hay corridas anteriores guardadas en este navegador.";
+    } catch { /* sin almacenamiento */ }
+  }
+
+  /** Lista priorizada: acción (rojo) → revisar (ámbar) → info (gris) → bien (verde). */
+  function suggestions(rows, best, worst) {
+    const L = [], add = (p, t, w = "") => L.push({ p, t, w });
+    for (const v of rows) {
+      const nm = `<b>${esc(v.name)}</b>`;
+      if (fin(v.pnlPct) && v.pnlPct <= -5) add("act", `${nm} pierde ${pct(-v.pnlPct, 1)} (${usd(v.pnl)}). Decide si sales${v.role === "manual" ? "" : " antes de la regla automática de −10 %"}.`, fin(v.fees) ? `Comisiones ${sgnU(v.fees)} no compensan el precio ${sgnU(v.price)}.` : "Posición manual: el bot no la vigila.");
+      if (fin(v.tvl) && v.tvl < 1000 && (v.value ?? 0) >= 1) add("check", `Considera retirar ${nm}: vault diminuto (TVL ${usd(v.tvl, 0)}).`, "Con tan poco TVL el APY publicado no es confiable y salir puede mover el precio.");
+      if (apyOk(v.apy) && apyOk(v.apyEntry) && v.apyEntry > 0 && v.apy < v.apyEntry * 0.5 && v.st) {
+        if (best && best.id !== v.id && fin(best.daily) && fin(v.daily) && best.daily > v.daily) add("check", `${nm} rinde mucho menos que al entrar (APY ${pct(v.apyEntry)} → ${pct(v.apy)}). Considera mover su depósito diario a <b>${esc(best.name)}</b>.`, `${esc(best.name)} rinde ${pct(best.daily, 2)}/día contra ${pct(v.daily, 2)}/día.`);
+        else add("info", `${nm}: el APY bajó de ${pct(v.apyEntry)} a ${pct(v.apy)}, pero sigue siendo el que mejor rinde; mantener y vigilar.`);
+      }
+      if (fin(v.apy) && !apyOk(v.apy)) add("info", `${nm}: APY publicado irreal; no se usa en las estimaciones.`);
+      if (v.pending >= 0.2 && !v.st?.r?.auto?.compound) add("check", `Cobra y reinvierte ${usd(v.pending, 2)} de recompensas de ${nm}.`, "En los reward pools las recompensas no se componen solas.");
+    }
+    if (best && worst && best.id !== worst.id && fin(best.daily) && fin(worst.daily) && (best.days ?? 0) >= 1 && (worst.days ?? 0) >= 1 && best.daily - worst.daily > 0.2 && worst.st)
+      add("check", `Mueve el depósito diario de <b>${esc(worst.name)}</b> (${pct(worst.daily, 2)}/día) a <b>${esc(best.name)}</b> (${pct(best.daily, 2)}/día).`, "Diferencia de rendimiento real sostenida por más de un día.");
+    // fondos
+    const baseFree = (S.pf?.balances?.chains ?? []).find((c) => c.chain === "base")?.usd ?? null;
+    const daily = strategies().reduce((a, s) => a + (s.r.strategy?.dcaUsd ?? 0), 0) || 0;
+    if (fin(baseFree) && daily > 0) { const d = baseFree / daily; if (d < 3) add(d < 1.5 ? "act" : "check", `Recarga la wallet en Base: alcanza para ≈ ${d.toFixed(1)} días de depósitos (${usd(baseFree)} libres, ≈ ${usd(daily, 0)}/día).`); }
+    // alertas del sistema que no estén ya cubiertas (errores, pausa, vigilancia)
+    for (const [c, t] of S.alerts ?? []) if (/error|pausa|vigilancia|Fondos/i.test(t) && !/Fondos en Base/.test(t)) add(c === "bad" ? "act" : c === "warn" ? "check" : "info", t);
+    if (!L.some((x) => x.p === "act" || x.p === "check")) add("ok", "Sin acciones necesarias: mantener la estrategia como está.", best ? `El mejor vault ahora es ${esc(best.name)}.` : "");
+    const ord = { act: 0, check: 1, info: 2, ok: 3 };
+    return L.sort((a, b) => ord[a.p] - ord[b.p]);
   }
 
   function renderBalances() {

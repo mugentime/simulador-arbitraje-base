@@ -183,9 +183,19 @@ async function pairReport(s, id, rs, { cache, alt, fees, apy, now, agg, call }) 
   const deps = rs.filter((r) => /#\d+$/.test(r.k) && r.status === "hecho").map((r) => ({ at: r.startedAt, usd: Number(BigInt(r.usdcIn ?? "0")) / 10 ** D || Number(r.usd) || 0 }));
   const L = { q: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, extIn: 0, buys: { x: 0, s: spent }, sells: { x: 0, s: received }, wd: { x: 0, s: 0 } };
   agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd: 0, feesUsd: fees[id].usd, price: 0, deps });
-  (s.lastCost ??= {})[id] = { at: now, invested, value: valueUsd, rewards: 0, pnl, pnlPct, closed, missing };
+  const cd = capitalDays(deps, invested, now);
+  (s.lastCost ??= {})[id] = { at: now, invested, value: valueUsd, rewards: 0, pnl, pnlPct, closed, missing, fees: fees[id].usd, feesSince: fees[id].since, priceRange: pnl - fees[id].usd,
+    apy: Number.isFinite(apyNow) ? apyNow * 100 : null, n: deps.length, first: cd.first, days: cd.days, capDays: cd.capDays, dailyPct: cd.capDays > 0 ? pnl / cd.capDays * 100 : null, sym: `${s0}/${s1}` };
   return `dca costo ${id}: par sin ${s.net.stableSym} · invertido ${f2(invested)} (${s.net.stableSym} gastado ${f2(spent)}${received ? ` − recibido ${f2(received)}` : ""}) · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${q0.toPrecision(5)} ${s0} a ${px2(p0)} + ${q1.toPrecision(5)} ${s1} a ${px2(p1)})`}` +
     ` · PnL ${sg(pnl)} (${pc(pnlPct)}) = comisiones est. ${sg(fees[id].usd)} (APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"}) + precio/rango ${sg(pnl - fees[id].usd)}${missing ? ` · ${missing} recibos no disponibles` : ""}`;
+}
+/** Capital-día de un vault: cada aporte pesa por los días que lleva invertido; se escala a lo invertido (barridos/previos). */
+export function capitalDays(flows, invested, nowMs) {
+  const tot = flows.reduce((a, f) => a + (f.usd || 0), 0);
+  let cd = 0, first = null;
+  for (const f of flows) { const at = typeof f.at === "number" ? f.at : Date.parse(f.at); if (!Number.isFinite(at) || !(f.usd > 0)) continue; cd += f.usd * Math.max(0, nowMs - at) / 86400_000; first = first === null ? at : Math.min(first, at); }
+  if (tot > 0 && invested > 0) cd *= invested / tot;
+  return { capDays: cd, first, days: first !== null ? (nowMs - first) / 86400_000 : 0 };
 }
 const px2 = (n) => (Number.isFinite(n) ? "$" + (n >= 100 ? n.toFixed(2) : n.toPrecision(5)) : "—");
 
@@ -279,7 +289,10 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
       const priceRange = b.pnl - fees[id].usd;
       agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd, feesUsd: fees[id].usd, price, deps: deps.map((x) => ({ at: x.at, usd: x.usd })) });
       if (PRIOR[id]) priors.push(PRIOR[id]);
-      (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing };
+      const cd = capitalDays([...(prior ? [{ at: PRIOR[id].at, usd: prior }] : []), ...deps], b.invested, now);
+      (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing,
+        fees: fees[id].usd, feesSince: fees[id].since, priceRange, apy: Number.isFinite(apyNow) ? apyNow * 100 : null, price, avgEntry: dca.price, priceVsEntryPct: dca.price ? (price / dca.price - 1) * 100 : null,
+        xPct: valueUsd > 0 ? xNow * price / valueUsd * 100 : null, sym: symX, n: deps.length, first: cd.first, days: cd.days, capDays: cd.capDays, dailyPct: cd.capDays > 0 ? b.pnl / cd.capDays * 100 : null, leftX: L.q * price };
       const xPct = valueUsd > 0 ? xNow * price / valueUsd * 100 : 0;
       out.push(`dca costo ${id}: ${deps.length} depósitos DCA ($${dca.usd.toFixed(2)})${rs.length > deps.length ? ` + ${rs.length - deps.length} barridos/otros` : ""}` +
         ` · invertido ${f2(b.invested)}${prior ? ` (incl. previo ${f2(prior)})` : ""} · precio medio de entrada DCA ${px(dca.price)}${dca.missing ? ` (${dca.missing} sin precio)` : ""} · ${symX} hoy ${px(price)}${dca.price ? ` (${pc((price / dca.price - 1) * 100)} vs entrada)` : ""}` +
