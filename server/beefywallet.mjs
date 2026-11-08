@@ -48,10 +48,19 @@ async function clmOnchain(ethers_, p, clm, shares) {
   return clmValueFromPool({ shares, totalSupply: ts, amount0: a0, amount1: a1, dec0: Number(d0), dec1: Number(d1), sym0: s0, sym1: s1, sqrtPriceX96: slot[0] });
 }
 
+// metadatos de Beefy que casi no cambian (vaults, cow-vaults, gov-vaults, tokens): en memoria 1 h; precios/APY/TVL siempre frescos
+const META_TTL = 3600_000, meta = new Map();
+const isMeta = (url) => /api\.beefy\.finance\/(vaults|cow-vaults|gov-vaults|tokens)(\/|$)/.test(url);
 async function getJson(url, ms = 25_000) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(ms), headers: { accept: "application/json" } });
-  if (!r.ok) throw new Error(`${new URL(url).host}${new URL(url).pathname}: HTTP ${r.status}`);
-  return r.json();
+  const m = isMeta(url) ? meta.get(url) : null;
+  if (m && Date.now() - m.at < META_TTL) return m.data;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(ms), headers: { accept: "application/json" } });
+    if (!r.ok) throw new Error(`${new URL(url).host}${new URL(url).pathname}: HTTP ${r.status}`);
+    const data = await r.json();
+    if (isMeta(url)) meta.set(url, { at: Date.now(), data });
+    return data;
+  } catch (e) { if (m) return m.data; throw e; } // si Beefy falla, metadatos viejos antes que nada
 }
 
 function rpcsFor(chain) {

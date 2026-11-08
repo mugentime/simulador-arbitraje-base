@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de posiciones</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #14171c; --mut: #667085; --line: #e4e7ec; --soft: #f0f2f5;
+  --ok: #12805c; --bad: #c4320a; --warn: #b54708; --acc: #2563eb; --acc2: #7c3aed;
+  --okbg: #e7f6ef; --badbg: #fdecea; --warnbg: #fef4e6; --accbg: #eaf1ff;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1117; --card: #151b23; --ink: #e6edf3; --mut: #8b949e; --line: #262d36; --soft: #1b222b;
+  --ok: #3fb950; --bad: #f85149; --warn: #d29922; --acc: #58a6ff; --acc2: #bc8cff;
+  --okbg: #12261a; --badbg: #2d1515; --warnbg: #2b2111; --accbg: #12233b; } }
+:root[data-theme="dark"] {
+  --bg: #0d1117; --card: #151b23; --ink: #e6edf3; --mut: #8b949e; --line: #262d36; --soft: #1b222b;
+  --ok: #3fb950; --bad: #f85149; --warn: #d29922; --acc: #58a6ff; --acc2: #bc8cff;
+  --okbg: #12261a; --badbg: #2d1515; --warnbg: #2b2111; --accbg: #12233b; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-variant-numeric: tabular-nums; }
+a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 14px; }
+header h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+.addr { color: var(--mut); font-size: 12px; font-family: ui-monospace, monospace; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--mut); font-size: 12px; margin-left: auto; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s infinite; }
+.dot.stale { background: var(--warn); animation: none; } .dot.err { background: var(--bad); animation: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--acc); } button.on { background: var(--accbg); border-color: var(--acc); color: var(--acc); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.kpi > span { display: block; color: var(--mut); font-size: 12px; }
+.kpi b { display: block; font-size: 22px; font-weight: 650; margin-top: 2px; letter-spacing: -.01em; }
+.kpi small { color: var(--mut); font-size: 12px; }
+.alerts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.alert { border-radius: 10px; padding: 8px 12px; font-size: 13px; border: 1px solid transparent; }
+.alert.bad { background: var(--badbg); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+.alert.warn { background: var(--warnbg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+.alert.info { background: var(--accbg); color: var(--acc); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.card h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card h2 .sp { margin-left: auto; display: flex; gap: 6px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--mut); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; cursor: default; }
+th.s { cursor: pointer; } th.s:hover { color: var(--ink); }
+td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .mut { color: var(--mut); }
+.tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--soft); color: var(--mut); font-weight: 500; }
+.tag.bot { background: var(--accbg); color: var(--acc); } .tag.main { background: var(--okbg); color: var(--ok); } .tag.demo { background: color-mix(in srgb, var(--acc2) 15%, transparent); color: var(--acc2); }
+.tag.warn { background: var(--warnbg); color: var(--warn); } .tag.bad { background: var(--badbg); color: var(--bad); }
+.name b { font-weight: 600; } .name .sub { color: var(--mut); font-size: 12px; }
+.bar { height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.bar i { display: block; height: 100%; background: var(--acc); }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 14px; }
+.kv div span { display: block; color: var(--mut); font-size: 12px; } .kv div b { font-weight: 600; }
+.note { color: var(--mut); font-size: 12px; margin-top: 8px; }
+.chart { position: relative; }
+.tip { position: fixed; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); display: none; z-index: 10; white-space: nowrap; }
+.prices { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--mut); font-size: 12px; margin-bottom: 12px; }
+.prices b { color: var(--ink); font-weight: 600; }
+details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-top: 8px; }
+.err { color: var(--bad); font-size: 12px; }
+.flash { animation: flash 1.2s ease-out; } @keyframes flash { from { background: var(--accbg); } to { background: transparent; } }
+@media (max-width: 640px) { .kpi b { font-size: 19px; } .grid { grid-template-columns: 1fr; } .hide-s { display: none; } td.name { white-space: normal; min-width: 150px; } td, th { padding: 7px 5px; } .tag { font-size: 10px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Panel de posiciones</h1>
+    <span class="addr" id="addr"></span>
+    <span class="live"><i class="dot" id="dot"></i><span id="upd">conectando…</span></span>
+    <button id="refresh" title="Actualizar ahora">↻</button>
+    <button id="theme" title="Tema claro / oscuro">◐</button>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="prices" id="prices"></div>
+  <div class="alerts" id="alerts"></div>
+
+  <div class="card">
+    <h2>Valor en el tiempo <span class="mut" style="font-weight:400;font-size:12px" id="chg"></span>
+      <span class="sp" id="ranges"><button data-r="24">24 h</button><button data-r="168" class="on">7 d</button><button data-r="720">30 d</button></span></h2>
+    <div class="chart" id="chart"><div class="mut">cargando…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Posiciones <span class="mut" style="font-weight:400;font-size:12px" id="poscount"></span></h2>
+    <div class="tbl" id="pos"><div class="mut">cargando…</div></div>
+    <div class="note">Δ 24 h compara con el registro de hace ~24 h (incluye depósitos nuevos). Rend./día = valor × APY publicado. "Mi parte" = valor ÷ TVL del vault: arriba de ~5 % salir puede mover el precio.</div>
+  </div>
+
+  <div class="grid" id="strats"></div>
+
+  <div class="grid">
+    <div class="card"><h2>Saldos libres por cadena</h2><div id="bal"><div class="mut">cargando…</div></div></div>
+    <div class="card"><h2>Actividad reciente</h2><div class="tbl" id="act"><div class="mut">cargando…</div></div></div>
+  </div>
+  <p class="note" id="errs"></p>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+(() => {
+  const POLL_MS = 30_000, REPORT_MS = 60_000;
+  const meta = document.querySelector('meta[name="stats-urls"]')?.content || "";
+  const ORIG = Object.fromEntries(meta.split(",").map((x) => x.split("=")).filter((x) => x[1]).map(([k, u]) => [k, new URL(u).origin]));
+  const BASE = ORIG.base || location.origin;
+  const EXP = { base: "https://basescan.org/tx/", bsc: "https://bscscan.com/tx/", robinhood: "https://robinhoodchain.blockscout.com/tx/", polygon: "https://polygonscan.com/tx/", arbitrum: "https://arbiscan.io/tx/", optimism: "https://optimistic.etherscan.io/tx/", monad: "https://monadscan.com/tx/" };
+  const CH = { base: "Base", bsc: "BSC", robinhood: "Robinhood", polygon: "Polygon", arbitrum: "Arbitrum", optimism: "Optimism", monad: "Monad", ethereum: "Ethereum" };
+  const COLORS = ["#2563eb", "#12805c", "#d97706", "#7c3aed", "#db2777", "#0891b2", "#dc2626", "#65a30d"];
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fin = (v) => v != null && Number.isFinite(+v);
+  const usd = (v, d = 2) => (!fin(v) ? "—" : (v < 0 ? "−$" : "$") + Math.abs(+v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d }));
+  const usdK = (v) => (!fin(v) ? "—" : Math.abs(v) >= 1e6 ? "$" + (v / 1e6).toFixed(2) + "M" : Math.abs(v) >= 1e3 ? "$" + (v / 1e3).toFixed(1) + "k" : usd(v, 0));
+  const pct = (v, d = 0) => (!fin(v) ? "—" : (+v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d }) + " %");
+  const sgnU = (v, d = 2) => (!fin(v) ? "—" : `<span class="${v >= 0 ? "ok" : "bad"}">${v >= 0 ? "+" : ""}${usd(v, d)}</span>`);
+  const sgnP = (v, d = 1) => (!fin(v) ? "" : `<span class="${v >= 0 ? "ok" : "bad"}">${v >= 0 ? "+" : ""}${pct(v, d)}</span>`);
+  const ago = (t) => { if (!t) return "—"; const s = Math.round((Date.now() - new Date(t).getTime()) / 1000); return s < 60 ? `hace ${s} s` : s < 3600 ? `hace ${Math.round(s / 60)} min` : s < 86400 ? `hace ${(s / 3600).toFixed(1)} h` : `hace ${(s / 86400).toFixed(1)} d`; };
+  const inT = (t) => { if (!t) return "—"; const m = Math.round((new Date(t).getTime() - Date.now()) / 60000); return m <= 0 ? "ya toca" : m < 60 ? `en ${m} min` : `en ${(m / 60).toFixed(1)} h`; };
+  const hm = (t) => (t ? new Date(t).toLocaleString("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
+  const short = (id) => String(id || "").replace(/-(rp|vault)$/, "").replace(/^(uniswap|aero)-cow-[a-z]+-/, "").toUpperCase();
+  const tx = (chain, h) => (h ? (EXP[chain] ? `<a href="${EXP[chain]}${esc(h)}" target="_blank" rel="noopener">${esc(h.slice(0, 8))}…</a>` : esc(h.slice(0, 10)) + "…") : "");
+  const get = async (u, ms = 60000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms), cache: "no-store" }); if (!r.ok) throw new Error(`${new URL(u).host}: HTTP ${r.status}`); return r.json(); };
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* */ } } };
+
+  // tema
+  const th = store.get("pp-theme"); if (th) document.documentElement.dataset.theme = th;
+  $("theme").onclick = () => { const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; document.documentElement.dataset.theme = dark ? "light" : "dark"; store.set("pp-theme", document.documentElement.dataset.theme); };
+
+  const S = { pf: null, series: [], hourly: [], reports: [], lastOk: 0, err: null, range: Number(store.get("pp-range")) || 168, sort: store.get("pp-sort") || "value" };
+  document.querySelectorAll("#ranges button").forEach((b) => { b.classList.toggle("on", Number(b.dataset.r) === S.range); b.onclick = () => { S.range = Number(b.dataset.r); store.set("pp-range", S.range); document.querySelectorAll("#ranges button").forEach((x) => x.classList.toggle("on", x === b)); renderChart(); }; });
+
+  // ------------------------------------------------------------------ datos
+  async function loadPortfolio() {
+    const since = S.series.at(-1)?.t ?? 0;
+    try {
+      const p = await get(`${BASE}/api/portfolio${since ? `?since=${since}` : ""}`, 120000);
+      const prevAt = S.pf?.at;
+      S.pf = p; S.lastOk = Date.now(); S.err = null;
+      if (p.series?.length) S.series.push(...p.series);
+      if (p.hourly?.length) S.hourly = p.hourly;
+      const cut = Date.now() - 8 * 86400000; S.series = S.series.filter((x) => x.t >= cut);
+      render(prevAt && prevAt !== p.at);
+    } catch (e) { S.err = e.message; renderLive(); }
+  }
+  async function loadReports() {
+    const errs = [];
+    const rs = await Promise.all(Object.entries(ORIG).map(([k, o]) => get(`${o}/api/dca-report`, 30000).then((r) => ({ ...r, chain: r.chain || k })).catch((e) => { errs.push(`${CH[k] ?? k}: ${e.message}`); return null; })));
+    S.reports = rs.filter(Boolean); S.reportErrs = errs;
+    render(false);
+  }
+
+  // estrategias del bot: una por DCA de cada worker
+  function strategies() {
+    const out = [];
+    for (const r of S.reports) {
+      if (!r.strategy || !r.dca) continue;
+      for (const [label, d] of Object.entries(r.dca)) {
+        const auto = r.auto;
+        const role = auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "Ancla comparativa";
+        const cls = auto?.dynamic ? "demo" : auto ? "main" : "bot";
+        const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id);
+        const ids = [...new Set([...(d.target ? [d.target] : []), ...open, ...(!auto && r.strategy.vaultId && r.strategy.vaultId !== "auto" ? [r.strategy.vaultId] : [])])];
+        out.push({ r, label, d, role, cls, ids, closed: Object.entries(d.holdings ?? {}).filter(([, h]) => h.closed) });
+      }
+    }
+    const ord = { "Principal": 0, "Ancla comparativa": 1, "Demo dinámico": 2 };
+    return out.sort((a, b) => ord[a.role] - ord[b.role]);
+  }
+  const managerOf = () => { const m = {}; for (const s of strategies()) for (const id of s.ids) m[id] = s; return m; };
+
+  // registro más cercano a hace h horas (serie de 5 min y, si no alcanza, la horaria)
+  function snapAgo(hours) {
+    const t = Date.now() - hours * 3600000;
+    const pool = [...S.hourly, ...S.series].filter((x) => x.pos);
+    let best = null; for (const x of pool) if (!best || Math.abs(x.t - t) < Math.abs(best.t - t)) best = x;
+    return best && Math.abs(best.t - t) < Math.max(2, hours * 0.25) * 3600000 ? best : null;
+  }
+
+  // ------------------------------------------------------------------ render
+  function render(changed) {
+    renderLive(); renderKpis(); renderAlerts(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
+    $("errs").innerHTML = (S.reportErrs ?? []).length ? `<span class="err">Sin reporte de: ${S.reportErrs.map(esc).join(" · ")}</span>` : "";
+  }
+  function renderLive() {
+    const p = S.pf; const dot = $("dot");
+    if (p?.address) $("addr").textContent = p.address.slice(0, 6) + "…" + p.address.slice(-4);
+    const age = p?.at ? Date.now() - new Date(p.at).getTime() : Infinity;
+    dot.className = "dot" + (S.err && !p ? " err" : age > 6 * 60000 ? " stale" : "");
+    $("upd").textContent = S.err && !p ? `sin conexión (${S.err})` : p ? `datos ${ago(p.at)}${S.err ? " · reintentando" : ""}` : "conectando…";
+  }
+  setInterval(renderLive, 1000);
+
+  function renderKpis() {
+    const p = S.pf; if (!p) return;
+    const w = p.wallet, bal = p.balances, pos = w?.positions ?? [];
+    const inv = w?.totalUsd ?? 0, free = bal?.totalUsd ?? 0;
+    const pending = pos.reduce((a, x) => a + (x.pendingUsd ?? 0), 0);
+    const wApy = inv ? pos.reduce((a, x) => a + (x.valueUsd ?? 0) * (x.apyPct ?? 0), 0) / inv : null;
+    const s24 = snapAgo(24); const d24 = s24 ? inv - s24.total : null;
+    const strat = S.reports.map((r) => r.pnl).filter(Boolean);
+    const ap = strat.reduce((a, x) => a + (x.aportado ?? 0), 0), pnl = strat.reduce((a, x) => a + (x.pnl ?? 0), 0), fees = strat.reduce((a, x) => a + (x.comisiones ?? 0), 0);
+    const k = [
+      ["Patrimonio total", usd(inv + free), `${usd(inv)} invertido · ${usd(free)} libre`],
+      ["En posiciones", usd(inv), d24 !== null ? `${sgnU(d24)} en 24 h${s24?.total ? " (" + sgnP(d24 / s24.total * 100) + ")" : ""}` : `${pos.length} posiciones`],
+      ["Rendimiento estimado", usd(w?.estDailyUsd, 3) + "<small> /día</small>", `≈ ${usd((w?.estDailyUsd ?? 0) * 30)} al mes`],
+      ["APY ponderado", pct(wApy, wApy < 100 ? 1 : 0), `por cobrar ${usd(pending, 3)}`],
+      ...(strat.length ? [["Resultado del DCA", sgnU(pnl), `sobre ${usd(ap)} aportado · comisiones ${sgnU(fees)}`]] : []),
+    ];
+    $("kpis").innerHTML = k.map(([a, b, c]) => `<div class="kpi"><span>${a}</span><b>${b}</b><small>${c}</small></div>`).join("");
+    const pr = w?.prices ?? {};
+    $("prices").innerHTML = Object.entries(pr).filter(([, v]) => fin(v)).map(([k2, v]) => `<span>${esc(k2)} <b>${usd(v, v < 10 ? 4 : 2)}</b></span>`).join("") + (w?.at ? `<span>· Beefy + pools on-chain, ${hm(w.at)}</span>` : "");
+  }
+
+  function renderAlerts() {
+    const p = S.pf; if (!p) return;
+    const A = [], pos = p.wallet?.positions ?? [], s24 = snapAgo(24), mg = managerOf();
+    for (const x of pos) {
+      const nm = `<b>${esc(x.name ?? short(x.id))}</b> (${CH[x.chain] ?? x.chain})`;
+      const was = s24?.pos?.[x.id], wasApy = s24?.apy?.[x.id];
+      if (!mg[x.id] && fin(was) && was > 0 && fin(x.valueUsd) && x.valueUsd / was - 1 < -0.10) A.push(["bad", `${nm} perdió ${pct((1 - x.valueUsd / was) * 100, 1)} en 24 h (${usd(was)} → ${usd(x.valueUsd)}).`]);
+      if (fin(wasApy) && wasApy > 0 && fin(x.apyPct) && x.apyPct < wasApy * 0.5) A.push(["warn", `${nm}: el APY bajó a menos de la mitad en 24 h (${pct(wasApy)} → ${pct(x.apyPct)}).`]);
+      if (fin(x.tvlUsd) && x.tvlUsd > 0 && x.tvlUsd < 1000) A.push(["warn", `${nm}: pool diminuto (TVL ${usd(x.tvlUsd, 0)}); el APY es poco fiable y tu parte es ${pct((x.valueUsd ?? 0) / x.tvlUsd * 100, 1)} del vault.`]);
+    }
+    for (const s of strategies()) {
+      const c = s.r.cost ?? {};
+      for (const id of s.ids) { const h = s.d.holdings?.[id]; if (h?.badSince) A.push(["warn", `${s.role} (${CH[s.r.chain]}): <b>${esc(short(id))}</b> en vigilancia de salida desde ${hm(h.badSince)}; sale si dura ${s.r.auto?.rules?.exitHours ?? "?"} h.`]); const k = c[id]; if (k && fin(k.pnlPct) && k.pnlPct < -10) A.push(["bad", `${s.role}: <b>${esc(short(id))}</b> va ${pct(k.pnlPct, 1)} contra lo invertido.`]); }
+      if (s.r.auto && !s.d.target) A.push(["info", `${s.role} (${CH[s.r.chain]}): sin vault elegible; el depósito diario está en pausa y el dinero espera en la wallet.`]);
+      const lastErr = (s.r.runs ?? []).find((x) => x.status === "error" && Date.now() - (x.startedAt ?? 0) < 24 * 3600000);
+      if (lastErr) A.push(["bad", `${s.role} (${CH[s.r.chain]}): error ${hm(lastErr.startedAt)} · ${esc((lastErr.error ?? "").slice(0, 140))}`]);
+    }
+    const baseFree = (p.balances?.chains ?? []).find((c) => c.chain === "base")?.usd ?? null;
+    const daily = strategies().reduce((a, s) => a + (s.r.strategy?.dcaUsd ?? 0), 0);
+    if (fin(baseFree) && daily > 0 && baseFree < daily * 2) A.push(["bad", `Fondos en Base para menos de 2 días de depósitos (${usd(baseFree)} libres; ≈ ${usd(daily, 0)}/día).`]);
+    $("alerts").innerHTML = A.map(([c, t]) => `<div class="alert ${c}">${t}</div>`).join("");
+  }
+
+  function renderPositions(changed) {
+    const p = S.pf; if (!p) return;
+    const pos = [...(p.wallet?.positions ?? [])], tot = p.wallet?.totalUsd || 1, s24 = snapAgo(24), mg = managerOf();
+    const rows = pos.map((x) => {
+      const was = s24?.pos?.[x.id];
+      const daily = fin(x.valueUsd) && fin(x.apyPct) ? x.valueUsd * (Math.pow(1 + x.apyPct / 100, 1 / 365) - 1) : null;
+      const st = mg[x.id]; const cost = st?.r?.cost?.[x.id];
+      return { x, was, d24: fin(was) && fin(x.valueUsd) ? x.valueUsd - was : null, daily, share: x.tvlUsd ? (x.valueUsd ?? 0) / x.tvlUsd * 100 : null, st, cost };
+    });
+    const key = { value: (r) => r.x.valueUsd ?? 0, apy: (r) => r.x.apyPct ?? 0, d24: (r) => r.d24 ?? -1e9, daily: (r) => r.daily ?? 0, tvl: (r) => r.x.tvlUsd ?? 0 }[S.sort] ?? ((r) => r.x.valueUsd ?? 0);
+    rows.sort((a, b) => key(b) - key(a));
+    $("poscount").textContent = `${pos.length} · se actualiza cada ${Math.round((p.ttlS ?? 60))} s`;
+    const th = (k, t, cls = "n") => `<th class="${cls} s" data-k="${k}">${t}${S.sort === k ? " ↓" : ""}</th>`;
+    $("pos").innerHTML = rows.length ? `<table><tr><th>Vault</th>${th("value", "Valor")}<th class="n hide-s">Cartera</th>${th("d24", "Δ 24 h")}<th class="n">Resultado</th>${th("apy", "APY")}${th("daily", "Rend./día")}${th("tvl", "TVL")}<th class="n hide-s">Mi parte</th><th class="hide-s">7 d</th></tr>` +
+      rows.map(({ x, d24, was, daily, share, st, cost }) => {
+        const tag = st ? `<span class="tag ${st.cls}">${esc(st.role)}</span>` : `<span class="tag">manual</span>`;
+        const res = cost && fin(cost.pnl) ? `${sgnU(cost.pnl)}<div class="mut" style="font-size:11px">${sgnP(cost.pnlPct)} de ${usd(cost.invested)}</div>` : fin(x.pnlUsd) ? sgnU(x.pnlUsd) : `<span class="mut" title="Sin costo registrado (posición manual o sin historial de Beefy)">—</span>`;
+        const tvlCls = x.tvlUsd < 1000 ? "warn" : "";
+        return `<tr class="${changed ? "flash" : ""}"><td class="name"><b><a href="https://app.beefy.com/vault/${esc(x.id)}" target="_blank" rel="noopener">${esc(x.name ?? short(x.id))}</a></b> ${tag}<div class="sub">${CH[x.chain] ?? esc(x.chain)} · ${esc(x.platform ?? x.type)}${x.status && x.status !== "active" ? ` · <span class="warn">${esc(x.status)}</span>` : ""}${x.pendingUsd ? ` · por cobrar ${usd(x.pendingUsd, 3)}` : ""}</div></td>
+          <td class="n"><b>${usd(x.valueUsd)}</b></td>
+          <td class="n hide-s"><div class="bar" title="${pct((x.valueUsd ?? 0) / tot * 100, 1)}"><i style="width:${Math.min(100, (x.valueUsd ?? 0) / tot * 100).toFixed(1)}%"></i></div></td>
+          <td class="n">${fin(d24) ? `${sgnU(d24)}<div style="font-size:11px">${was ? sgnP(d24 / was * 100) : ""}</div>` : '<span class="mut">—</span>'}</td>
+          <td class="n">${res}</td>
+          <td class="n">${pct(x.apyPct, x.apyPct < 100 ? 1 : 0)}</td>
+          <td class="n">${usd(daily, 3)}</td>
+          <td class="n ${tvlCls}">${usdK(x.tvlUsd)}</td>
+          <td class="n hide-s ${share > 5 ? "warn" : "mut"}">${pct(share, share < 1 ? 2 : 1)}</td>
+          <td class="hide-s">${spark(x.id)}</td></tr>`;
+      }).join("") + `</table>` : `<div class="mut">Sin posiciones en Beefy.</div>`;
+    $("pos").querySelectorAll("th.s").forEach((h) => h.onclick = () => { S.sort = h.dataset.k; store.set("pp-sort", S.sort); renderPositions(false); });
+  }
+
+  function spark(id) {
+    const t0 = Date.now() - 7 * 86400000;
+    const pts = [...S.hourly.filter((x) => x.t < (S.series[0]?.t ?? Infinity)), ...S.series].filter((x) => x.t >= t0 && fin(x.pos?.[id])).map((x) => [x.t, x.pos[id]]);
+    if (pts.length < 2) return '<span class="mut">—</span>';
+    const W = 90, H = 24, vs = pts.map((p) => p[1]), lo = Math.min(...vs), hi = Math.max(...vs), a = pts[0][0], b = pts.at(-1)[0];
+    const d = pts.map(([t, v], i) => `${i ? "L" : "M"}${((t - a) / (b - a || 1) * W).toFixed(1)},${(H - 2 - (v - lo) / (hi - lo || 1) * (H - 4)).toFixed(1)}`).join("");
+    const up = vs.at(-1) >= vs[0];
+    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><path d="${d}" fill="none" stroke="var(--${up ? "ok" : "bad"})" stroke-width="1.5"/></svg>`;
+  }
+
+  function renderChart() {
+    const el = $("chart"); if (!S.pf) return;
+    const t0 = Date.now() - S.range * 3600000;
+    const fine = S.series.filter((x) => x.t >= t0);
+    const coarse = S.hourly.filter((x) => x.t >= t0 && x.t < (fine[0]?.t ?? Infinity));
+    const pts = [...coarse, ...fine].filter((x) => fin(x.total)).map((x) => ({ t: x.t, v: x.total, f: x.free }));
+    const now = S.pf.wallet; if (now) pts.push({ t: new Date(now.at).getTime(), v: now.totalUsd, f: S.pf.balances?.totalUsd ?? null });
+    if (pts.length < 2) { el.innerHTML = `<div class="mut">Aún no hay suficientes registros en este rango (se guarda uno cada 5 min).</div>`; $("chg").textContent = ""; return; }
+    const first = pts[0].v, last = pts.at(-1).v;
+    $("chg").innerHTML = `${sgnU(last - first)} (${sgnP((last / first - 1) * 100)}) en el rango · incluye depósitos`;
+    const W = Math.max(320, el.clientWidth || 700), H = 220, L = 52, R = 10, T = 10, B = 24;
+    const a = pts[0].t, b = pts.at(-1).t, vs = pts.map((p) => p.v);
+    let lo = Math.min(...vs), hi = Math.max(...vs); const pad = (hi - lo) * 0.15 || hi * 0.05 || 1; lo = Math.max(0, lo - pad); hi += pad;
+    const x = (t) => L + (t - a) / (b - a || 1) * (W - L - R), y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + (hi - lo) * f);
+    let svg = `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block" id="csvg">`;
+    svg += ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--mut)">$${v.toFixed(v < 100 ? 1 : 0)}</text>`).join("");
+    const span = b - a, step = span > 3 * 86400000 ? 86400000 : span > 36 * 3600000 ? 6 * 3600000 : span > 12 * 3600000 ? 3 * 3600000 : 3600000;
+    const minGap = 62 * (b - a) / (W - L - R); let step2 = step; while (step2 < minGap) step2 *= 2;
+    for (let t = Math.ceil(a / step2) * step2; t < b; t += step2) svg += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--mut)">${step >= 86400000 ? new Date(t).toLocaleDateString("es-MX", { day: "2-digit", month: "short" }) : new Date(t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</text>`;
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+    svg += `<path d="${line}L${x(b).toFixed(1)},${y(lo)}L${x(a).toFixed(1)},${y(lo)}Z" fill="var(--acc)" opacity=".10"/><path d="${line}" fill="none" stroke="var(--acc)" stroke-width="2"/>`;
+    svg += `<line id="cx" y1="${T}" y2="${H - B}" stroke="var(--mut)" stroke-dasharray="3 3" style="display:none"/><circle id="cd" r="4" fill="var(--acc)" style="display:none"/></svg>`;
+    el.innerHTML = svg;
+    const s = $("csvg"), tip = $("tip");
+    s.onmousemove = (ev) => {
+      const r = s.getBoundingClientRect(); const tx2 = a + ((ev.clientX - r.left) * W / r.width - L) / (W - L - R) * (b - a);
+      let q = pts[0]; for (const p of pts) if (Math.abs(p.t - tx2) < Math.abs(q.t - tx2)) q = p;
+      $("cx").setAttribute("x1", x(q.t)); $("cx").setAttribute("x2", x(q.t)); $("cx").style.display = "";
+      $("cd").setAttribute("cx", x(q.t)); $("cd").setAttribute("cy", y(q.v)); $("cd").style.display = "";
+      tip.style.display = "block"; tip.style.left = ev.clientX + 12 + "px"; tip.style.top = ev.clientY - 10 + "px";
+      tip.innerHTML = `${hm(q.t)}<br><b>${usd(q.v)}</b> en posiciones${fin(q.f) ? `<br><span class="mut">${usd(q.f)} libre</span>` : ""}`;
+    };
+    s.onmouseleave = () => { tip.style.display = "none"; $("cx").style.display = "none"; $("cd").style.display = "none"; };
+  }
+
+  function renderStrats() {
+    const L = strategies(); const w = S.pf?.wallet;
+    if (!L.length) { $("strats").innerHTML = ""; return; }
+    $("strats").innerHTML = L.map((s) => {
+      const { r, d } = s; const rules = r.auto?.rules; const cost = r.cost ?? {};
+      const nextAt = d.target || !r.auto ? (d.lastAt ? new Date(d.lastAt + (r.strategy.everyH ?? 24) * 3600000).toISOString() : null) : null;
+      const parts = s.ids.map((id) => {
+        const p = w?.positions?.find((x) => x.id === id), h = d.holdings?.[id] ?? {}, c = cost[id];
+        const apy = p?.apyPct ?? r.auto?.byId?.[id]?.apyPct ?? null;
+        const peak = Math.max(h.peakApyPct ?? 0, h.entryApyPct ?? 0, apy ?? 0) || null;
+        const thr = rules ? (rules.exitFrac > 0 && peak ? Math.max(rules.exitApyPct, peak * rules.exitFrac) : rules.exitApyPct) : null;
+        const watch = h.badSince ? `<span class="tag warn">vigilancia desde ${hm(h.badSince)}</span>` : rules ? `<span class="tag main">dentro de las reglas</span>` : "";
+        return `<div style="margin-top:10px"><b><a href="https://app.beefy.com/vault/${esc(id)}" target="_blank" rel="noopener">${esc(p?.name ?? short(id))}</a></b> ${watch}</div>
+          <div class="kv" style="margin-top:6px">
+            <div><span>Valor</span><b>${usd(p?.valueUsd ?? c?.value)}</b></div>
+            <div><span>Invertido</span><b>${usd(c?.invested ?? (h.usd || null))}</b>${!c && h.usd ? '<div class="mut" style="font-size:11px">depósitos DCA</div>' : ""}</div>
+            <div><span>Resultado</span><b>${c ? sgnU(c.pnl) + " " + sgnP(c.pnlPct) : "—"}</b></div>
+            <div><span>APY</span><b>${pct(apy)}</b>${thr ? `<div class="mut" style="font-size:11px">sale bajo ${pct(thr)}</div>` : ""}</div>
+          </div>`;
+      }).join("");
+      const pn = r.pnl;
+      return `<div class="card"><h2>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${r.auto ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
+        <div class="kv">
+          <div><span>Depósito diario</span><b>${usd(r.strategy.dcaUsd, 0)}</b></div>
+          <div><span>Depósitos</span><b>${d.n ?? 0} · ${usd(d.totalUsd, 0)}</b></div>
+          <div><span>Último</span><b>${d.lastAt ? ago(d.lastAt) : "—"}</b></div>
+          <div><span>Siguiente</span><b>${nextAt ? inT(nextAt) : r.auto ? '<span class="warn">en pausa</span>' : "—"}</b></div>
+          ${pn ? `<div><span>Comisiones est.</span><b>${sgnU(pn.comisiones)}</b></div><div><span>Precio / rango</span><b>${sgnU(pn.precio)}</b></div>` : ""}
+          ${rules ? `<div><span>Reglas de entrada</span><b>≥ ${pct(rules.minApyPct)} · TVL ≥ ${usdK(rules.minTvl)}</b></div>` : ""}
+        </div>
+        ${parts || `<div class="note">Sin vault elegible ahora; el dinero espera en la wallet.</div>`}
+        ${s.closed.length ? `<details><summary>Salidas (${s.closed.length})</summary><div class="note">${s.closed.map(([id, h]) => `${esc(short(id))} · ${hm(h.closed)} · ${esc(h.exitWhy ?? "")}`).join("<br>")}</div></details>` : ""}
+        ${(d.deposits ?? []).length ? `<details><summary>Últimos depósitos</summary><table>${(d.deposits ?? []).slice(-6).reverse().map((x) => `<tr><td>${hm(x.at)}</td><td class="n">${usd(x.usd, 0)}</td><td>${(x.txs ?? []).slice(-1).map((h) => tx(r.chain, h)).join("")}</td></tr>`).join("")}</table></details>` : ""}
+      </div>`;
+    }).join("");
+  }
+
+  function renderBalances() {
+    const b = S.pf?.balances; if (!b) return;
+    if (b.error) { $("bal").innerHTML = `<div class="err">${esc(b.error)}</div>`; return; }
+    const rows = (b.chains ?? []).map((c) => [c.chain, c.usd ?? 0, c.rows ?? []]).filter(([, v]) => v >= 0.01).sort((x, y) => y[1] - x[1]);
+    const max = rows[0]?.[1] || 1;
+    $("bal").innerHTML = rows.length ? `<table>${rows.map(([k, v, toks]) => `<tr><td>${CH[k] ?? esc(k)}<div class="mut" style="font-size:11px">${(Array.isArray(toks) ? toks : []).filter((t) => (t.usd ?? 0) >= 0.01).map((t) => `${esc(t.sym)} ${usd(t.usd)}`).join(" · ")}</div></td><td style="width:40%"><div class="bar"><i style="width:${(v / max * 100).toFixed(1)}%"></i></div></td><td class="n"><b>${usd(v)}</b></td></tr>`).join("")}<tr><td><b>Total libre</b></td><td></td><td class="n"><b>${usd(b.totalUsd)}</b></td></tr></table>` : `<div class="mut">${usd(b.totalUsd)} libres.</div>`;
+  }
+
+  function renderActivity() {
+    const rows = S.reports.flatMap((r) => (r.runs ?? []).map((x) => ({ ...x, chain: r.chain }))).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 15);
+    const kind = (x) => x.label.includes("-compound") ? "reinversión" : x.label.includes("-profit-") ? "ganancia retenida" : x.label.includes("-redeploy") ? "reinversión de capital" : x.label.includes("-sweep") ? "barrido" : x.label.includes("-exit") || x.kind === "beefy-clm-exit" ? "salida" : x.label.includes("-extra") ? "depósito extra" : x.label.includes("migr") ? "migración" : "depósito";
+    const st = (s) => s === "hecho" ? '<span class="ok">hecho</span>' : s === "error" ? '<span class="bad">error</span>' : `<span class="warn">${esc(s)}</span>`;
+    $("act").innerHTML = rows.length ? `<table>${rows.map((x) => `<tr><td>${hm(x.startedAt)}<div class="mut" style="font-size:11px">${CH[x.chain] ?? x.chain}</div></td><td>${kind(x)}<div class="mut" style="font-size:11px">${esc(short(x.vault))}</div></td><td>${st(x.status)}${x.error ? `<div class="err" title="${esc(x.error)}">${esc(x.error.slice(0, 60))}…</div>` : ""}</td><td>${tx(x.chain, x.txs?.at(-1)?.hash)}</td></tr>`).join("")}</table>` : `<div class="mut">Sin actividad.</div>`;
+  }
+
+  // ------------------------------------------------------------------ ciclo
+  let pollT = null;
+  const tick = async () => { clearTimeout(pollT); await loadPortfolio(); pollT = setTimeout(tick, document.hidden ? POLL_MS * 4 : POLL_MS); };
+  $("refresh").onclick = () => { tick(); loadReports(); };
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); loadReports(); } });
+  window.addEventListener("resize", () => renderChart());
+  loadReports(); setInterval(() => { if (!document.hidden) loadReports(); }, REPORT_MS);
+  tick();
+})();
+</script>
+</body>
+</html>

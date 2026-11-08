@@ -388,7 +388,8 @@ const server = http.createServer(async (req, res) => {
       byId: sc ? Object.fromEntries(Object.entries(sc.byId ?? {}).filter(([id]) => Object.values(st?.dca ?? {}).some((d) => d?.holdings?.[id])).map(([id, v]) => [id, { apyPct: v.apyPct, tvl: v.tvl }])) : {} } : null;
     const runs = Object.entries(st?.runs ?? {}).map(([label, r]) => ({ label, kind: r.kind, status: r.status, startedAt: r.startedAt, error: r.error ?? null, vault: r.vaultId ?? r.id ?? null,
       usdcIn: r.usdcIn ?? null, usdcOut: r.usdcOut ?? null, txs: (r.txs ?? []).map((t) => (typeof t === "string" ? { hash: t } : { step: t.step ?? t.name ?? null, hash: t.hash ?? null })) })).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 30);
-    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7) }));
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
+      cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
   }
   if (req.url.startsWith("/api/withdraw-audit")) {
     const addr = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0];
@@ -400,7 +401,20 @@ const server = http.createServer(async (req, res) => {
     try { res.writeHead(200, headers); return res.end(J(await walletBalances(addr, { provider: executor?.provider }))); }
     catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
   }
-  if (req.url.startsWith("/posiciones")) {
+  if (req.url.startsWith("/api/portfolio")) {
+    const since = Number(new URL(req.url, "http://x").searchParams.get("since")) || 0;
+    try {
+      const p = await portfolioNow();
+      const series = ((await store.get("portfolioSeries")) ?? []).filter((x) => x.t > since);
+      res.writeHead(200, headers); return res.end(J({ ...p, series, hourly: since ? [] : ((await store.get("beefyWalletHist")) ?? []).slice(-24 * 30).map((x) => ({ t: new Date(x.at).getTime(), total: x.totalUsd, pos: Object.fromEntries((x.positions ?? []).map((q) => [q.id, q.valueUsd])), apy: Object.fromEntries((x.positions ?? []).map((q) => [q.id, q.apyPct])) })) }));
+    } catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
+  if (req.url.startsWith("/posiciones") || req.url === "/" || req.url.startsWith("/index.html") || req.url.startsWith("/?")) {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
+    return res.end(fs.readFileSync(new URL("./portfolio.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`));
+  }
+  if (req.url.startsWith("/posiciones-v1")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
     return res.end(fs.readFileSync(new URL("./positions.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`));
@@ -424,9 +438,9 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
   }
   if (req.url.startsWith("/health")) { res.writeHead(200, headers); return res.end(JSON.stringify({ ok: true })); }
-  if (req.url === "/" || req.url.startsWith("/index.html") || req.url.startsWith("/?")) {
+  if (req.url.startsWith("/arbitraje")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    // selector de cadenas: cada servicio de Railway expone su /api/stats; esta página los lee todos
+    // tablero anterior de arbitraje con flashloan (sustituido en / por el panel de posiciones); selector de cadenas: cada servicio de Railway expone su /api/stats; esta página los lee todos
     const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
     const html = fs.readFileSync(new URL("./dashboard.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`);
     return res.end(html);
@@ -443,7 +457,7 @@ if (PUBLIC) setTimeout(async () => {
     try {
       const r = await fetch(`https://${PUBLIC}${path}`, { signal: AbortSignal.timeout(10_000) });
       const body = await r.text();
-      console.log(`${new Date().toISOString()} autocomprobación ${path}: HTTP ${r.status} · ${r.headers.get("content-type")} · ${body.length} bytes${path === "/" ? (body.includes("Protocolo de arbitraje con flashloan") ? " · tablero OK" : " · ¡no es el tablero!") : ""}`);
+      console.log(`${new Date().toISOString()} autocomprobación ${path}: HTTP ${r.status} · ${r.headers.get("content-type")} · ${body.length} bytes${path === "/" ? (body.includes("Panel de posiciones") ? " · panel OK" : " · ¡no es el panel!") : ""}`);
     } catch (e) { console.log(`${new Date().toISOString()} autocomprobación ${path}: falló ${e.message}`); }
   }
 }, 8_000);
@@ -494,6 +508,31 @@ async function logBeefyWallets() {
     } catch (e) { console.log(`${new Date().toISOString()} beefy wallet ${a}: error ${e.message}`); }
   }
 }
+// panel de posiciones: posiciones de Beefy + saldos libres en caché (a lo más una lectura por PORTFOLIO_TTL_S, 60 s, con visitas;
+// sin visitas, una cada PORTFOLIO_EVERY_MIN, 5 min) y serie de 5 min de 7 días para las gráficas: /api/portfolio
+const PORTFOLIO_TTL = Math.max(20, Number(process.env.PORTFOLIO_TTL_S ?? 60)) * 1000;
+const pf = { data: null, at: 0, busy: null, lastSaved: 0 };
+async function refreshPortfolio() {
+  const a = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || executor?.wallet?.address || "").split(",").map((x) => x.trim()).filter(Boolean)[0];
+  if (!a) throw new Error("sin wallet configurada");
+  const [wallet, balances] = await Promise.all([beefyWallet(a, { provider: executor?.provider }), walletBalances(a, { provider: executor?.provider }).catch((e) => ({ error: e.message }))]);
+  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000 }; pf.at = Date.now();
+  if (pf.at - pf.lastSaved >= 4.5 * 60_000) {
+    pf.lastSaved = pf.at;
+    const ser = (await store.get("portfolioSeries")) ?? [];
+    ser.push({ t: pf.at, total: wallet.totalUsd, free: balances?.totalUsd ?? null, pos: Object.fromEntries(wallet.positions.map((q) => [q.id, q.valueUsd !== null ? +q.valueUsd.toFixed(4) : null])), apy: Object.fromEntries(wallet.positions.map((q) => [q.id, q.apyPct])) });
+    while (ser.length > 12 * 24 * 7) ser.shift();
+    await store.set("portfolioSeries", ser);
+  }
+  return pf.data;
+}
+async function portfolioNow() {
+  if (pf.data && Date.now() - pf.at < PORTFOLIO_TTL) return pf.data;
+  const job = pf.busy ??= refreshPortfolio().finally(() => { pf.busy = null; });
+  if (pf.data) { job.catch(() => {}); return pf.data; } // responde con lo último y actualiza en segundo plano
+  return job;
+}
+if (CHAIN_CFG.key === "base") { setTimeout(() => portfolioNow().catch(() => {}), 3 * 60_000); setInterval(() => { if (Date.now() - pf.at >= Number(process.env.PORTFOLIO_EVERY_MIN ?? 5) * 60_000) portfolioNow().catch((e) => console.log(`${new Date().toISOString()} portafolio: error ${e.message}`)); }, 60_000); }
 // costo del DCA (precio promedio de entrada y PnL = precio + comisiones + rango/IL): cada hora en el worker que hace el DCA
 async function logDcaCost() {
   if (!strategy || strategy.kind !== "beefy-clm-dca" || !strategy.x?.wallet) return;
