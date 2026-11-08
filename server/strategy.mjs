@@ -424,11 +424,19 @@ export class Strategy {
   async onBlock(ctx) {
     this.lastCtx = ctx;
     if (this.kind === "beefy-clm-dca") {
-      if (this.busy || !this.wanted) return;
-      this.busy = true;
+      if (!this.wanted) return;
+      if (this.busy) {
+        // vigilancia: si una vuelta queda colgada (RPC sin respuesta) se reporta una vez con la etapa
+        if (Date.now() - (this.busySince ?? Date.now()) > 10 * 60_000 && !this.stuckLogged) { this.stuckLogged = true; await this.diag(`estrategia ${this.kind}: vuelta ocupada desde ${new Date(this.busySince).toISOString()} en la etapa "${this.stage}" (${this.run?.vaultId ?? this.vaultId ?? "—"})`); }
+        return;
+      }
+      this.busy = true; this.busySince = Date.now(); this.stuckLogged = false;
       try {
-        if (!this.checked) { this.checked = true; await this.checkVaults().catch(() => {}); }
-        if (!(await this.migrate(ctx)) && !(await this.extraDca(ctx))) await this.dca(ctx);
+        if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
+        this.stage = "migración"; const m = await this.migrate(ctx);
+        this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
+        this.stage = "dca"; if (!m && !x) await this.dca(ctx);
+        this.stage = "listo";
       } finally { this.busy = false; await this.save().catch(() => {}); }
       return;
     }
