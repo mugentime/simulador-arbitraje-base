@@ -363,13 +363,17 @@ export async function wrapStrategyReport(s, { ethUsd = null } = {}) {
         sueltos += toUsd(await tokenValue(s, t, b));
       }
       const reservado = toUsd(BigInt(d.redeploy ?? "0") + BigInt(d.retained ?? "0"));
-      const aportado = Number(d.totalUsd ?? 0);
+      // capital que pasó de una estrategia a otra en la misma wallet (STRATEGY_TRANSFERS="origen>destino:usd,…")
+      const tr = transfers().filter((t) => t.from === label || t.to === label);
+      const ajuste = tr.reduce((a, t) => a + (t.to === label ? t.usd : -t.usd), 0);
+      const aportado = Number(d.totalUsd ?? 0) + ajuste;
       const valor = enVault + sueltos + reservado, pnl = valor - aportado;
       const comisiones = ids.reduce((a, id) => a + (fees[id]?.usd ?? 0), 0);
       const cd = capitalDays((d.deposits ?? []).map((x) => ({ at: x.at, usd: x.usd })), aportado, now);
       res[label] = { at: now, extra: !!d.extra, aportado, valor, enVault, sueltos, reservado, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
         capDias: cd.capDays, diarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? pnl / cd.capDays * 100 : null, dias: cd.days, n: d.n ?? 0, vaults };
-      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos) · valor ${f2(valor)} = en vaults ${f2(enVault)} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · ganancia real ${sg(pnl)} (${pc(res[label].pnlPct)}) = comisiones est. ${sg(comisiones)} + precio/rango ${sg(pnl - comisiones)}` +
+      res[label].ajuste = ajuste;
+      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos${ajuste ? `, ${ajuste > 0 ? "+" : "−"}${f2(Math.abs(ajuste))} ${ajuste > 0 ? "recibidos de" : "pasados a"} otra estrategia` : ""}) · valor ${f2(valor)} = en vaults ${f2(enVault)} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · ganancia real ${sg(pnl)} (${pc(res[label].pnlPct)}) = comisiones est. ${sg(comisiones)} + precio/rango ${sg(pnl - comisiones)}` +
         `${res[label].diarioPct !== null ? ` · ${pc(res[label].diarioPct)} por día` : ""} · vaults: ${vaults.map((v) => `${v.id} ${v.error ? "error " + v.error : f2(v.usd)}`).join(", ") || "—"}`);
     } catch (e) { out.push(`dca estrategia ${s.net.beefy} ${label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
   }
@@ -385,4 +389,9 @@ export async function wrapStrategyReport(s, { ethUsd = null } = {}) {
     await s.store.set("dcaStrategyHist", hist).catch(() => {});
   }
   return out;
+}
+
+/** STRATEGY_TRANSFERS="demo>demo+AI-USDG:5.11" → [{from, to, usd}] (puro). */
+export function transfers(env = process.env) {
+  return String(env.STRATEGY_TRANSFERS || "").split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const m = x.match(/^(.+?)>(.+):([\d.]+)$/); return m ? { from: m[1], to: m[2], usd: Number(m[3]) } : null; }).filter(Boolean);
 }

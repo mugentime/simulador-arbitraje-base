@@ -578,7 +578,7 @@ export async function claimForCompound(s, minStable) {
 /** Vende al estable todo el saldo de los tokens no estables de un vault (sobrantes huérfanos). Devuelve lo obtenido (crudo). */
 export async function sellVaultTokens(s, id, { dustStable = 0n } = {}) {
   const prev = s.run, prevId = s.vaultId;
-  s.run = { txs: [] }; s.vaultId = id; s.allowInactive = true;
+  s.run = { txs: [], extra: true }; s.vaultId = id; s.allowInactive = true;
   try {
     await resolve(s);
     const r = s.run, N = s.net, toks = (r.noStable ? [r.t0, r.t1] : [r.x]).filter((t) => t && lc(t) !== lc(N.stable));
@@ -598,7 +598,7 @@ export async function sellVaultTokens(s, id, { dustStable = 0n } = {}) {
 /** Valor de la posición de la wallet en un vault (participaciones del vault + CLM suelto), en estable crudo, y los tokens del par. */
 export async function vaultValue(s, id) {
   const prev = s.run, prevId = s.vaultId;
-  s.run = { txs: [] }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
+  s.run = { txs: [], extra: true }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
   try {
     await resolve(s);
     const r = s.run, N = s.net;
