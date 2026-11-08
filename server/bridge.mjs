@@ -101,7 +101,8 @@ import { CHAINS } from "../src/chains.js";
 const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"]);
 
 /** Cuánto hace falta en destino (unidades humanas) para llegar al objetivo, con 2 % de margen; 0 si ya alcanza. */
-export function topupNeed(haveUsd, targetUsd) { return haveUsd >= targetUsd ? 0 : +((targetUsd - haveUsd) * 1.02).toFixed(2); }
+// recargas de menos de TOPUP_MIN_USD ($3) no se hacen: la comisión fija de Relay las vuelve caras (y el tope de comisión las rechaza)
+export function topupNeed(haveUsd, targetUsd, minUsd = Number(process.env.TOPUP_MIN_USD ?? 3)) { const gap = targetUsd - haveUsd; return gap <= 0 || gap < minUsd ? 0 : +(gap * 1.02).toFixed(2); }
 
 export class Topup {
   constructor({ executor, provider, store, diag, cfg = null }) {

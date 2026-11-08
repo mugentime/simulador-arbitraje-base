@@ -21,6 +21,8 @@ const C = new ethers.Interface([
   "function factory() view returns (address)",
   "function tickSpacing() view returns (int24)",
   "function balances() view returns (uint256 amount0, uint256 amount1)",
+  "function totalSupply() view returns (uint256)",
+  "function getPricePerFullShare() view returns (uint256)",
   "function previewDeposit(uint256 _amount0, uint256 _amount1) view returns (uint256 shares, uint256 amount0, uint256 amount1, uint256 fee0, uint256 fee1)",
   "function deposit(uint256 _amount0, uint256 _amount1, uint256 _minShares)",
   "function previewWithdraw(uint256 _shares) view returns (uint256 amount0, uint256 amount1)",
@@ -84,7 +86,7 @@ async function resolve(s) {
   const v = [...(Array.isArray(list) ? list : []), ...(Array.isArray(govs) ? govs.map((g) => ({ ...g, type: "gov" })) : [])].find((x) => x.id === id);
   if (!v) throw new Error(`vault ${id} no está en la API de Beefy`);
   const N = s.net;
-  if (v.chain !== N.beefy || v.status !== "active") throw new Error(`vault ${id}: cadena ${v.chain} (worker ${N.beefy}), estado ${v.status}`);
+  if (v.chain !== N.beefy || (v.status !== "active" && !s.allowInactive)) throw new Error(`vault ${id}: cadena ${v.chain} (worker ${N.beefy}), estado ${v.status}`);
   const vault = ethers.getAddress(v.earnContractAddress), clm = ethers.getAddress(v.tokenAddress);
   const gov = v.type === "gov";
   if (!gov) { const [want] = await call(s, vault, "want"); if (lc(want) !== lc(clm)) throw new Error(`want del vault ${want} ≠ CLM ${clm}`); }
@@ -105,7 +107,7 @@ async function resolve(s) {
   else throw new Error(`pool ${pool} de una fábrica sin router conocido (${factory})`);
   Object.assign(r, { vaultId: id, vault, gov, clm, t0, t1, x: lc(t0) === lc(N.stable) ? t1 : t0, usdcIs0: lc(t0) === lc(N.stable), pool, dex, router, tickSpacing, fee, noStable });
   await s.save();
-  await s.diag(`estrategia ${s.kind}: ${id} · ${gov ? "reward pool" : "vault"} ${vault} · CLM ${clm} · pool ${pool} (${dex === "uni" ? `Uniswap v3 fee ${fee}` : dex === "slip" ? `Slipstream tickSpacing ${tickSpacing}` : "fábrica no soportada para swaps en el pool; rutas Uniswap v3"}${noStable ? `; par sin ${N.stableSym}` : ""}) · router ${router}`);
+  if (!s.quietResolve) await s.diag(`estrategia ${s.kind}: ${id} · ${gov ? "reward pool" : "vault"} ${vault} · CLM ${clm} · pool ${pool} (${dex === "uni" ? `Uniswap v3 fee ${fee}` : dex === "slip" ? `Slipstream tickSpacing ${tickSpacing}` : "fábrica no soportada para swaps en el pool; rutas Uniswap v3"}${noStable ? `; par sin ${N.stableSym}` : ""}) · router ${router}`);
 }
 
 const slipParams = (s, tokenIn, tokenOut, amountIn, min = 0n) => ({ tokenIn, tokenOut, tickSpacing: s.run.tickSpacing, recipient: s.me, deadline: BigInt(Math.floor(Date.now() / 1000) + 600), amountIn, amountOutMinimum: min, sqrtPriceLimitX96: 0n });
@@ -272,7 +274,7 @@ async function pairRatio(s, S, rate0, rate1) {
   const [b0, b1] = await call(s, r.clm, "balances");
   return b0 === 0n ? Infinity : Number(b1) / Number(b0);
 }
-async function enterPair(s) {
+async function enterPair(s, ctx) {
   const r = s.run, N = s.net, U1 = 10n ** BigInt(N.stableDec);
   if (r.a0 === undefined) {
     const S = BigInt(r.usdcIn);
@@ -310,7 +312,20 @@ async function enterPair(s) {
     await s.send("deposit CLM", { to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, shares * 99n / 100n]) });
     r.clmShares = String((await bal(s, r.clm)) - before); r.used = [String(used0), String(used1)];
     r.leftover = { t0: String(a0 - used0), t1: String(a1 - used1) };
-    await s.diag(`estrategia ${s.kind}: CLM tomó token0 ${used0} de ${a0} + token1 ${used1} de ${a1} · sobrante queda en la wallet`);
+    await s.diag(`estrategia ${s.kind}: CLM tomó token0 ${used0} de ${a0} + token1 ${used1} de ${a1}`);
+    await s.save();
+    // lo que el CLM rechazó no se queda suelto: se vende al estable (que entra en el siguiente depósito)
+    const stableUsd = N.wrapNative ? (ctx?.ethUsd || 0) : 1;
+    const dust = stableUsd > 0 ? ethers.parseUnits((0.2 / stableUsd).toFixed(Math.min(N.stableDec, 12)), N.stableDec) : 10n ** 30n;
+    for (const [k, t] of [["t0", r.t0], ["t1", r.t1]]) {
+      const left = BigInt(r.leftover[k]);
+      if (left <= 0n || lc(t) === lc(N.stable)) continue;
+      const q = (await bestPath(s, t, N.stable, left).catch(() => null))?.out ?? 0n;
+      if (q <= dust) continue;
+      const got = await routeSwap(s, t, N.stable, left, `swap sobrante ${k}→${N.stableSym}`);
+      r.leftover[k] = "0"; (r.leftoverSold ??= []).push({ token: t, amount: String(left), got: String(got) });
+      await s.diag(`estrategia ${s.kind}: sobrante ${k} vendido · ${left} → ${ethers.formatUnits(got, N.stableDec)} ${N.stableSym} (entra en el siguiente depósito)`);
+    }
     await s.save();
   }
   if (r.mooShares === undefined) {
@@ -374,7 +389,7 @@ export async function enterClm(s, ctx) {
     } else { r.ethIn = "0"; r.usdcIn = String(target); }
     await s.save();
   }
-  if (r.noStable) return enterPair(s);
+  if (r.noStable) return enterPair(s, ctx);
   // 2) rebalanceo estable/X según la proporción que el CLM acepta HOY (previewDeposit con X de sobra), incluyendo el X que ya
   //    haya en la wallet (sobrantes de depósitos anteriores). balances() del CLM incluye la posición alternativa y no sirve.
   if (r.xIn === undefined) {
@@ -409,8 +424,43 @@ export async function enterClm(s, ctx) {
     const rate = r.ratio?.rate || 0;
     const leftU = Number(uAmt - uU) / Number(U1), leftXinStable = rate > 0 ? Number(xAmt - uX) / rate / Number(U1) : 0;
     r.leftover = { stable: leftU, xAsStable: leftXinStable };
-    await s.diag(`estrategia ${s.kind}: CLM tomó ${(Number(uU) / Number(U1)).toFixed(4)} ${N.stableSym} + ${rate > 0 ? (Number(uX) / rate / Number(U1)).toFixed(4) : "?"} en X de ${(Number(uAmt) / Number(U1)).toFixed(4)} + ${rate > 0 ? (Number(xAmt) / rate / Number(U1)).toFixed(4) : "?"} ofrecidos · sobrante en wallet ≈ $${(leftU + leftXinStable).toFixed(4)} (se usa en el siguiente depósito)`);
+    await s.diag(`estrategia ${s.kind}: CLM tomó ${(Number(uU) / Number(U1)).toFixed(4)} ${N.stableSym} + ${rate > 0 ? (Number(uX) / rate / Number(U1)).toFixed(4) : "?"} en X de ${(Number(uAmt) / Number(U1)).toFixed(4)} + ${rate > 0 ? (Number(xAmt) / rate / Number(U1)).toFixed(4) : "?"} ofrecidos · sin aceptar ≈ ${(leftU + leftXinStable).toFixed(4)} ${N.stableSym} (se intenta reinvertir enseguida)`);
     await s.save();
+  }
+  // 3b) lo que el CLM no tomó no se queda suelto: hasta 2 pasadas (depositar lo que acepte; el X que rechace se vende al
+  //     estable). El estable que aún sobre queda en r.cleanup.leftStable para que la estrategia lo reinvierta.
+  if (r.cleanup === undefined) {
+    const used = r.used.map(BigInt), [uU0, uX0] = r.usdcIs0 ? used : [used[1], used[0]];
+    let lu = BigInt(r.usdcForClm) - uU0, lx = BigInt(r.xIn) - uX0, added = 0n, passes = 0, soldX = 0n;
+    const stableUsd = N.wrapNative ? (ctx?.ethUsd || 0) : 1;
+    const dust = stableUsd > 0 ? ethers.parseUnits((0.2 / stableUsd).toFixed(Math.min(D, 12)), D) : 10n ** 30n;
+    const rate = r.ratio?.rate || 0, xVal = (x) => (rate > 0 ? BigInt(Math.floor(Number(x) / rate)) : 0n);
+    const sellX = async (x) => { const got = r.dex === "otro" ? await routeSwap(s, r.x, N.stable, x, `swap sobrante X→${N.stableSym}`) : await slipSwap(s, r.x, N.stable, x, x / 100n || 1n, `swap sobrante X→${N.stableSym}`); soldX += x; return got; };
+    for (; passes < 2 && (lu > dust || xVal(lx) > dust); passes++) {
+      let [a0, a1] = r.usdcIs0 ? [lu, lx] : [lx, lu];
+      let [sh, u0, u1] = await call(s, r.clm, "previewDeposit", [a0, a1]).catch(() => [0n, 0n, 0n]);
+      const [tU, tX] = r.usdcIs0 ? [u0, u1] : [u1, u0];
+      if (sh === 0n || (tU + xVal(tX)) * 2n < lu + xVal(lx)) {
+        // el CLM no toma esta mezcla: el X sobrante se vende al estable y se intenta solo con estable
+        if (xVal(lx) > dust) { lu += await sellX(lx); lx = 0n; }
+        [a0, a1] = r.usdcIs0 ? [lu, 0n] : [0n, lu];
+        [sh, u0, u1] = await call(s, r.clm, "previewDeposit", [a0, a1]).catch(() => [0n, 0n, 0n]);
+        if (sh === 0n) break; // tampoco acepta solo estable: queda para la estrategia
+      }
+      if (a0 > 0n) await approve(s, r.t0, r.clm, a0, "approve token0→CLM (sobrante)");
+      if (a1 > 0n) await approve(s, r.t1, r.clm, a1, "approve token1→CLM (sobrante)");
+      const before = await bal(s, r.clm);
+      try { await s.sim({ to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, sh * 99n / 100n]) }); } catch { break; }
+      await s.send("deposit CLM (sobrante)", { to: r.clm, data: C.encodeFunctionData("deposit(uint256,uint256,uint256)", [a0, a1, sh * 99n / 100n]) });
+      added += (await bal(s, r.clm)) - before;
+      const [v0, v1] = r.usdcIs0 ? [u0, u1] : [u1, u0];
+      lu -= v0; lx -= v1;
+    }
+    if (xVal(lx) > dust) { lu += await sellX(lx); lx = 0n; }
+    r.clmShares = String(BigInt(r.clmShares) + added);
+    r.cleanup = { passes, added: String(added), soldX: String(soldX), leftStable: String(lu > dust ? lu : 0n), leftX: String(lx > 0n ? lx : 0n) };
+    await s.save();
+    if (passes || soldX > 0n) await s.diag(`estrategia ${s.kind}: sobrante reinvertido · ${passes} pasada(s), +${added} participaciones${soldX > 0n ? `, X vendido ${soldX}` : ""} · queda ${ethers.formatUnits(lu > 0n ? lu : 0n, D)} ${N.stableSym} para la estrategia`);
   }
   // 4) participaciones del CLM → vault que compone
   if (r.mooShares === undefined) {
@@ -420,7 +470,7 @@ export async function enterClm(s, ctx) {
     await s.send(r.gov ? "stake reward pool Beefy" : "deposit vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
     r.mooShares = String((await bal(s, r.vault)) - before); await s.save();
   }
-  await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} nativo → ${ethers.formatUnits(r.usdcIn, D)} ${N.stableSym} → CLM ${r.clmShares} → vault ${r.mooShares} · sobrante en wallet: el que el CLM no tomó · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
+  await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} nativo → ${ethers.formatUnits(r.usdcIn, D)} ${N.stableSym} → CLM ${r.clmShares} → vault ${r.mooShares} · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
 }
 
 export async function exitClm(s, ctx) {
@@ -450,7 +500,7 @@ export async function exitClm(s, ctx) {
       if (g1 > 0n) await routeSwap(s, r.t1, s.net.stable, g1, `swap token1→${s.net.stableSym}`);
       r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(g0); await s.save();
     } else {
-    const xGot = (await bal(s, r.x)) - bX0;
+    const xGot = await bal(s, r.x); // todo el X de la wallet: lo retirado + sobrantes de depósitos anteriores en este vault
     const uFromX = xGot > 0n ? (r.dex === "otro" ? await routeSwap(s, r.x, s.net.stable, xGot, `swap X→${s.net.stableSym}`) : await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`)) : 0n;
     r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
     }
@@ -523,4 +573,50 @@ export async function claimForCompound(s, minStable) {
     if (lc(g.token) === lc(N.stable)) out.stable += g.amount; else if (lc(g.token) === lc(r.x)) out.x += g.amount; else out.other.push({ token: g.token, amount: String(g.amount) });
   }
   return out;
+}
+
+/** Vende al estable todo el saldo de los tokens no estables de un vault (sobrantes huérfanos). Devuelve lo obtenido (crudo). */
+export async function sellVaultTokens(s, id, { dustStable = 0n } = {}) {
+  const prev = s.run, prevId = s.vaultId;
+  s.run = { txs: [] }; s.vaultId = id; s.allowInactive = true;
+  try {
+    await resolve(s);
+    const r = s.run, N = s.net, toks = (r.noStable ? [r.t0, r.t1] : [r.x]).filter((t) => t && lc(t) !== lc(N.stable));
+    let got = 0n; const sold = [];
+    for (const t of toks) {
+      const b = await bal(s, t);
+      if (b === 0n) continue;
+      const q = (await bestPath(s, t, N.stable, b).catch(() => null))?.out ?? 0n;
+      if (q <= dustStable) continue;
+      got += r.dex === "otro" || r.noStable || lc(t) !== lc(r.x) ? await routeSwap(s, t, N.stable, b, `swap sobrante→${N.stableSym}`) : await slipSwap(s, t, N.stable, b, b / 100n || 1n, `swap sobrante→${N.stableSym}`);
+      sold.push({ token: t, amount: String(b) });
+    }
+    return { got, sold, txs: r.txs };
+  } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; }
+}
+
+/** Valor de la posición de la wallet en un vault (participaciones del vault + CLM suelto), en estable crudo, y los tokens del par. */
+export async function vaultValue(s, id) {
+  const prev = s.run, prevId = s.vaultId;
+  s.run = { txs: [] }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
+  try {
+    await resolve(s);
+    const r = s.run, N = s.net;
+    let sh = await bal(s, r.vault);
+    if (!r.gov && sh > 0n) sh = sh * (await call(s, r.vault, "getPricePerFullShare"))[0] / 10n ** 18n;
+    sh += await bal(s, r.clm);
+    const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
+    if (sh === 0n) return { value: 0n, tokens, shares: 0n };
+    const [[a0, a1], [ts]] = await Promise.all([call(s, r.clm, "balances"), call(s, r.clm, "totalSupply")]);
+    const q = [a0 * sh / ts, a1 * sh / ts];
+    let value = 0n;
+    for (let i = 0; i < 2; i++) value += lc(tokens[i]) === lc(N.stable) ? q[i] : q[i] > 0n ? ((await bestPath(s, tokens[i], N.stable, q[i]).catch(() => null))?.out ?? 0n) : 0n;
+    return { value, tokens, shares: sh };
+  } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
+}
+/** Valor en estable crudo de un saldo de token (0 si no hay ruta). */
+export async function tokenValue(s, token, amount) {
+  if (amount <= 0n) return 0n;
+  if (lc(token) === lc(s.net.stable)) return amount;
+  return (await bestPath(s, token, s.net.stable, amount).catch(() => null))?.out ?? 0n;
 }

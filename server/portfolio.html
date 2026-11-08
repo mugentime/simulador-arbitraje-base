@@ -97,6 +97,9 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 .dv .b.p { background: var(--pos); border-radius: 0 4px 4px 0; } .dv .b.n { background: var(--neg); border-radius: 4px 0 0 4px; }
 .split { display: flex; height: 4px; margin-top: 3px; gap: 2px; } .split i { display: block; height: 100%; border-radius: 2px; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.works .sent { font-size: 15px; font-weight: 600; margin: 4px 0 8px; }
+.flow { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; font-size: 13px; } .flow span { color: var(--mut); } .flow b { text-align: right; font-weight: 600; }
+.flow .tot { border-top: 1px solid var(--line); padding-top: 4px; } .flow .ind span { padding-left: 12px; }
 .why h3 { font-size: 14px; margin: 0 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .why .big { font-size: 26px; font-weight: 650; margin: 2px 0 6px; }
 .why ul { margin: 6px 0 0; padding-left: 0; list-style: none; } .why li { margin: 5px 0; padding-left: 20px; position: relative; font-size: 13px; }
@@ -117,20 +120,25 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   </header>
 
   <section id="analysis">
-    <div class="hero" id="hero"><div class="main"><span>Ganancia real (sin contar lo depositado)</span><b class="mut">…</b><small>cargando reportes de los workers</small></div></div>
+    <div class="hero" id="hero"><div class="main"><span>Ganancia real de todas tus posiciones</span><b class="mut">…</b><small>cargando reportes de los workers</small></div></div>
     <div class="legend" id="legend"></div>
     <div class="card">
-      <h2>1 · Ranking de vaults por ganancia real <span class="mut" style="font-weight:400;font-size:12px">ordenado por rendimiento diario sobre el capital invertido</span></h2>
+      <h2>1 · ¿Funcionan las estrategias del bot? <span class="mut" style="font-weight:400;font-size:12px">dinero que pusiste vs lo que vale hoy</span></h2>
+      <div class="grid" id="works"><div class="mut">cargando…</div></div>
+      <div class="note">"Aportado" = dólares que salieron de tu bolsa en cada depósito diario. "Vale hoy" = lo que hay en los vaults + tokens que quedaron sueltos en la wallet + capital apartado esperando reinvertirse. La ganancia real es la resta: no sube por depositar más. "Lo que pagó el vault" son las comisiones estimadas con el APY; "precio" es lo que subió o bajó el token.</div>
+    </div>
+    <div class="card">
+      <h2>2 · Ranking de vaults por ganancia real <span class="mut" style="font-weight:400;font-size:12px">ordenado por rendimiento diario sobre el capital invertido</span></h2>
       <div class="rank" id="rank"><div class="mut">cargando…</div></div>
       <div class="note">Ganancia real = valor de la posición + recompensas por cobrar − todo lo que se metió (depósitos, barridos, saldo previo). No crece por depositar más. Se divide en <b>comisiones</b> (lo que paga el vault) y <b>precio/rango</b> (subida o bajada del token y efecto del rango del CLM). %/día = ganancia ÷ capital-día (cada dólar pesa por los días que lleva invertido).</div>
     </div>
     <div class="pair" id="bestworst"></div>
     <div class="card">
-      <h2>2 · Sugerencias de esta corrida <span class="mut" style="font-weight:400;font-size:12px" id="suggAt"></span></h2>
+      <h2>3 · Sugerencias de esta corrida <span class="mut" style="font-weight:400;font-size:12px" id="suggAt"></span></h2>
       <ol class="sugg" id="sugg"><li class="mut">cargando…</li></ol>
       <details id="suggHistWrap"><summary>Corridas anteriores</summary><div id="suggHist" class="note"></div></details>
     </div>
-    <h2 style="font-size:15px;margin:18px 0 8px">3 · Detalle</h2>
+    <h2 style="font-size:15px;margin:18px 0 8px">4 · Detalle</h2>
   </section>
 
   <div class="kpis" id="kpis"></div>
@@ -222,10 +230,10 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       if (!r.strategy || !r.dca) continue;
       for (const [label, d] of Object.entries(r.dca)) {
         const auto = r.auto;
-        const role = auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "Ancla comparativa";
-        const cls = auto?.dynamic ? "demo" : auto ? "main" : "bot";
+        const role = d.extra ? "Depósito diario extra" : auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "DCA fijo";
+        const cls = d.extra ? "bot" : auto?.dynamic ? "demo" : auto ? "main" : "bot";
         const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id);
-        const ids = [...new Set([...(d.target ? [d.target] : []), ...open, ...(!auto && r.strategy.vaultId && r.strategy.vaultId !== "auto" ? [r.strategy.vaultId] : [])])];
+        const ids = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...(d.target ? [d.target] : []), ...open, ...(!auto && r.strategy.vaultId && r.strategy.vaultId !== "auto" ? [r.strategy.vaultId] : [])])];
         out.push({ r, label, d, role, cls, ids, closed: Object.entries(d.holdings ?? {}).filter(([, h]) => h.closed) });
       }
     }
@@ -244,7 +252,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 
   // ------------------------------------------------------------------ render
   function render(changed) {
-    renderLive(); renderKpis(); renderAlerts(); renderAnalysis(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
+    renderLive(); renderKpis(); renderAlerts(); renderAnalysis(); renderWorks(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
     $("errs").innerHTML = (S.reportErrs ?? []).length ? `<span class="err">Sin reporte de: ${S.reportErrs.map(esc).join(" · ")}</span>` : "";
   }
   function renderLive() {
@@ -402,9 +410,8 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
         const watch = h.badSince ? `<span class="tag warn">vigilancia desde ${hm(h.badSince)}</span>` : rules ? `<span class="tag main">dentro de las reglas</span>` : "";
         return `<div style="margin-top:10px"><b><a href="https://app.beefy.com/vault/${esc(id)}" target="_blank" rel="noopener">${esc(p?.name ?? short(id))}</a></b> ${watch}</div>
           <div class="kv" style="margin-top:6px">
-            <div><span>Valor</span><b>${usd(p?.valueUsd ?? c?.value)}</b></div>
-            <div><span>Invertido</span><b>${usd(c?.invested ?? (h.usd || null))}</b>${!c && h.usd ? '<div class="mut" style="font-size:11px">depósitos DCA</div>' : ""}</div>
-            <div><span>Resultado</span><b>${c ? sgnU(c.pnl) + " " + sgnP(c.pnlPct) : "—"}</b></div>
+            <div><span>Vale hoy en este vault</span><b>${usd(p?.valueUsd ?? c?.value)}</b></div>
+            ${c ? `<div><span>Metido a este vault</span><b>${usd(c.invested)}</b></div><div><span>Ganancia real</span><b>${sgnU(c.pnl)} ${sgnP(c.pnlPct)}</b></div>` : `<div><span>Cuenta completa</span><b class="mut" style="font-weight:400">en la sección 1</b></div>`}
             <div><span>APY</span><b>${apyTxt(apy)}</b>${thr ? `<div class="mut" style="font-size:11px">sale bajo ${pct(thr)}</div>` : ""}</div>
           </div>`;
       }).join("");
@@ -412,7 +419,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       return `<div class="card"><h2>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${r.auto ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
         <div class="kv">
           <div><span>Depósito diario</span><b>${usd(r.strategy.dcaUsd, 0)}</b></div>
-          <div><span>Depósitos</span><b>${d.n ?? 0} · ${usd(d.totalUsd, 0)}</b></div>
+          <div><span>Aportado en total</span><b>${usd(d.totalUsd, 0)}</b><div class="mut" style="font-size:11px">${d.n ?? 0} depósitos${s.closed.length ? `, pasó por ${s.closed.length + s.ids.length} vaults` : ""}</div></div>
           <div><span>Último</span><b>${d.lastAt ? ago(d.lastAt) : "—"}</b></div>
           <div><span>Siguiente</span><b>${nextAt ? inT(nextAt) : r.auto ? '<span class="warn">en pausa</span>' : "—"}</b></div>
           ${pn ? `<div><span>Comisiones est.</span><b>${sgnU(pn.comisiones)}</b></div><div><span>Precio / rango</span><b>${sgnU(pn.precio)}</b></div>` : ""}
@@ -425,6 +432,54 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     }).join("");
   }
 
+
+  // ------------------------------------------------------------------ ¿funciona la estrategia? (una tarjeta por estrategia del bot)
+  function renderWorks() {
+    const cards = [];
+    const NAME = { base: "DCA en Base", bsc: "DCA en BSC", robinhood: "Robinhood" };
+    for (const r of S.reports) {
+      const vaultsOf = (lbl) => { const d = r.dca?.[lbl]; if (!d) return []; return d.extra ? [d.vaultId] : [...new Set([...(d.target ? [d.target] : []), ...Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id)])]; };
+      if (r.pnlBy && Object.keys(r.pnlBy).length) {
+        for (const [lbl, p] of Object.entries(r.pnlBy)) {
+          const d = r.dca?.[lbl] ?? {};
+          const title = d.extra ? `${NAME[r.chain] ?? r.chain} · depósito diario en ${esc(short(d.vaultId))}` : `${NAME[r.chain] ?? r.chain} · ${r.auto?.dynamic ? "demo dinámico" : "estrategia principal"}`;
+          cards.push({ title, p, sub: vaultsOf(lbl).map(short).join(", "), closed: Object.values(d.holdings ?? {}).filter((h) => h.closed).length });
+        }
+      } else if (r.pnl && fin(r.pnl.aportado)) {
+        const ids = Object.keys(r.cost ?? {}).filter((id) => !(r.cost[id].closed));
+        cards.push({ title: NAME[r.chain] ?? r.chain, p: { aportado: r.pnl.aportado, valor: r.pnl.valor, enVault: r.pnl.posiciones, sueltos: r.pnl.sobranteX ?? 0, reservado: (r.pnl.sobranteS ?? 0) + (r.pnl.recompensas ?? 0), pnl: r.pnl.pnl, pnlPct: r.pnl.pnlPct, comisiones: r.pnl.comisiones, precio: r.pnl.precio, diarioPct: r.pnl.diarioPct, dias: r.pnl.dias, n: r.pnl.n }, sub: ids.map(short).join(", "), rewardsIncl: true });
+      }
+    }
+    if (!cards.length) { $("works").innerHTML = `<div class="mut">Esperando el reporte horario de costo de los workers.</div>`; return; }
+    const sentence = (p) => {
+      const vk = verdictOf(p.pnlPct), yr = fin(p.diarioPct) ? (Math.pow(1 + p.diarioPct / 100, 365) - 1) * 100 : null;
+      const rate = fin(p.diarioPct) ? ` · ${p.diarioPct >= 0 ? "+" : ""}${pct(p.diarioPct, 2)} por día${fin(yr) && (p.dias ?? 0) >= 7 && Math.abs(yr) < 1e5 ? ` (≈ ${pct(yr, 0)} al año)` : ""}` : "";
+      if (vk === "good") return `${badge(vk)} Sí funciona: ganó ${usd(p.pnl)} sobre ${usd(p.aportado, 0)}${rate}.`;
+      if (vk === "neutral") return `${badge(vk)} Empate por ahora: ${p.pnl >= 0 ? "ganó" : "perdió"} ${usd(Math.abs(p.pnl))} sobre ${usd(p.aportado, 0)}${rate}.`;
+      return `${badge(vk)} No está funcionando: perdió ${usd(Math.abs(p.pnl))} (${pct(Math.abs(p.pnlPct), 1)}) sobre ${usd(p.aportado, 0)}${rate}.`;
+    };
+    const why = (p) => {
+      if (!fin(p.comisiones)) return "";
+      const c = p.comisiones, pr = fin(p.precio) ? p.precio : p.pnl - c;
+      if (pr >= 0 && c >= 0) return `Las comisiones (${sgnU(c)}) y el precio (${sgnU(pr)}) suman a favor.`;
+      if (c > 0 && pr < 0) return c + pr >= 0 ? `Las comisiones (${sgnU(c)}) cubren la baja del precio (${sgnU(pr)}).` : `La baja del precio (${sgnU(pr)}) es mayor que lo que pagó el vault (${sgnU(c)}): ${c > 0 ? `las comisiones cubren ${pct(Math.min(100, c / -pr * 100), 0)} de la baja` : "sin comisiones que la compensen"}.`;
+      return `Comisiones ${sgnU(c)} · precio ${sgnU(pr)}.`;
+    };
+    $("works").innerHTML = cards.map(({ title, p, sub, closed, rewardsIncl }) => `<div class="card works" style="margin:0">
+        <h3 style="font-size:14px;margin:0">${title}</h3>${sub ? `<div class="mut" style="font-size:12px">${esc(sub)}${closed ? ` · ${closed} vault(s) anteriores cerrados` : ""}</div>` : ""}
+        <div class="sent">${sentence(p)}</div>
+        <div class="flow">
+          <span>Aportado (${p.n ?? "—"} depósitos${fin(p.dias) ? ` en ${p.dias.toFixed(1)} días` : ""})</span><b>${usd(p.aportado)}</b>
+          <span>Vale hoy</span><b>${usd(p.valor)}</b>
+          <span class="ind"><span>en vaults</span></span><b class="mut">${usd(p.enVault)}</b>
+          ${(p.sueltos ?? 0) >= 0.01 ? `<span class="ind"><span>tokens sueltos en la wallet</span></span><b class="warn">${usd(p.sueltos)}</b>` : ""}
+          ${(p.reservado ?? 0) >= 0.01 ? `<span class="ind"><span>${rewardsIncl ? "recompensas por cobrar + estable sin invertir" : "apartado para reinvertir"}</span></span><b class="mut">${usd(p.reservado)}</b>` : ""}
+          <span class="tot"><b style="color:var(--ink)">Ganancia real</b></span><b class="tot">${sgnU(p.pnl)} ${sgnP(p.pnlPct, 2)}</b>
+          ${fin(p.comisiones) ? `<span class="ind"><span>lo que pagó el vault (comisiones est.)</span></span><b>${sgnU(p.comisiones)}</b><span class="ind"><span>subida/bajada del precio</span></span><b>${sgnU(fin(p.precio) ? p.precio : p.pnl - p.comisiones)}</b>` : ""}
+        </div>
+        ${why(p) ? `<div class="note">${why(p)}</div>` : ""}
+      </div>`).join("");
+  }
   // ------------------------------------------------------------------ análisis: ganancia real, jerarquía, mejor/peor, sugerencias
   // Veredicto (paleta de estado fija, siempre con ícono + texto): ganando / neutro / débil / perdiendo
   const VERDICT = {
@@ -488,7 +543,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const totPct = tot.inv ? tot.pnl / tot.inv * 100 : null, vk = verdictOf(totPct);
     const pos = S.pf.wallet?.positions ?? [], estDay = pos.reduce((a, x) => a + dailyOf(x), 0);
     // 0 · veredicto general
-    $("hero").innerHTML = `<div class="main"><span>Ganancia real de todas las posiciones (sin contar lo depositado)</span><b class="${tot.pnl >= 0 ? "" : ""}">${tot.pnl >= 0 ? "+" : "−"}${usd(Math.abs(tot.pnl))}</b>
+    $("hero").innerHTML = `<div class="main"><span>Ganancia real de todas tus posiciones (bot + manuales)</span><b class="${tot.pnl >= 0 ? "" : ""}">${tot.pnl >= 0 ? "+" : "−"}${usd(Math.abs(tot.pnl))}</b>
         <small>${badge(vk)} &nbsp;${sgnP(totPct, 2)} sobre ${usd(tot.inv)} invertidos en ${scored.length} vaults</small></div>
       <div class="kpi"><span>Comisiones ganadas</span><b>${sgnU(tot.fees)}</b><small>lo que pagaron los vaults</small></div>
       <div class="kpi"><span>Efecto precio / rango</span><b>${sgnU(tot.price)}</b><small>${Math.abs(tot.noSplit) >= 0.01 ? `+ ${sgnU(tot.noSplit)} sin desglose (manuales)` : "subida o bajada de los tokens"}</small></div>

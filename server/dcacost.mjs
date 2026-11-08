@@ -11,7 +11,7 @@
 import { ethers } from "ethers";
 import { priceFromSqrtX96 } from "./beefywallet.mjs";
 import { CHAINS } from "../src/chains.js";
-import { bestPath } from "./beefyclm.mjs";
+import { bestPath, vaultValue, tokenValue } from "./beefyclm.mjs";
 
 const TRANSFER = ethers.id("Transfer(address,address,uint256)");
 const I = new ethers.Interface([
@@ -201,7 +201,7 @@ const px2 = (n) => (Number.isFinite(n) ? "$" + (n >= 100 ? n.toFixed(2) : n.toPr
 
 /** Calcula el costo de cada vault del DCA y devuelve las líneas para el log. `s` = Strategy (provider, me, net, s.runs, store). */
 export async function dcaCostReport(s, { ethUsd = null } = {}) {
-  if (s.net?.wrapNative) return []; // cadenas donde el "estable" es WETH (Robinhood): los montos no serían USD
+  if (s.net?.wrapNative) return wrapStrategyReport(s, { ethUsd }); // Robinhood: el "estable" es WETH → cuentas en USD con el precio del ETH
   const runs = Object.entries(s.s?.runs ?? {}).map(([k, r]) => ({ k, ...r })).filter((r) => r.vaultId && r.clm && Array.isArray(r.txs) && r.txs.length)
     .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
   const byVault = {};
@@ -317,5 +317,72 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
   }
   await s.store.set("dcaCostRc", cache).catch(() => {});
   await s.store.set("dcaCostFees", fees).catch(() => {});
+  return out;
+}
+
+/**
+ * Estrategias en cadenas cuyo "estable" es WETH (Robinhood). Por estrategia (DCA principal y cada DCA_EXTRA):
+ * aportado = dólares de cada depósito diario; valor = posiciones abiertas + capital apartado (por reinvertir y ganancia
+ * retenida) + tokens sueltos de sus vaults en la wallet; ganancia real = valor − aportado; comisiones estimadas = valor × APY
+ * hora a hora; rendimiento por día sobre capital-día.
+ */
+export async function wrapStrategyReport(s, { ethUsd = null } = {}) {
+  if (!(ethUsd > 0)) return [`dca estrategia ${s.net.beefy}: sin precio del ETH`];
+  const D = s.net.stableDec, toUsd = (raw) => Number(raw) / 10 ** D * ethUsd, now = Date.now();
+  const apy = await fetch("https://api.beefy.finance/apy/breakdown", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json()).catch(() => ({}));
+  const fees = (await s.store.get("wrapFees")) ?? {};
+  const out = [], seenTok = new Set(), res = {};
+  const recs = Object.entries(s.s?.dca ?? {}).filter(([, d]) => d && (d.totalUsd > 0 || d.redeploy)).sort(([, a], [, b]) => (b.extra ? 1 : 0) - (a.extra ? 1 : 0)); // primero los extra: se quedan con sus tokens
+  for (const [label, d] of recs) {
+    try {
+      const ids = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...Object.keys(d.holdings ?? {}), ...Object.keys(d.failed ?? {}), ...(d.target ? [d.target] : [])])];
+      const open = d.extra ? ids : ids.filter((id) => !(d.holdings?.[id]?.closed));
+      let enVault = 0, sueltos = 0; const vaults = [];
+      const toks = new Set();
+      for (const id of ids) {
+        let v = null;
+        try { v = await vaultValue(s, id); }
+        catch (e) {
+          // vault fuera de la API (retirado): se cuentan igual sus tokens sueltos con los que se guardaron al depositar
+          for (const t of d.holdings?.[id]?.tokens ?? []) if (t && t.toLowerCase() !== s.net.stable.toLowerCase()) toks.add(t.toLowerCase());
+          if (open.includes(id)) vaults.push({ id, error: (e.message || String(e)).slice(0, 80) });
+          continue;
+        }
+        for (const t of v.tokens) if (t && t.toLowerCase() !== s.net.stable.toLowerCase()) toks.add(t.toLowerCase());
+        const usd = toUsd(v.value);
+        if (usd > 0.005 || open.includes(id)) {
+          const a = Number(apy?.[id]?.totalApy ?? NaN);
+          fees[id] = accrueFees(fees[id] ?? { since: new Date(now).toISOString(), at: now, usd: 0 }, { now, valueUsd: usd, apy: Number.isFinite(a) && a < 200 ? a : NaN }); // APY > 20,000 % = irreal, no cuenta
+          vaults.push({ id, usd: +usd.toFixed(4), apyPct: Number.isFinite(a) ? a * 100 : null });
+        }
+        enVault += usd;
+      }
+      for (const t of toks) {
+        if (seenTok.has(t)) continue; seenTok.add(t);
+        const b = BigInt((await s.provider.call({ to: t, data: I.encodeFunctionData("balanceOf", [s.me]) }).then((x) => I.decodeFunctionResult("balanceOf", x)[0]).catch(() => 0n)));
+        sueltos += toUsd(await tokenValue(s, t, b));
+      }
+      const reservado = toUsd(BigInt(d.redeploy ?? "0") + BigInt(d.retained ?? "0"));
+      const aportado = Number(d.totalUsd ?? 0);
+      const valor = enVault + sueltos + reservado, pnl = valor - aportado;
+      const comisiones = ids.reduce((a, id) => a + (fees[id]?.usd ?? 0), 0);
+      const cd = capitalDays((d.deposits ?? []).map((x) => ({ at: x.at, usd: x.usd })), aportado, now);
+      res[label] = { at: now, extra: !!d.extra, aportado, valor, enVault, sueltos, reservado, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+        capDias: cd.capDays, diarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? pnl / cd.capDays * 100 : null, dias: cd.days, n: d.n ?? 0, vaults };
+      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos) · valor ${f2(valor)} = en vaults ${f2(enVault)} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · ganancia real ${sg(pnl)} (${pc(res[label].pnlPct)}) = comisiones est. ${sg(comisiones)} + precio/rango ${sg(pnl - comisiones)}` +
+        `${res[label].diarioPct !== null ? ` · ${pc(res[label].diarioPct)} por día` : ""} · vaults: ${vaults.map((v) => `${v.id} ${v.error ? "error " + v.error : f2(v.usd)}`).join(", ") || "—"}`);
+    } catch (e) { out.push(`dca estrategia ${s.net.beefy} ${label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
+  }
+  await s.store.set("wrapFees", fees).catch(() => {});
+  const L = Object.values(res);
+  if (L.length) {
+    const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });
+    s.lastStrategy = { at: now, ...t, pnlPct: t.aportado > 0 ? t.pnl / t.aportado * 100 : null, precio: t.pnl - t.comisiones, diarioPct: t.capDias > 0 ? t.pnl / t.capDias * 100 : null, n: L.reduce((a, x) => a + x.n, 0) };
+    s.lastStrategies = res;
+    const hist = (await s.store.get("dcaStrategyHist").catch(() => null)) ?? [];
+    hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
+    while (hist.length > 24 * 90) hist.shift();
+    await s.store.set("dcaStrategyHist", hist).catch(() => {});
+  }
   return out;
 }
