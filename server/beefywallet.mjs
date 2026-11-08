@@ -168,7 +168,9 @@ export async function beefyWallet(address, { provider = null } = {}) {
   // un CLM depositado en su vault o reward pool aparece una vez (la capa que tiene las acciones)
   positions.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0));
   const total = positions.reduce((s, x) => s + (x.valueUsd ?? 0), 0);
-  const daily = positions.reduce((s, x) => s + (x.valueUsd ?? 0) * (Math.pow(1 + (x.apyPct ?? 0) / 100, 1 / 365) - 1), 0);
+  // APY absurdos de Beefy (p. ej. 4e16 % en vaults diminutos) no cuentan en el estimado: tope APY_MAX_PCT (20000 %)
+  const apyMax = Number(process.env.APY_MAX_PCT ?? 20000);
+  const daily = positions.reduce((s, x) => s + ((x.apyPct ?? 0) <= apyMax ? (x.valueUsd ?? 0) * (Math.pow(1 + (x.apyPct ?? 0) / 100, 1 / 365) - 1) : 0), 0);
   const px = (k) => (Number.isFinite(Number(price[k])) ? +Number(price[k]).toFixed(4) : null);
   // precio del pool del CLM cuando lo hay (el oráculo "ZEC" de Beefy quedó congelado en $29.7566); el de Beefy queda en pricesBeefy
   const pick = (k) => { const o = onchainPx[k.toUpperCase()]; return o ? +o.price.toFixed(4) : px(k); };

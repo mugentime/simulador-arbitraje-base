@@ -130,6 +130,11 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   const short = (id) => String(id || "").replace(/-(rp|vault)$/, "").replace(/^(uniswap|aero)-cow-[a-z]+-/, "").toUpperCase();
   const tx = (chain, h) => (h ? (EXP[chain] ? `<a href="${EXP[chain]}${esc(h)}" target="_blank" rel="noopener">${esc(h.slice(0, 8))}…</a>` : esc(h.slice(0, 10)) + "…") : "");
   const get = async (u, ms = 60000) => { const r = await fetch(u, { signal: AbortSignal.timeout(ms), cache: "no-store" }); if (!r.ok) throw new Error(`${new URL(u).host}: HTTP ${r.status}`); return r.json(); };
+  // Beefy a veces publica APY absurdos (p. ej. 41,046,407,731,461,670 % en un vault de $400): arriba de APY_MAX no se usan en estimaciones
+  const APY_MAX = 20000;
+  const apyOk = (a) => fin(a) && a >= 0 && a <= APY_MAX;
+  const dailyOf = (x) => (fin(x.valueUsd) && apyOk(x.apyPct) ? x.valueUsd * (Math.pow(1 + x.apyPct / 100, 1 / 365) - 1) : 0);
+  const apyTxt = (a) => (!fin(a) ? "—" : a > APY_MAX ? `<span class="warn" title="APY publicado por Beefy: ${(+a).toLocaleString("es-MX")} %">irreal</span>` : pct(a, a < 100 ? 1 : 0));
   const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* */ } } };
 
   // tema
@@ -205,15 +210,17 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const w = p.wallet, bal = p.balances, pos = w?.positions ?? [];
     const inv = w?.totalUsd ?? 0, free = bal?.totalUsd ?? 0;
     const pending = pos.reduce((a, x) => a + (x.pendingUsd ?? 0), 0);
-    const wApy = inv ? pos.reduce((a, x) => a + (x.valueUsd ?? 0) * (x.apyPct ?? 0), 0) / inv : null;
+    const daily = pos.reduce((a, x) => a + dailyOf(x), 0);
+    const bad = pos.filter((x) => fin(x.apyPct) && !apyOk(x.apyPct));
+    const effApy = inv ? (Math.pow(1 + daily / inv, 365) - 1) * 100 : null; // rendimiento de toda la cartera si siguiera igual un año
     const s24 = snapAgo(24); const d24 = s24 ? inv - s24.total : null;
     const strat = S.reports.map((r) => r.pnl).filter(Boolean);
     const ap = strat.reduce((a, x) => a + (x.aportado ?? 0), 0), pnl = strat.reduce((a, x) => a + (x.pnl ?? 0), 0), fees = strat.reduce((a, x) => a + (x.comisiones ?? 0), 0);
     const k = [
       ["Patrimonio total", usd(inv + free), `${usd(inv)} invertido · ${usd(free)} libre`],
       ["En posiciones", usd(inv), d24 !== null ? `${sgnU(d24)} en 24 h${s24?.total ? " (" + sgnP(d24 / s24.total * 100) + ")" : ""}` : `${pos.length} posiciones`],
-      ["Rendimiento estimado", usd(w?.estDailyUsd, 3) + "<small> /día</small>", `≈ ${usd((w?.estDailyUsd ?? 0) * 30)} al mes`],
-      ["APY ponderado", pct(wApy, wApy < 100 ? 1 : 0), `por cobrar ${usd(pending, 3)}`],
+      ["Rendimiento estimado", usd(daily, 3) + "<small> /día</small>", `≈ ${usd(daily * 30)} al mes · por cobrar ${usd(pending, 3)}`],
+      ["APY de la cartera", pct(effApy, effApy < 100 ? 1 : 0), bad.length ? `<span class="warn">sin ${bad.map((x) => esc(short(x.id))).join(", ")} (APY irreal)</span>` : "rendimiento/día de todo lo invertido, anualizado"],
       ...(strat.length ? [["Resultado del DCA", sgnU(pnl), `sobre ${usd(ap)} aportado · comisiones ${sgnU(fees)}`]] : []),
     ];
     $("kpis").innerHTML = k.map(([a, b, c]) => `<div class="kpi"><span>${a}</span><b>${b}</b><small>${c}</small></div>`).join("");
@@ -228,7 +235,8 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       const nm = `<b>${esc(x.name ?? short(x.id))}</b> (${CH[x.chain] ?? x.chain})`;
       const was = s24?.pos?.[x.id], wasApy = s24?.apy?.[x.id];
       if (!mg[x.id] && fin(was) && was > 0 && fin(x.valueUsd) && x.valueUsd / was - 1 < -0.10) A.push(["bad", `${nm} perdió ${pct((1 - x.valueUsd / was) * 100, 1)} en 24 h (${usd(was)} → ${usd(x.valueUsd)}).`]);
-      if (fin(wasApy) && wasApy > 0 && fin(x.apyPct) && x.apyPct < wasApy * 0.5) A.push(["warn", `${nm}: el APY bajó a menos de la mitad en 24 h (${pct(wasApy)} → ${pct(x.apyPct)}).`]);
+      if (fin(x.apyPct) && !apyOk(x.apyPct)) A.push(["warn", `${nm}: Beefy publica un APY irreal (${(+x.apyPct).toExponential(1)} %); no se cuenta en el rendimiento estimado.`]);
+      if (apyOk(wasApy) && wasApy > 0 && apyOk(x.apyPct) && x.apyPct < wasApy * 0.5) A.push(["warn", `${nm}: el APY bajó a menos de la mitad en 24 h (${pct(wasApy)} → ${pct(x.apyPct)}).`]);
       if (fin(x.tvlUsd) && x.tvlUsd > 0 && x.tvlUsd < 1000) A.push(["warn", `${nm}: pool diminuto (TVL ${usd(x.tvlUsd, 0)}); el APY es poco fiable y tu parte es ${pct((x.valueUsd ?? 0) / x.tvlUsd * 100, 1)} del vault.`]);
     }
     for (const s of strategies()) {
@@ -249,11 +257,11 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const pos = [...(p.wallet?.positions ?? [])], tot = p.wallet?.totalUsd || 1, s24 = snapAgo(24), mg = managerOf();
     const rows = pos.map((x) => {
       const was = s24?.pos?.[x.id];
-      const daily = fin(x.valueUsd) && fin(x.apyPct) ? x.valueUsd * (Math.pow(1 + x.apyPct / 100, 1 / 365) - 1) : null;
+      const daily = apyOk(x.apyPct) ? dailyOf(x) : null;
       const st = mg[x.id]; const cost = st?.r?.cost?.[x.id];
       return { x, was, d24: fin(was) && fin(x.valueUsd) ? x.valueUsd - was : null, daily, share: x.tvlUsd ? (x.valueUsd ?? 0) / x.tvlUsd * 100 : null, st, cost };
     });
-    const key = { value: (r) => r.x.valueUsd ?? 0, apy: (r) => r.x.apyPct ?? 0, d24: (r) => r.d24 ?? -1e9, daily: (r) => r.daily ?? 0, tvl: (r) => r.x.tvlUsd ?? 0 }[S.sort] ?? ((r) => r.x.valueUsd ?? 0);
+    const key = { value: (r) => r.x.valueUsd ?? 0, apy: (r) => (apyOk(r.x.apyPct) ? r.x.apyPct : -1), d24: (r) => r.d24 ?? -1e9, daily: (r) => r.daily ?? 0, tvl: (r) => r.x.tvlUsd ?? 0 }[S.sort] ?? ((r) => r.x.valueUsd ?? 0);
     rows.sort((a, b) => key(b) - key(a));
     $("poscount").textContent = `${pos.length} · se actualiza cada ${Math.round((p.ttlS ?? 60))} s`;
     const th = (k, t, cls = "n") => `<th class="${cls} s" data-k="${k}">${t}${S.sort === k ? " ↓" : ""}</th>`;
@@ -267,7 +275,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
           <td class="n hide-s"><div class="bar" title="${pct((x.valueUsd ?? 0) / tot * 100, 1)}"><i style="width:${Math.min(100, (x.valueUsd ?? 0) / tot * 100).toFixed(1)}%"></i></div></td>
           <td class="n">${fin(d24) ? `${sgnU(d24)}<div style="font-size:11px">${was ? sgnP(d24 / was * 100) : ""}</div>` : '<span class="mut">—</span>'}</td>
           <td class="n">${res}</td>
-          <td class="n">${pct(x.apyPct, x.apyPct < 100 ? 1 : 0)}</td>
+          <td class="n">${apyTxt(x.apyPct)}</td>
           <td class="n">${usd(daily, 3)}</td>
           <td class="n ${tvlCls}">${usdK(x.tvlUsd)}</td>
           <td class="n hide-s ${share > 5 ? "warn" : "mut"}">${pct(share, share < 1 ? 2 : 1)}</td>
@@ -339,7 +347,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
             <div><span>Valor</span><b>${usd(p?.valueUsd ?? c?.value)}</b></div>
             <div><span>Invertido</span><b>${usd(c?.invested ?? (h.usd || null))}</b>${!c && h.usd ? '<div class="mut" style="font-size:11px">depósitos DCA</div>' : ""}</div>
             <div><span>Resultado</span><b>${c ? sgnU(c.pnl) + " " + sgnP(c.pnlPct) : "—"}</b></div>
-            <div><span>APY</span><b>${pct(apy)}</b>${thr ? `<div class="mut" style="font-size:11px">sale bajo ${pct(thr)}</div>` : ""}</div>
+            <div><span>APY</span><b>${apyTxt(apy)}</b>${thr ? `<div class="mut" style="font-size:11px">sale bajo ${pct(thr)}</div>` : ""}</div>
           </div>`;
       }).join("");
       const pn = r.pnl;
