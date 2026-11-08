@@ -323,12 +323,13 @@ async function dcaOnlyLoop(exec, p) {
   }
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
-  let n = 0;
+  let n = 0, lastTickErr = null;
   while (!stopping && Date.now() < until) {
     const ethUsd = await nativeUsd();
     const ctx = { ethUsd, dcaOnly: true };
     if (++n % 60 === 0) await exec.refreshBalance().catch(() => {});
-    await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
+    const rs = await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
+    for (const x of rs) if (x.status === "rejected") { const m = String(x.reason?.shortMessage || x.reason?.message || x.reason).slice(0, 200); if (m !== lastTickErr) { lastTickErr = m; await diag(`ciclo DCA: error no controlado · ${m}`); } }
     await new Promise((r) => setTimeout(r, tick));
   }
 }

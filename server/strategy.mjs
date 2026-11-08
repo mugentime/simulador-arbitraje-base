@@ -318,6 +318,23 @@ export class Strategy {
     const now = Date.now();
     const d = ((this.s.dca ??= {})[this.label] ??= { n: 0, lastAt: 0, totalUsd: 0, deposits: [], vaultId: process.env.STRATEGY_VAULT_ID || null });
     if (this.retryAt && now < this.retryAt) return;
+    // LEFTOVER_SWEEP=<etiqueta> (una vez): vende al estable los tokens sueltos de los vaults por los que pasó la estrategia
+    // y los suma al capital por reinvertir (así nada queda olvidado en la wallet)
+    const lsTag = process.env.LEFTOVER_SWEEP;
+    if (lsTag && d.leftSweepTag !== lsTag) {
+      d.leftSweepTag = lsTag;
+      const ids = [...new Set([...Object.keys(d.holdings ?? {}), ...Object.keys(d.failed ?? {})])];
+      const stableUsd = this.net.wrapNative ? (ctx?.ethUsd || 0) : 1;
+      const dust = stableUsd > 0 ? ethers.parseUnits((0.2 / stableUsd).toFixed(Math.min(this.net.stableDec, 12)), this.net.stableDec) : 10n ** 30n;
+      let total = 0n; const parts = [];
+      for (const id of ids) {
+        try { const r = await sellVaultTokens(this, id, { dustStable: dust }); if (r.got > 0n) { total += r.got; parts.push(`${id} +${ethers.formatUnits(r.got, this.net.stableDec)} (${r.txs.map((t) => t.hash).join(", ")})`); } }
+        catch (e) { parts.push(`${id} error ${(e.shortMessage || e.message || String(e)).slice(0, 80)}`); }
+      }
+      if (total > 0n && this.redeployOnExit) { d.redeploy = String(BigInt(d.redeploy ?? "0") + total); d.redeployTag = now; }
+      await this.diag(`estrategia ${this.kind}: tokens sueltos vendidos (${lsTag}) · +${ethers.formatUnits(total, this.net.stableDec)} ${this.net.stableSym}${this.redeployOnExit ? " al capital por reinvertir" : ""} · ${parts.join(" | ") || "nada que vender"}`);
+      return;
+    }
     // modo automático (STRATEGY_VAULT_ID=auto): solo vaults con APY publicado ≥ HIGH_APY_MIN_PCT; reglas de salida cada hora
     if (process.env.STRATEGY_VAULT_ID === "auto") {
       if (!this.autoAt || now - this.autoAt >= 3600_000) { this.autoAt = now; if (await this.autoTick(ctx, d, now)) return; }
@@ -330,23 +347,6 @@ export class Strategy {
           this.protectStable = BigInt(d.retained ?? "0");
           return;
         }
-      }
-      // LEFTOVER_SWEEP=<etiqueta> (una vez): vende al estable los tokens sueltos de los vaults por los que pasó la estrategia
-      // y los suma al capital por reinvertir (así nada queda olvidado en la wallet)
-      const lsTag = process.env.LEFTOVER_SWEEP;
-      if (lsTag && d.leftSweepTag !== lsTag) {
-        d.leftSweepTag = lsTag;
-        const ids = [...new Set([...Object.keys(d.holdings ?? {}), ...Object.keys(d.failed ?? {})])];
-        const stableUsd = this.net.wrapNative ? (ctx?.ethUsd || 0) : 1;
-        const dust = stableUsd > 0 ? ethers.parseUnits((0.2 / stableUsd).toFixed(Math.min(this.net.stableDec, 12)), this.net.stableDec) : 10n ** 30n;
-        let total = 0n; const parts = [];
-        for (const id of ids) {
-          try { const r = await sellVaultTokens(this, id, { dustStable: dust }); if (r.got > 0n) { total += r.got; parts.push(`${id} +${ethers.formatUnits(r.got, this.net.stableDec)} (${r.txs.map((t) => t.hash).join(", ")})`); } }
-          catch (e) { parts.push(`${id} error ${(e.shortMessage || e.message || String(e)).slice(0, 80)}`); }
-        }
-        if (total > 0n && this.redeployOnExit) { d.redeploy = String(BigInt(d.redeploy ?? "0") + total); d.redeployTag = now; }
-        await this.diag(`estrategia ${this.kind}: tokens sueltos vendidos (${lsTag}) · +${ethers.formatUnits(total, this.net.stableDec)} ${this.net.stableSym}${this.redeployOnExit ? " al capital por reinvertir" : ""} · ${parts.join(" | ") || "nada que vender"}`);
-        return;
       }
       if (this.redeployOnExit) {
         // reinversión del capital que salió de un vault (rotación o salida) en el nuevo destino

@@ -326,7 +326,9 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
  * retenida) + tokens sueltos de sus vaults en la wallet; ganancia real = valor − aportado; comisiones estimadas = valor × APY
  * hora a hora; rendimiento por día sobre capital-día.
  */
-export async function wrapStrategyReport(s, { ethUsd = null } = {}) {
+export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
+  // copia liviana: vaultValue cambia run/vaultId y no debe pisar un depósito en curso de la estrategia
+  const s = Object.assign(Object.create(Object.getPrototypeOf(s0)), s0, { save: async () => {}, diag: async () => {} });
   if (!(ethUsd > 0)) return [`dca estrategia ${s.net.beefy}: sin precio del ETH`];
   const D = s.net.stableDec, toUsd = (raw) => Number(raw) / 10 ** D * ethUsd, now = Date.now();
   const apy = await fetch("https://api.beefy.finance/apy/breakdown", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json()).catch(() => ({}));
@@ -381,8 +383,8 @@ export async function wrapStrategyReport(s, { ethUsd = null } = {}) {
   const L = Object.values(res);
   if (L.length) {
     const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });
-    s.lastStrategy = { at: now, ...t, pnlPct: t.aportado > 0 ? t.pnl / t.aportado * 100 : null, precio: t.pnl - t.comisiones, diarioPct: t.capDias > 0 ? t.pnl / t.capDias * 100 : null, n: L.reduce((a, x) => a + x.n, 0) };
-    s.lastStrategies = res;
+    s0.lastStrategy = { at: now, ...t, pnlPct: t.aportado > 0 ? t.pnl / t.aportado * 100 : null, precio: t.pnl - t.comisiones, diarioPct: t.capDias > 0 ? t.pnl / t.capDias * 100 : null, n: L.reduce((a, x) => a + x.n, 0) };
+    s0.lastStrategies = res;
     const hist = (await s.store.get("dcaStrategyHist").catch(() => null)) ?? [];
     hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
     while (hist.length > 24 * 90) hist.shift();
