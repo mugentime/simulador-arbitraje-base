@@ -242,9 +242,15 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     for (const s of strategies()) {
       const c = s.r.cost ?? {};
       for (const id of s.ids) { const h = s.d.holdings?.[id]; if (h?.badSince) A.push(["warn", `${s.role} (${CH[s.r.chain]}): <b>${esc(short(id))}</b> en vigilancia de salida desde ${hm(h.badSince)}; sale si dura ${s.r.auto?.rules?.exitHours ?? "?"} h.`]); const k = c[id]; if (k && fin(k.pnlPct) && k.pnlPct < -10) A.push(["bad", `${s.role}: <b>${esc(short(id))}</b> va ${pct(k.pnlPct, 1)} contra lo invertido.`]); }
-      if (s.r.auto && !s.d.target) A.push(["info", `${s.role} (${CH[s.r.chain]}): sin vault elegible; el depósito diario está en pausa y el dinero espera en la wallet.`]);
-      const lastErr = (s.r.runs ?? []).find((x) => x.status === "error" && Date.now() - (x.startedAt ?? 0) < 24 * 3600000);
-      if (lastErr) A.push(["bad", `${s.role} (${CH[s.r.chain]}): error ${hm(lastErr.startedAt)} · ${esc((lastErr.error ?? "").slice(0, 140))}`]);
+      const red = s.d.redeploy && BigInt(s.d.redeploy) > 0n ? `${(Number(BigInt(s.d.redeploy)) / 10 ** (s.r.strategy.stableDec ?? 18)).toPrecision(3)} ${esc(s.r.strategy.stableSym ?? "")} por reinvertir; ` : "";
+      if (s.r.auto && !s.d.target) A.push(["info", `${s.role} (${CH[s.r.chain]}): sin vault elegible (APY ≥ ${pct(s.r.auto.rules?.minApyPct)} y TVL ≥ ${usdK(s.r.auto.rules?.minTvl)}); ${red}el depósito diario está en pausa y el dinero espera en la wallet.`]);
+    }
+    // errores: solo si la corrida más reciente de ese vault (en esa cadena) sigue en error; uno por vault, sin repetir
+    for (const r of S.reports) {
+      const last = {};
+      for (const x of r.runs ?? []) { const k = x.vault ?? x.label; if (!last[k] || (x.startedAt ?? 0) > (last[k].startedAt ?? 0)) last[k] = x; }
+      for (const x of Object.values(last)) if (x.status === "error" && Date.now() - (x.startedAt ?? 0) < 24 * 3600000)
+        A.push(["bad", `${CH[r.chain] ?? r.chain} · <b>${esc(short(x.vault))}</b>: error ${hm(x.startedAt)} · ${esc((x.error ?? "").slice(0, 160))}`]);
     }
     const baseFree = (p.balances?.chains ?? []).find((c) => c.chain === "base")?.usd ?? null;
     const daily = strategies().reduce((a, s) => a + (s.r.strategy?.dcaUsd ?? 0), 0);
