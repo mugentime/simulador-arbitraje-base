@@ -102,14 +102,18 @@ export class Strategy {
       for (const [id, h] of Object.entries(d.holdings ?? {})) if (!h.closed) await this.takeProfit(d, id, h, now).catch(async (e) => this.diag(`estrategia dinámica: cobro de ${id} falló · ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`));
       return;
     }
-    const amt = BigInt(d.redeploy ?? "0");
+    let amt = BigInt(d.redeploy ?? "0");
     if (!this.parkToken || amt <= 0n || (d.parkRetryAt && now < d.parkRetryAt)) return;
+    // tope = estable libre en la wallet (sin la ganancia retenida): el apartado contable puede superar lo que de verdad hay
+    const free = BigInt(await new ethers.Contract(this.net.stable, ["function balanceOf(address) view returns (uint256)"], this.provider).balanceOf(this.me)) - BigInt(d.retained ?? "0");
+    if (amt > free) amt = free > 0n ? free : 0n;
+    if (amt === 0n) { d.redeploy = "0"; await this.diag(`estrategia ${this.kind}: sobrante apartado sin saldo real en la wallet (${this.net.stableSym} libre 0); se pone en 0`); return; }
     const label = `${this.label}-park-${d.redeployTag ?? now}`;
     this.run = this.s.runs[label] ??= { kind: "park", startedAt: now, txs: [], status: "pendiente" };
     try {
       const got = await routeSwap(this, this.net.stable, this.parkToken, amt, `swap sobrante ${this.net.stableSym}→estacionado`);
       this.run.status = "hecho"; this.run.endedAt = Date.now(); this.run.usdcIn = String(amt); this.run.parkedOut = String(got);
-      d.redeploy = "0"; d.parkRetryAt = 0;
+      d.redeploy = "0"; d.parkRetryAt = 0; // lo que no había en la wallet ya se había gastado: se descarta del apartado
       (d.parked ??= []).push({ at: new Date(now).toISOString(), token: this.parkToken, in: String(amt), out: String(got), txs: this.run.txs.map((t) => t.hash) });
       await this.diag(`estrategia ${this.kind}: sobrante estacionado · ${ethers.formatUnits(amt, this.net.stableDec)} ${this.net.stableSym} → ${got} (crudo) de ${this.parkToken}`);
     } catch (e) {
