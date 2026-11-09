@@ -632,66 +632,81 @@ export async function tokenValue(s, token, amount) {
 // ---------------------------------------------------------------- comisiones MEDIDAS (eventos Harvest del CLM)
 // En cada harvest la estrategia del CLM cobra las comisiones del pool, descuenta la parte de Beefy y compone el resto en la
 // posición, emitiendo Harvest(fee0, fee1). Nuestra parte = fee × (participaciones nuestras / totalSupply del CLM) en ese bloque.
-const HV = new ethers.Interface(["event Harvest(uint256 fee0, uint256 fee1)"]);
-const HARVEST_TOPIC = HV.getEvent("Harvest").topicHash;
-const callAt = async (s, to, fn, args, blockTag) => C.decodeFunctionResult(fn, await s.provider.call({ from: s.me, to, data: C.encodeFunctionData(fn, args), blockTag }));
-/** Participaciones del CLM nuestras en un bloque (reward pool o vault + CLM suelto). Lanza si el nodo no da estado histórico. */
-async function sharesAt(s, r, blockTag) {
-  let sh = (await callAt(s, r.vault, "balanceOf", [s.me], blockTag))[0];
-  if (!r.gov && sh > 0n) sh = sh * (await callAt(s, r.vault, "getPricePerFullShare", [], blockTag))[0] / 10n ** 18n;
-  sh += (await callAt(s, r.clm, "balanceOf", [s.me], blockTag))[0];
-  const [ts] = await callAt(s, r.clm, "totalSupply", [], blockTag);
-  return { sh, ts };
-}
+// El nodo de Robinhood no guarda estado histórico, así que ambas cantidades se reconstruyen hacia atrás desde el valor actual con
+// los Transfer: mints/burns del CLM (totalSupply) y entradas/salidas de nuestra wallet en el reward pool / vault / CLM.
+const HV = new ethers.Interface(["event Harvest(uint256 fee0, uint256 fee1)", "event Transfer(address indexed from, address indexed to, uint256 value)"]);
+const HARVEST_TOPIC = HV.getEvent("Harvest").topicHash, TRANSFER_TOPIC = HV.getEvent("Transfer").topicHash;
+const ZERO32 = ethers.zeroPadValue("0x", 32);
+/** Reconstrucción (pura, probada): valor en el bloque b = actual − Σ deltas con bloque > b. ev: [{b, d}] (d en string). */
+export function valueAt(nowVal, ev, b) { let v = BigInt(nowVal); for (const e of ev) if (e.b > b) v -= BigInt(e.d); return v; }
 /**
- * Avanza el escaneo de Harvest de un vault desde sinceMs (primer depósito) y acumula nuestra parte en st (estado persistente,
- * se modifica). budget = máx. llamadas eth_getLogs por corrida. Devuelve {usd (crudo en estable), n, behindBlocks, approx}.
+ * Avanza el escaneo desde sinceMs (primer depósito) y devuelve nuestra parte de las comisiones compuestas.
+ * st = estado persistente (se modifica). budget = máx. rangos de bloques por corrida. Devuelve {usd (crudo en estable), n, behindBlocks}.
  */
-export async function harvestFees(s, id, st, { sinceMs, budget = 40 } = {}) {
+export async function harvestFees(s, id, st, { sinceMs, budget = 25 } = {}) {
   const prev = s.run, prevId = s.vaultId;
   s.run = { txs: [], extra: true }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
   try {
     await resolve(s);
-    const r = s.run, N = s.net;
+    const r = s.run, N = s.net, me = ethers.zeroPadValue(s.me, 32);
     const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
     st.strategy ??= (await call(s, r.clm, "strategy"))[0];
     const head = await s.provider.getBlockNumber();
-    if (st.from == null) {
-      // bloque del primer depósito: estimado con el tiempo de bloque reciente (con margen de 10 %)
+    if (st.from == null || st.v !== 3) {
       const [b1, b0] = await Promise.all([s.provider.getBlock(head), s.provider.getBlock(Math.max(0, head - 20000))]);
       const bt = Math.max(0.05, (b1.timestamp - b0.timestamp) / Math.max(1, b1.number - b0.number));
-      st.from = Math.max(0, head - Math.ceil((Date.now() - (sinceMs ?? Date.now())) / 1000 / bt * 1.1));
-      st.my0 = "0"; st.my1 = "0"; st.n = 0; st.approx = 0;
+      Object.assign(st, { v: 3, from: Math.max(0, head - Math.ceil((Date.now() - (sinceMs ?? Date.now())) / 1000 / bt * 1.1)), hv: [], sup: [], mine: [], span: 20000 });
     }
-    let span = st.span ?? 50000, calls = 0;
+    const wrap = lc(r.vault) !== lc(r.clm) ? r.vault : null; // reward pool / vault que envuelve el CLM
+    const logs = (f) => s.provider.getLogs(f);
+    let span = st.span, calls = 0;
     while (st.from <= head && calls < budget) {
-      const to = Math.min(head, st.from + span - 1);
+      const to = Math.min(head, st.from + span - 1), R = { fromBlock: st.from, toBlock: to };
       calls++;
-      let logs;
-      try { logs = await s.provider.getLogs({ address: st.strategy, topics: [HARVEST_TOPIC], fromBlock: st.from, toBlock: to }); }
-      catch { if (span > 500) { span = Math.max(500, Math.floor(span / 4)); continue; } throw new Error("eth_getLogs no responde"); }
-      for (const lg of logs) {
-        const { fee0, fee1 } = HV.parseLog(lg).args;
-        let x;
-        try { x = await sharesAt(s, r, lg.blockNumber); }
-        catch { x = await sharesAt(s, r, "latest"); st.approx++; } // sin estado histórico: participación actual (aproximado)
-        st.tot0 = String(BigInt(st.tot0 ?? "0") + fee0); st.tot1 = String(BigInt(st.tot1 ?? "0") + fee1);
-        if (x.ts > 0n && x.sh > 0n) { st.my0 = String(BigInt(st.my0) + fee0 * x.sh / x.ts); st.my1 = String(BigInt(st.my1) + fee1 * x.sh / x.ts); }
-        st.n++;
-      }
+      let got;
+      try {
+        got = await Promise.all([
+          logs({ ...R, address: st.strategy, topics: [HARVEST_TOPIC] }),
+          logs({ ...R, address: r.clm, topics: [TRANSFER_TOPIC, ZERO32] }), logs({ ...R, address: r.clm, topics: [TRANSFER_TOPIC, null, ZERO32] }),
+          logs({ ...R, address: r.clm, topics: [TRANSFER_TOPIC, me] }), logs({ ...R, address: r.clm, topics: [TRANSFER_TOPIC, null, me] }),
+          ...(wrap ? [logs({ ...R, address: wrap, topics: [TRANSFER_TOPIC, me] }), logs({ ...R, address: wrap, topics: [TRANSFER_TOPIC, null, me] })] : []),
+        ]);
+      } catch { if (span > 500) { span = Math.max(500, Math.floor(span / 4)); continue; } throw new Error("eth_getLogs no responde"); }
+      const [h, mint, burn, cOut, cIn, wOut = [], wIn = []] = got;
+      for (const l of h) { const a = HV.parseLog(l).args; st.hv.push({ b: l.blockNumber, f0: String(a.fee0), f1: String(a.fee1) }); }
+      const amt = (l) => BigInt(l.data);
+      for (const l of mint) st.sup.push({ b: l.blockNumber, d: String(amt(l)) });
+      for (const l of burn) st.sup.push({ b: l.blockNumber, d: String(-amt(l)) });
+      // nuestras participaciones (en CLM): CLM suelto + envuelto. En vaults no-gov se usa el ppfs actual (aproximado).
+      let pp = 10n ** 18n;
+      if (wrap && !r.gov && (wOut.length || wIn.length)) pp = (await call(s, r.vault, "getPricePerFullShare"))[0];
+      for (const l of cIn) st.mine.push({ b: l.blockNumber, d: String(amt(l)) });
+      for (const l of cOut) st.mine.push({ b: l.blockNumber, d: String(-amt(l)) });
+      for (const l of wIn) st.mine.push({ b: l.blockNumber, d: String(amt(l) * pp / 10n ** 18n) });
+      for (const l of wOut) st.mine.push({ b: l.blockNumber, d: String(-amt(l) * pp / 10n ** 18n) });
       st.from = to + 1;
-      if (logs.length < 50 && span < 400000) span *= 2;
+      if (h.length + mint.length + burn.length < 200 && span < 400000) span *= 2;
     }
-    st.span = span; st.tokens = tokens;
-    if (!st.diagDone) {
-      // diagnóstico único: qué eventos emite la estrategia (por si no usa Harvest(fee0, fee1)) y cuánto cobró el CLM entero
+    st.span = span;
+    // participaciones actuales → hacia atrás
+    let mineNow = (await call(s, r.vault, "balanceOf", [s.me]))[0];
+    if (wrap && !r.gov && mineNow > 0n) mineNow = mineNow * (await call(s, r.vault, "getPricePerFullShare"))[0] / 10n ** 18n;
+    if (wrap) mineNow += (await call(s, r.clm, "balanceOf", [s.me]))[0];
+    const [supNow] = await call(s, r.clm, "totalSupply");
+    let my0 = 0n, my1 = 0n, n = 0, tot0 = 0n, tot1 = 0n;
+    for (const e of st.hv) {
+      // las participaciones al momento del harvest = estado al final del bloque anterior (mismo bloque: se toma el previo)
+      const sh = valueAt(mineNow, st.mine, e.b - 1), ts = valueAt(supNow, st.sup, e.b - 1);
+      tot0 += BigInt(e.f0); tot1 += BigInt(e.f1);
+      if (ts > 0n && sh > 0n) { my0 += BigInt(e.f0) * sh / ts; my1 += BigInt(e.f1) * sh / ts; n++; }
+    }
+    const usd = (await tokenValue(s, tokens[0], my0)) + (await tokenValue(s, tokens[1], my1));
+    st.last = { n, all: st.hv.length, my0: String(my0), my1: String(my1), tot0: String(tot0), tot1: String(tot1) };
+    if (!st.diagDone && st.from > head) {
       st.diagDone = true;
-      const lg = await s.provider.getLogs({ address: st.strategy, fromBlock: Math.max(0, head - 20000), toBlock: head }).catch(() => []);
-      const cnt = {}; for (const l of lg) cnt[l.topics[0]?.slice(0, 10)] = (cnt[l.topics[0]?.slice(0, 10)] ?? 0) + 1;
-      const [tv0, tv1] = await Promise.all([tokenValue(s, tokens[0], BigInt(st.tot0 ?? "0")), tokenValue(s, tokens[1], BigInt(st.tot1 ?? "0"))]);
-      s.diag?.(`comisiones medidas ${id}: estrategia ${st.strategy} · ${st.n} harvests desde el bloque inicial · CLM entero cobró ${Number(tv0 + tv1) / 10 ** (N.stableDec ?? 18)} (en ${N.stableSym}) · nuestra parte crudo ${st.my0}/${st.my1} · eventos últimos 20k bloques ${JSON.stringify(cnt)} (Harvest=${HARVEST_TOPIC.slice(0, 10)})`);
+      const tv = (await tokenValue(s, tokens[0], tot0)) + (await tokenValue(s, tokens[1], tot1));
+      s.diag?.(`comisiones medidas ${id}: ${st.hv.length} harvests desde el primer depósito (${n} con participación nuestra) · CLM entero cobró ${(Number(tv) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} · nuestra parte ${(Number(usd) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} · movimientos de supply ${st.sup.length}, nuestros ${st.mine.length}`);
     }
-    const usd = (await tokenValue(s, tokens[0], BigInt(st.my0))) + (await tokenValue(s, tokens[1], BigInt(st.my1)));
-    return { usd, n: st.n, behindBlocks: Math.max(0, head - st.from + 1), approx: st.approx };
+    return { usd, n, behindBlocks: Math.max(0, head - st.from + 1), approx: 0 };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
 }
