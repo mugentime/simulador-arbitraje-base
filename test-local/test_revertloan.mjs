@@ -1,7 +1,7 @@
 // Pruebas de las funciones puras de server/revertloan.mjs y de la decisión de desapalancar con un vault/pool simulados.
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { priceFromSqrt, rangeTicks, borrowable, repayFor, health, RevertLoan, RVL } from "../server/revertloan.mjs";
+import { priceFromSqrt, rangeTicks, borrowable, repayFor, health, amountsFor, needsRecenter, rebalanceSwap, RevertLoan, RVL } from "../server/revertloan.mjs";
 
 // precio desde sqrtPriceX96 (tick −199721 ≈ $2,121.7 del pool real WETH-USDC 0.3 %)
 const sq = BigInt(Math.floor(Math.sqrt(1.0001 ** -199721) * 2 ** 96));
@@ -61,5 +61,31 @@ function fakeEnv({ debt, coll, usdc }) {
   await rl.init(); rl.s.tokenId = "1"; await rl.monitor();
   assert.equal(env.sent.length, 0, "sin acción");
   assert.ok(rl.line().includes("salud 1.11"));
+}
+// re-centrado: dentro del 80 % central no; cerca del borde o fuera, sí
+assert.equal(needsRecenter(-199721, -200700, -198720), false);
+assert.equal(needsRecenter(-198850, -200700, -198720), true);
+assert.equal(needsRecenter(-198700, -200700, -198720), true);
+assert.equal(needsRecenter(-200800, -200700, -198720), true);
+// cantidades: en el centro del rango, ~50/50 en valor; fuera por arriba (precio de token0 alto), todo en token1
+{
+  const s = Math.sqrt(1.0001 ** -199710);
+  const a = amountsFor(1e15, s, -200700, -198720), P = s * s;
+  const share0 = a.a0 * P / (a.a0 * P + a.a1);
+  assert.ok(share0 > 0.4 && share0 < 0.6, `reparto ${share0}`);
+  const up = amountsFor(1e15, Math.sqrt(1.0001 ** -198000), -200700, -198720);
+  assert.ok(up.a0 === 0 && up.a1 > 0);
+}
+// reequilibrio: posición quedada toda en USDC (precio subió) → comprar WETH por ~la mitad del valor
+{
+  const s = Math.sqrt(1.0001 ** -198000), P = s * s; // ETH ≈ $2,580
+  const sw = rebalanceSwap(0, 30e6, s, ...Object.values(rangeTicks(-198000, 10)));
+  assert.equal(sw.sellToken0, false);
+  assert.ok(Number(sw.amountIn) > 13e6 && Number(sw.amountIn) < 17e6, `usdc in ${sw.amountIn}`);
+  assert.ok(Number(sw.minOut) > 0);
+  // ya balanceada → swap casi nulo
+  const r = rangeTicks(-198000, 10), a = amountsFor(1e15, s, r.lower, r.upper);
+  const sw2 = rebalanceSwap(a.a0, a.a1, s, r.lower, r.upper);
+  assert.ok(Number(sw2.amountIn) / (a.a1 + a.a0 * P) < 0.01, "sin swap si ya está balanceada");
 }
 console.log("test_revertloan: ok");
