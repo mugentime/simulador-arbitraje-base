@@ -313,7 +313,7 @@ export class Strategy {
         try { d.vaultId = await resolveVaultSpec(e.spec, this.net.beefy); await this.diag(`estrategia depósito único ${tag}: "${e.spec}" → ${d.vaultId} · $${e.usd}`); }
         catch (err) { d.retryAt = now + 3600_000; await this.diag(`estrategia depósito único ${tag}: no se encontró "${e.spec}" (${err.message}); reintento en 1 h`); continue; }
       }
-      this.run = this.s.runs[`${this.label}-once-${tag}-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: e.usd, once: tag };
+      this.run = this.s.runs[`${this.label}-once-${tag}-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: e.usd, once: tag, extra: true };
       this.vaultId = d.vaultId; this.dcaUsd = e.usd; this.sweepStable = undefined;
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
       try {
