@@ -503,6 +503,7 @@ export class Strategy {
         await enterClm(this, ctx);
         this.run.status = "hecho"; st.pending = null;
         if (st.need?.kind === kind) st.need = null;
+        await this.save(); // que la demanda de fondos se borre ya (si no, un reinicio la deja viva y Base vuelve a puentear)
         st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
         await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
         return "ok";
