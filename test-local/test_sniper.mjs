@@ -51,3 +51,25 @@ const cands = sn.seedCandidates().map((c) => c.id);
 assert.deepEqual(cands, ["pons-vault", "cash"]);
 assert.ok(sn.isSeedCandidate("cash") && !sn.isSeedCandidate("boner"));
 console.log("test_sniper F1 ok");
+
+// comisiones medidas: Harvest(fee0, fee1) de la estrategia en 24 h, valuadas con precios de Beefy (proveedor simulado)
+import { ethers } from "ethers";
+{
+  const C2 = new ethers.Interface(["function strategy() view returns (address)", "function wants() view returns (address,address)"]);
+  const STRAT = "0x8cEa5E3CC054a0720E93f737bCAD585B744C0b33", T0 = "0x0000000000000000000000000000000000000a11", T1 = "0x0000000000000000000000000000000000000b22";
+  const head = 1_000_000, now = Math.floor(Date.now() / 1000);
+  const p = {
+    getBlockNumber: async () => head,
+    getBlock: async (b) => ({ timestamp: now - (head - b) * 1 }), // 1 s por bloque
+    call: async ({ data }) => (data.startsWith(C2.getFunction("strategy").selector) ? C2.encodeFunctionResult("strategy", [STRAT]) : C2.encodeFunctionResult("wants", [T0, T1])),
+    getLogs: async ({ fromBlock, toBlock }) => (fromBlock <= head - 100 && toBlock >= head - 100 ? [{ blockNumber: head - 100, data: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [10n ** 18n, 5n * 10n ** 6n]) }] : []),
+  };
+  const s2 = new Sniper({ provider: p, store: null, diag: () => {}, chainKey: "robinhood" });
+  s2.px = { [T0.toLowerCase()]: { p: 2, d: 18 }, [T1.toLowerCase()]: { p: 1, d: 6 } };
+  s2.v.set("v1", { id: "v1", name: "X-USDG", clm: "0x00000000000000000000000000000000000000c1", apiTvl: 7300, tvl: 7300, watch: true, Eapi: 50 });
+  for (let i = 0; i < 10 && !(s2.v.get("v1").fees?.covered >= 1); i++) await s2.feesStep();
+  const f = s2.v.get("v1").fees;
+  assert.equal(f.harvests, 1); assert.equal(f.perDay, 7); assert.equal(f.aprPct, 35); assert.equal(f.covered, 1);
+  assert.equal(s2.topFees(5)[0].id, "v1");
+  console.log("test_sniper comisiones ok");
+}

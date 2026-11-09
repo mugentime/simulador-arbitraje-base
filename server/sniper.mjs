@@ -108,6 +108,7 @@ export class Sniper {
       if (Date.now() - this.listAt > 15 * 60_000) await this.refreshList();
       await this.tick();
       await this.holdersStep().catch((e) => { this.holdersError = (e.shortMessage || e.message || String(e)).slice(0, 160); });
+      await this.feesStep().catch((e) => { this.feesError = (e.shortMessage || e.message || String(e)).slice(0, 160); });
       await this.inspect().catch((e) => this.diag(`sniper: diagnóstico falló · ${(e.shortMessage || e.message).slice(0, 160)}`));
       if (Date.now() - this.reportAt > HOUR) { this.reportAt = Date.now(); await this.diag(`sniper ${this.chain}: ${this.summaryLine()}`); }
       if (Date.now() - this.saveAt > 30 * 60_000) { this.saveAt = Date.now(); await this.save(); }
@@ -118,7 +119,10 @@ export class Sniper {
   /** Lista de vaults CLM de la cadena con TVL y APY de Beefy; fija el precio del CLM (USD por unidad) contra el saldo on-chain. */
   async refreshList() {
     const get = async (path) => { const r = await fetch(API + path, { signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`); return r.json(); };
-    const [vs, gs, tvl, apy] = await Promise.all([get("/vaults"), get("/gov-vaults").catch(() => []), get("/tvl"), get("/apy")]);
+    const [vs, gs, tvl, apy, toks, prices] = await Promise.all([get("/vaults"), get("/gov-vaults").catch(() => []), get("/tvl"), get("/apy"), get("/tokens").catch(() => ({})), get("/prices").catch(() => ({}))]);
+    // precio y decimales por dirección de token de esta cadena (para valuar las comisiones medidas)
+    this.px = {};
+    for (const t of Object.values(toks?.[this.chain] ?? {})) if (t?.address && ethers.isAddress(t.address)) { const pr = Number(prices?.[t.oracleId]); if (pr > 0) this.px[t.address.toLowerCase()] = { p: pr, d: Number(t.decimals ?? 18) }; }
     const tv = {}; for (const b of Object.values(tvl ?? {})) for (const [k, x] of Object.entries(b ?? {})) tv[k] = Number(x) || 0;
     const list = [...vs, ...gs.map((g) => ({ ...g, type: "gov" }))].filter((v) => v.chain === this.chain && v.status === "active" && v.type !== "cowcentrated" && /-cow-/.test(v.id) && ethers.isAddress(v.earnContractAddress ?? ""));
     const amts = await core.multicall(ethers, this.p, list.map((v) => [v.earnContractAddress, I.encodeFunctionData(v.type === "gov" ? "totalSupply" : "balance")]));
@@ -286,28 +290,87 @@ export class Sniper {
   }
 
   /**
+   * Comisiones MEDIDAS de cada CLM (equivalente al "fee APR" de Revert, pero de la posición de Beefy): suma de los eventos
+   * Harvest(fee0, fee1) de la estrategia en las últimas 24 h, valuados con los precios de Beefy. Cubre los CLM con más TVL o
+   * emisiones (SNIPER_FEES_N, 40) y los ya vigilados; escaneo incremental con presupuesto de eth_getLogs por vuelta.
+   * Los CLM de Aerodrome stakeados en el gauge no cobran comisiones (las cambian por emisiones): ahí da $0.
+   */
+  async feesStep() {
+    const N = Number(process.env.SNIPER_FEES_N ?? 40);
+    let budget = Number(process.env.SNIPER_FEES_BUDGET ?? 15);
+    const head = await this.p.getBlockNumber();
+    if (!this.bt || Date.now() - (this.btAt ?? 0) > 6 * HOUR) {
+      const [hb, pb] = await Promise.all([this.p.getBlock(head), this.p.getBlock(Math.max(0, head - 2000))]);
+      this.bt = Math.max(0.01, (hb.timestamp - pb.timestamp) / Math.min(2000, head)); this.btAt = Date.now();
+    }
+    const day = Math.ceil(86400 / this.bt);
+    const xs = [...this.v.values()].filter((x) => x.clm && (x.watch || (x.apiTvl ?? 0) >= 2000)).sort((a, b) => (b.watch - a.watch) || ((b.Eapi ?? 0) + (b.apiTvl ?? 0) / 1e4) - ((a.Eapi ?? 0) + (a.apiTvl ?? 0) / 1e4)).slice(0, N);
+    const C2 = new ethers.Interface(["function strategy() view returns (address)", "function wants() view returns (address,address)"]);
+    const HV = ethers.id("Harvest(uint256,uint256)");
+    // un mismo CLM puede tener vault y reward pool: se mide una vez por CLM
+    const seen = new Map();
+    for (const x of xs) {
+      if (budget <= 0) break;
+      const k = x.clm.toLowerCase();
+      if (seen.has(k)) { x.fees = seen.get(k); continue; }
+      const f = (this.fees ??= {})[k] ??= { hv: [], from: null, span: 100_000 };
+      try {
+        if (!f.strategy) { f.strategy = C2.decodeFunctionResult("strategy", await this.p.call({ to: x.clm, data: C2.encodeFunctionData("strategy") }))[0]; budget--; }
+        if (!f.wants) { f.wants = [...C2.decodeFunctionResult("wants", await this.p.call({ to: x.clm, data: C2.encodeFunctionData("wants") }))].map((a) => a.toLowerCase()); budget--; }
+      } catch { f.unsupported = true; }
+      if (f.unsupported) continue;
+      if (f.from == null || f.from < head - day) f.from = head - day;
+      while (f.from <= head && budget > 0) {
+        const to = Math.min(head, f.from + f.span - 1);
+        budget--;
+        let logs;
+        try { logs = await this.p.getLogs({ address: f.strategy, topics: [HV], fromBlock: f.from, toBlock: to }); }
+        catch { if (f.span > 2000) { f.span = Math.floor(f.span / 4); continue; } break; }
+        for (const l of logs) { const d = l.data.slice(2); f.hv.push({ b: l.blockNumber, f0: BigInt("0x" + d.slice(0, 64)).toString(), f1: BigInt("0x" + d.slice(64, 128)).toString() }); }
+        f.from = to + 1;
+        if (logs.length < 200 && f.span < 1_000_000) f.span *= 2;
+      }
+      f.hv = f.hv.filter((h) => h.b >= head - day);
+      const [p0, p1] = f.wants.map((a) => this.px?.[a]);
+      const usd = (h) => (p0 ? Number(BigInt(h.f0)) / 10 ** p0.d * p0.p : 0) + (p1 ? Number(BigInt(h.f1)) / 10 ** p1.d * p1.p : 0);
+      const covered = f.from > head ? 1 : Math.max(0, Math.min(1, (f.from - (head - day)) / day)); // fracción del día ya escaneada
+      const perDay = covered > 0 ? f.hv.reduce((a, h) => a + usd(h), 0) / covered : null;
+      const tvl = x.tvl ?? x.apiTvl ?? 0;
+      x.fees = { perDay: perDay == null ? null : +perDay.toFixed(2), aprPct: perDay != null && tvl > 0 ? +(perDay / tvl * 36500).toFixed(1) : null, harvests: f.hv.length, priced: !!(p0 && p1), covered: +covered.toFixed(2) };
+      seen.set(k, x.fees);
+    }
+  }
+
+  /**
    * Candidatos a semilla (F1): E ≥ SNIPER_SEED_MIN_E ($100/día), TVL ≥ $5k, par con estable en dólares, sin Stock Tokens de
    * Robinhood; si un par tiene vault que compone y reward pool, el vault (ahí lo que deja el que sale se reparte, doc 22 §7).
    * Orden: E con un plus por concentración (no es filtro).
    */
   seedCandidates() {
     const minE = Number(process.env.SNIPER_SEED_MIN_E ?? 100);
-    const ok = [...this.v.values()].filter((x) => x.Eapi >= minE && (x.apiTvl ?? 0) >= 5000 && x.usdPair && x.stock === false);
+    const val = (x) => Math.max(x.Eapi ?? 0, x.fees?.covered >= 1 ? x.fees.perDay ?? 0 : 0); // emisiones o comisiones medidas en 24 h
+    const ok = [...this.v.values()].filter((x) => val(x) >= minE && (x.apiTvl ?? 0) >= 5000 && x.usdPair && x.stock === false);
     const byPair = {};
     for (const x of ok) { const k = [...x.assets].map(String).sort().join("-"); const cur = byPair[k]; if (!cur || (cur.gov && !x.gov) || (cur.gov === x.gov && x.Eapi > cur.Eapi)) byPair[k] = x; }
-    return Object.values(byPair).map((x) => ({ id: x.id, name: x.name, E: x.Eapi, tvl: x.tvl ?? x.apiTvl, score: x.Eapi * (1 + 0.5 * ((x.holders?.c?.top1 ?? 0) / 100)) })).sort((a, b) => b.score - a.score);
+    return Object.values(byPair).map((x) => ({ id: x.id, name: x.name, E: val(x), fees: x.fees?.perDay ?? null, tvl: x.tvl ?? x.apiTvl, score: val(x) * (1 + 0.5 * ((x.holders?.c?.top1 ?? 0) / 100)) })).sort((a, b) => b.score - a.score);
   }
   isSeedCandidate(id) { return this.seedCandidates().some((c) => c.id === id); }
   info(id) { return this.v.get(id) ?? null; }
 
   summaryLine() {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
-    const row = (x) => { const h1 = at(x.ser ?? [], HOUR), h6 = at(x.ser ?? [], 6 * HOUR); const d = (p) => (p?.tvl ? `${(((x.tvl ?? 0) / p.tvl - 1) * 100).toFixed(0)}%` : "—"); return `${x.name} TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)} (1h ${d(h1)}, 6h ${d(h6)}) E $${Math.round(x.Eapi ?? 0)}/d${x.Emeas != null ? ` medido $${Math.round(x.Emeas)}/d` : ""}${x.holders?.c ? ` top1 ${x.holders.c.top1}%` : x.holders ? " top1 …" : ""}${x.gauge?.hoursLeft != null ? ` gauge ${x.gauge.hoursLeft.toFixed(0)}h` : ""}`; };
-    return `radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}`;
+    const row = (x) => { const h1 = at(x.ser ?? [], HOUR), h6 = at(x.ser ?? [], 6 * HOUR); const d = (p) => (p?.tvl ? `${(((x.tvl ?? 0) / p.tvl - 1) * 100).toFixed(0)}%` : "—"); return `${x.name} TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)} (1h ${d(h1)}, 6h ${d(h6)}) E $${Math.round(x.Eapi ?? 0)}/d${x.Emeas != null ? ` medido $${Math.round(x.Emeas)}/d` : ""}${x.holders?.c ? ` top1 ${x.holders.c.top1}%` : x.holders ? " top1 …" : ""}${x.fees?.perDay != null ? ` comisiones $${Math.round(x.fees.perDay)}/d (APR ${x.fees.aprPct}%)` : ""}${x.gauge?.hoursLeft != null ? ` gauge ${x.gauge.hoursLeft.toFixed(0)}h` : ""}`; };
+    const fx = this.topFees(5).map((x) => `${x.name} $${Math.round(x.fees.perDay)}/d APR ${x.fees.aprPct}% TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)}`).join(" | ");
+    return `radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}${fx ? ` · comisiones medidas 24 h (top): ${fx}` : ""}`;
+  }
+  /** CLM con más comisiones medidas en 24 h (día completo escaneado y precios conocidos), sin repetir CLM. */
+  topFees(n = 10) {
+    const seen = new Set();
+    return [...this.v.values()].filter((x) => x.fees?.perDay > 0 && x.fees.covered >= 1 && x.fees.priced).sort((a, b) => b.fees.perDay - a.fees.perDay).filter((x) => { const k = x.clm?.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, n);
   }
   /** Para /api/sniper */
   view() {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
-    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse(), seeds: this.seedCandidates().slice(0, 10), requests: (this.requests ?? []).slice(-20) };
+    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, fees: x.fees ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse(), seeds: this.seedCandidates().slice(0, 10), fees: this.topFees(15).map((x) => ({ id: x.id, name: x.name, tvl: x.tvl ?? x.apiTvl, ...x.fees })), requests: (this.requests ?? []).slice(-20) };
   }
 }
