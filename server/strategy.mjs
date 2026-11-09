@@ -100,6 +100,7 @@ export class Strategy {
       if (r.skipped) { delete this.s.runs[label]; c.lastSkip = { at: new Date(now).toISOString(), id, valueUsd: +(Number(ethers.formatUnits(r.value, D)) * stableUsd).toFixed(4) }; return; }
       this.run.status = "hecho"; this.run.claimed = { stable: String(r.stable), x: String(r.x), other: r.other };
       c.pending = { id, stable: String(r.stable), valueUsd: Number(ethers.formatUnits(r.value, D)) * stableUsd, tag: now };
+      this.addClaimed(id, c.pending.valueUsd);
     }
     // depósito de lo cobrado (estable + el X que haya en la wallet) en el mismo vault
     const p = c.pending, dl = `${this.label}-compound-dep-${p.tag}`;
@@ -116,6 +117,10 @@ export class Strategy {
     } finally { this.sweepStable = undefined; }
   }
 
+  /** Rendimiento cobrado por vault (USD), para separar comisiones/recompensas de la volatilidad en los reportes. */
+  addClaimed(id, usd) { if (!(usd > 0)) return; const c = (this.s.claimed ??= {}); c[id] = +((c[id] ?? 0) + usd).toFixed(6); }
+  stableUsd() { return this.net.wrapNative ? (this.lastCtx?.ethUsd || 0) : 1; }
+
   /** Cobra las recompensas de `id` y las suma a lo retenido (estable que los depósitos no tocan). */
   async takeProfit(d, id, h, now, why = "") {
     const label = `${this.label}-profit-${id}-${now}`;
@@ -123,6 +128,7 @@ export class Strategy {
     this.vaultId = id;
     const r = await harvestProfit(this);
     this.run.status = "hecho"; this.run.stable = String(r.stable); this.run.other = r.other;
+    this.addClaimed(id, Number(ethers.formatUnits(r.stable, this.net.stableDec)) * this.stableUsd());
     if (r.stable > 0n || r.other.length) {
       d.retained = String(BigInt(d.retained ?? "0") + r.stable); h.retained = String(BigInt(h.retained ?? "0") + r.stable);
       await this.diag(`estrategia dinámica: ganancia retenida de ${id}${why ? " (" + why + ")" : ""} · +${ethers.formatUnits(r.stable, this.net.stableDec)} ${this.net.stableSym}${r.other.length ? ` + otros tokens ${r.other.map((o) => `${o.amount} ${o.token}`).join(", ")}` : ""} · total retenido ${ethers.formatUnits(d.retained, this.net.stableDec)} ${this.net.stableSym}`);
@@ -189,7 +195,7 @@ export class Strategy {
       try {
         if (this.dynamic) await this.takeProfit(d, id, h, now, "antes de salir").catch(() => {});
         this.run = this.s.runs[label];
-        await exitClm(this, ctx); this.run.status = "hecho"; h.closed = new Date(now).toISOString(); h.exitWhy = c.why; if (d.target === id) d.target = null;
+        await exitClm(this, ctx); this.addClaimed(this.vaultId, Number(ethers.formatUnits(BigInt(this.run.claimedStable ?? "0"), this.net.stableDec)) * this.stableUsd()); this.run.status = "hecho"; h.closed = new Date(now).toISOString(); h.exitWhy = c.why; if (d.target === id) d.target = null;
         if (this.redeployOnExit && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = pickTarget(elig.filter((x) => x.id !== id), null); }
         await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.redeployOnExit ? ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}` : ""}`);
       }
@@ -238,7 +244,7 @@ export class Strategy {
       if (st.step === "salida") {
         this.run = this.s.runs[`${this.label}-migrate-${tag}-exit`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", migrate: tag };
         this.vaultId = from; this.keepStable = true;
-        await exitClm(this, ctx);
+        await exitClm(this, ctx); this.addClaimed(this.vaultId, Number(ethers.formatUnits(BigInt(this.run.claimedStable ?? "0"), this.net.stableDec)) * this.stableUsd());
         this.run.status = "hecho"; st.usdcOut = this.run.usdcOut; st.step = "entrada"; st.retries = 0;
         await this.diag(`estrategia migración ${tag}: salida de ${from} · ${ethers.formatUnits(st.usdcOut ?? "0", this.net.stableDec)} ${this.net.stableSym} en la wallet · sigue la entrada a ${to}`);
         return true;
@@ -449,7 +455,7 @@ export class Strategy {
       if (this.kind === "revert-usdc") await this.enter(ctx);
       else if (this.kind === "revert-usdc-exit") await this.exit(ctx);
       else if (this.kind === "beefy-clm") await enterClm(this, ctx);
-      else if (this.kind === "beefy-clm-exit") await exitClm(this, ctx);
+      else if (this.kind === "beefy-clm-exit") { await exitClm(this, ctx); this.addClaimed(this.vaultId, Number(ethers.formatUnits(BigInt(this.run.claimedStable ?? "0"), this.net.stableDec)) * this.stableUsd()); }
       else throw new Error(`STRATEGY desconocida: ${this.kind}`);
       this.run.status = "hecho"; this.run.endedAt = Date.now(); this.done = true;
     } catch (e) {

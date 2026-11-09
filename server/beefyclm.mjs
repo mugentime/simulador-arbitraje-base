@@ -479,7 +479,12 @@ export async function exitClm(s, ctx) {
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
-    if (r.gov && held > 0n) await claimRewards(s, "getReward antes de salir").catch(() => {});
+    if (r.gov && held > 0n && r.claimedStable === undefined) {
+      // las recompensas cobradas al salir son rendimiento de la estrategia: se registran (valuadas en el estable)
+      const got = await claimRewards(s, "getReward antes de salir").catch(() => []);
+      let v = 0n; for (const g of got) if (g.amount > 0n) v += await tokenValue(s, g.token, g.amount).catch(() => 0n);
+      r.claimedStable = String(v); await s.save();
+    }
     if (held > 0n) await s.send(r.gov ? "withdraw reward pool Beefy" : "withdrawAll vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("withdraw(uint256)", [held]) : C.encodeFunctionData("withdrawAll") });
     r.clmOut = String((await bal(s, r.clm)) - before); await s.save();
   }
@@ -606,12 +611,15 @@ export async function vaultValue(s, id) {
     if (!r.gov && sh > 0n) sh = sh * (await call(s, r.vault, "getPricePerFullShare"))[0] / 10n ** 18n;
     sh += await bal(s, r.clm);
     const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
-    if (sh === 0n) return { value: 0n, tokens, shares: 0n };
+    // recompensas por cobrar del reward pool (en los CLM son las comisiones), valuadas en el estable
+    let pending = 0n;
+    if (r.gov) { try { const [tk, am] = await call(s, r.vault, "earned(address)", [s.me]); for (let i = 0; i < tk.length; i++) pending += await tokenValue(s, tk[i], am[i]); } catch {} }
+    if (sh === 0n) return { value: 0n, tokens, shares: 0n, gov: !!r.gov, pending };
     const [[a0, a1], [ts]] = await Promise.all([call(s, r.clm, "balances"), call(s, r.clm, "totalSupply")]);
     const q = [a0 * sh / ts, a1 * sh / ts];
     let value = 0n;
     for (let i = 0; i < 2; i++) value += lc(tokens[i]) === lc(N.stable) ? q[i] : q[i] > 0n ? ((await bestPath(s, tokens[i], N.stable, q[i]).catch(() => null))?.out ?? 0n) : 0n;
-    return { value, tokens, shares: sh };
+    return { value, tokens, shares: sh, gov: !!r.gov, pending };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
 }
 /** Valor en estable crudo de un saldo de token (0 si no hay ruta). */

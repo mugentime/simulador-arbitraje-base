@@ -122,13 +122,13 @@ export function backfillFees(hist, id) {
  * por los días que lleva invertido), comparable con un APY.
  */
 export function strategyPnl(vaults, prior, nowMs) {
-  let aportado = 0, valor = 0, posiciones = 0, recompensas = 0, sobranteS = 0, sobranteX = 0, comisiones = 0, capDias = 0, n = 0, first = null;
+  let aportado = 0, valor = 0, posiciones = 0, recompensas = 0, sobranteS = 0, sobranteX = 0, comisiones = 0, rendimiento = 0, capDias = 0, n = 0, first = null;
   const flows = [...prior.map((p) => ({ at: p.at, usd: p.usd }))];
   for (const v of vaults) {
     const L = v.L;
     const left = v.newMoney - L.buys.s + L.sells.s - L.depS + L.wd.s; // estable de los aportes que sigue en la wallet
     sobranteS += left; sobranteX += L.q * v.price; // se suma entre vaults: lo que sale de uno y entra a otro se compensa
-    posiciones += v.valueUsd; recompensas += v.rewardsUsd; comisiones += v.feesUsd;
+    posiciones += v.valueUsd; recompensas += v.rewardsUsd; comisiones += v.feesUsd; rendimiento += v.rendUsd ?? v.feesUsd;
     for (const d of v.deps) { flows.push(d); n++; }
     if (L.extIn > 0.005 && v.deps[0]) flows.push({ at: v.deps[0].at, usd: L.extIn, extra: true });
   }
@@ -140,6 +140,8 @@ export function strategyPnl(vaults, prior, nowMs) {
   const pnl = valor - aportado;
   const extra = flows.filter((f) => f.extra).reduce((a, f) => a + f.usd, 0);
   return { aportado, extra, valor, posiciones, recompensas, sobranteS, sobranteX, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+    rendimiento, rendDiarioPct: capDias > 0 ? rendimiento / capDias * 100 : null, rendAnualPct: capDias > 0 ? rendimiento / capDias * 365 * 100 : null,
+    volatilidad: pnl - rendimiento, volPct: aportado > 0 ? (pnl - rendimiento) / aportado * 100 : null,
     capDias, diarioPct: capDias > 0 ? pnl / capDias * 100 : null, anualPct: capDias > 0 ? pnl / capDias * 365 * 100 : null, dias: first !== null ? (nowMs - first) / 86400_000 : 0, n, desde: first };
 }
 
@@ -184,10 +186,24 @@ async function pairReport(s, id, rs, { cache, alt, fees, apy, now, agg, call }) 
   const L = { q: 0, xIn: 0, xCost: 0, sIn: 0, depS: 0, extIn: 0, buys: { x: 0, s: spent }, sells: { x: 0, s: received }, wd: { x: 0, s: 0 } };
   agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd: 0, feesUsd: fees[id].usd, price: 0, deps });
   const cd = capitalDays(deps, invested, now);
+  const sp = splitYield({ gov: false, feesEst: fees[id].usd, pnl });
+  agg[agg.length - 1].rendUsd = sp.rend;
   (s.lastCost ??= {})[id] = { at: now, invested, value: valueUsd, rewards: 0, pnl, pnlPct, closed, missing, fees: fees[id].usd, feesSince: fees[id].since, priceRange: pnl - fees[id].usd,
+    gov: !!m.gov, rend: sp.rend, rendSrc: sp.rendSrc, rendDailyPct: null, vol: sp.vol, volPct: invested > 0 ? sp.vol / invested * 100 : null, precioEf: null, il: null,
     apy: Number.isFinite(apyNow) ? apyNow * 100 : null, n: deps.length, first: cd.first, days: cd.days, capDays: cd.capDays, dailyPct: cd.capDays > 0 ? pnl / cd.capDays * 100 : null, sym: `${s0}/${s1}` };
   return `dca costo ${id}: par sin ${s.net.stableSym} · invertido ${f2(invested)} (${s.net.stableSym} gastado ${f2(spent)}${received ? ` − recibido ${f2(received)}` : ""}) · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${q0.toPrecision(5)} ${s0} a ${px2(p0)} + ${q1.toPrecision(5)} ${s1} a ${px2(p1)})`}` +
     ` · PnL ${sg(pnl)} (${pc(pnlPct)}) = comisiones est. ${sg(fees[id].usd)} (APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"}) + precio/rango ${sg(pnl - fees[id].usd)}${missing ? ` · ${missing} recibos no disponibles` : ""}`;
+}
+/**
+ * Separa el resultado en dos indicadores (criterio de Jose 2026-11-08): RENDIMIENTO = comisiones + recompensas (la ganancia de la
+ * estrategia) y VOLATILIDAD = precio + pérdida impermanente (esperada en un DCA, no realizada). En reward pools (gov) las comisiones
+ * del CLM se pagan como recompensas → rendimiento medido = por cobrar + ya cobradas; en vaults normales se componen en la
+ * participación → rendimiento estimado = valor × APY publicado, hora a hora. Volatilidad = resultado total − rendimiento.
+ */
+export function splitYield({ gov, pending = 0, claimed = 0, feesEst = 0, pnl, priceEffect = null }) {
+  const rend = gov ? pending + claimed : feesEst;
+  const vol = pnl - rend;
+  return { rend, rendSrc: gov ? "medido" : "estimado", vol, precio: priceEffect, il: priceEffect === null ? null : vol - priceEffect };
 }
 /** Capital-día de un vault: cada aporte pesa por los días que lleva invertido; se escala a lo invertido (barridos/previos). */
 export function capitalDays(flows, invested, nowMs) {
@@ -290,14 +306,17 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
       agg.push({ id, newMoney: deps.reduce((a, x) => a + x.usd, 0), L, valueUsd: closed ? 0 : valueUsd, rewardsUsd, feesUsd: fees[id].usd, price, deps: deps.map((x) => ({ at: x.at, usd: x.usd })) });
       if (PRIOR[id]) priors.push(PRIOR[id]);
       const cd = capitalDays([...(prior ? [{ at: PRIOR[id].at, usd: prior }] : []), ...deps], b.invested, now);
-      (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing,
+      const sp = splitYield({ gov: m.gov, pending: rewardsUsd, claimed: Number(s.s?.claimed?.[id] ?? 0), feesEst: fees[id].usd, pnl: b.pnl, priceEffect: b.priceEffect });
+      agg[agg.length - 1].rendUsd = sp.rend;
+      (s.lastCost ??= {})[id] = { at: now, invested: b.invested, value: valueUsd, rewards: rewardsUsd, pnl: b.pnl, pnlPct: b.pnlPct, closed, missing, gov: !!m.gov,
+        rend: sp.rend, rendSrc: sp.rendSrc, rendDailyPct: cd.capDays > 0 ? sp.rend / cd.capDays * 100 : null, vol: sp.vol, volPct: b.invested > 0 ? sp.vol / b.invested * 100 : null, precioEf: sp.precio, il: sp.il, hodl: b.hodl,
         fees: fees[id].usd, feesSince: fees[id].since, priceRange, apy: Number.isFinite(apyNow) ? apyNow * 100 : null, price, avgEntry: dca.price, priceVsEntryPct: dca.price ? (price / dca.price - 1) * 100 : null,
         xPct: valueUsd > 0 ? xNow * price / valueUsd * 100 : null, sym: symX, n: deps.length, first: cd.first, days: cd.days, capDays: cd.capDays, dailyPct: cd.capDays > 0 ? b.pnl / cd.capDays * 100 : null, leftX: L.q * price };
       const xPct = valueUsd > 0 ? xNow * price / valueUsd * 100 : 0;
       out.push(`dca costo ${id}: ${deps.length} depósitos DCA ($${dca.usd.toFixed(2)})${rs.length > deps.length ? ` + ${rs.length - deps.length} barridos/otros` : ""}` +
         ` · invertido ${f2(b.invested)}${prior ? ` (incl. previo ${f2(prior)})` : ""} · precio medio de entrada DCA ${px(dca.price)}${dca.missing ? ` (${dca.missing} sin precio)` : ""} · ${symX} hoy ${px(price)}${dca.price ? ` (${pc((price / dca.price - 1) * 100)} vs entrada)` : ""}` +
         ` · ${closed ? "posición cerrada" : `valor ${f2(valueUsd)} (${sNow.toFixed(2)} ${s.net.stableSym} + ${xNow.toPrecision(5)} ${symX} = ${Math.round(xPct)} % en ${symX})`}${rewardsUsd || rw.length ? ` + recompensas ${f2(rewardsUsd)}${rw.length ? ` [${rw.join(", ")}]` : ""}` : ""}` +
-        ` · PnL ${sg(b.pnl)} (${pc(b.pnlPct)}) = comisiones est. ${sg(fees[id].usd)} (APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"}, desde ${fees[id].since.slice(0, 16)}Z) + precio/rango ${sg(priceRange)}` +
+        ` · RENDIMIENTO ${sg(sp.rend)} (${sp.rendSrc === "medido" ? `recompensas medidas: por cobrar ${f2(rewardsUsd)} + cobradas ${f2(Number(s.s?.claimed?.[id] ?? 0))}` : `comisiones estimadas con APY ${Number.isFinite(apyNow) ? (apyNow * 100).toFixed(1) + " %" : "?"} desde ${fees[id].since.slice(0, 16)}Z`}) · VOLATILIDAD ${sg(sp.vol)} (precio ${sg(sp.precio)} + pérdida impermanente/rango ${sg(sp.il)}) · total ${sg(b.pnl)} (${pc(b.pnlPct)})` +
         ` · lo depositado entró como ${f2(L.sIn)} ${s.net.stableSym} + ${L.xIn.toPrecision(5)} ${symX}${b.avgX ? ` (a $${b.avgX.toFixed(2)})` : ""} → hodl ${f2(b.hodl)}` +
         `${L.q > 0 ? ` · ${symX} en wallet ${L.q.toPrecision(5)} (${f2(L.q * price)})` : ""}${L.rewardX || L.rewardS ? ` · reinvertido de recompensas ${L.rewardS.toFixed(3)} ${s.net.stableSym} + ${L.rewardX.toPrecision(4)} ${symX}` : ""}` +
         `${L.wd.x || L.wd.s ? ` · retirado ${L.wd.s.toFixed(2)} ${s.net.stableSym} + ${L.wd.x.toPrecision(5)} ${symX}` : ""}${missing ? ` · ${missing} recibos no disponibles (invertido incompleto)` : ""}`);
@@ -312,7 +331,7 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
     await s.store.set("dcaStrategyHist", hist).catch(() => {});
     out.push(`dca estrategia ${s.net.beefy}: aportado ${f2(t.aportado)} (${t.n} depósitos diarios${priors.length ? " + previo" : ""}${t.extra >= 0.005 ? ` + ${f2(t.extra)} que ya estaba en la wallet` : ""}${t.desde ? ` desde ${new Date(t.desde).toISOString().slice(0, 10)}` : ""})` +
       ` · valor ${f2(t.valor)} = posiciones ${f2(t.posiciones)}${t.recompensas ? ` + recompensas ${f2(t.recompensas)}` : ""}${t.sobranteS + t.sobranteX >= 0.005 ? ` + sobrante en wallet ${f2(t.sobranteS + t.sobranteX)}` : ""}` +
-      ` · PnL ${sg(t.pnl)} (${pc(t.pnlPct)}) = comisiones est. ${sg(t.comisiones)} + precio/rango ${sg(t.precio)}` +
+      ` · RENDIMIENTO ${sg(t.rendimiento)} (comisiones + recompensas; ${pc(t.rendDiarioPct)} por día) · VOLATILIDAD ${sg(t.volatilidad)} (precio + pérdida impermanente; esperada en DCA) · total ${sg(t.pnl)} (${pc(t.pnlPct)})` +
       ` · capital-día ${t.capDias.toFixed(1)} → ${pc(t.diarioPct)} por día${t.dias >= 7 ? ` (anualizado ${pc(t.anualPct)})` : " (anualizado desde 7 días)"} · vaults: ${agg.map((a) => `${a.id} ${f2(a.valueUsd)}`).join(", ")}`);
   }
   await s.store.set("dcaCostRc", cache).catch(() => {});
@@ -339,7 +358,7 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
     try {
       const ids = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...Object.keys(d.holdings ?? {}), ...Object.keys(d.failed ?? {}), ...(d.target ? [d.target] : [])])];
       const open = d.extra ? ids : ids.filter((id) => !(d.holdings?.[id]?.closed));
-      let enVault = 0, sueltos = 0; const vaults = [];
+      let enVault = 0, sueltos = 0, rend = 0, porCobrar = 0; const vaults = []; let medido = 0, estimado = 0;
       const toks = new Set();
       for (const id of ids) {
         let v = null;
@@ -351,13 +370,16 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
           continue;
         }
         for (const t of v.tokens) if (t && t.toLowerCase() !== s.net.stable.toLowerCase()) toks.add(t.toLowerCase());
-        const usd = toUsd(v.value);
+        const usd = toUsd(v.value), pend = toUsd(v.pending ?? 0n);
         if (usd > 0.005 || open.includes(id)) {
           const a = Number(apy?.[id]?.totalApy ?? NaN);
           fees[id] = accrueFees(fees[id] ?? { since: new Date(now).toISOString(), at: now, usd: 0 }, { now, valueUsd: usd, apy: Number.isFinite(a) && a < 200 ? a : NaN }); // APY > 20,000 % = irreal, no cuenta
-          vaults.push({ id, usd: +usd.toFixed(4), apyPct: Number.isFinite(a) ? a * 100 : null });
+          vaults.push({ id, usd: +usd.toFixed(4), apyPct: Number.isFinite(a) ? a * 100 : null, gov: v.gov, pending: +pend.toFixed(4) });
         }
-        enVault += usd;
+        // rendimiento: reward pool → recompensas medidas (por cobrar + cobradas); vault normal → comisiones estimadas
+        const claimed = Number(s.s?.claimed?.[id] ?? 0);
+        if (v.gov) { rend += pend + claimed; medido += pend + claimed; } else { rend += fees[id]?.usd ?? 0; estimado += fees[id]?.usd ?? 0; }
+        enVault += usd; porCobrar += pend;
       }
       for (const t of toks) {
         if (seenTok.has(t)) continue; seenTok.add(t);
@@ -369,21 +391,24 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
       const tr = transfers().filter((t) => t.from === label || t.to === label);
       const ajuste = tr.reduce((a, t) => a + (t.to === label ? t.usd : -t.usd), 0);
       const aportado = Number(d.totalUsd ?? 0) + ajuste;
-      const valor = enVault + sueltos + reservado, pnl = valor - aportado;
+      const valor = enVault + porCobrar + sueltos + reservado, pnl = valor - aportado;
       const comisiones = ids.reduce((a, id) => a + (fees[id]?.usd ?? 0), 0);
       const cd = capitalDays((d.deposits ?? []).map((x) => ({ at: x.at, usd: x.usd })), aportado, now);
-      res[label] = { at: now, extra: !!d.extra, aportado, valor, enVault, sueltos, reservado, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+      const vol = pnl - rend;
+      res[label] = { at: now, extra: !!d.extra, aportado, valor, enVault, porCobrar, sueltos, reservado, pnl, pnlPct: aportado > 0 ? pnl / aportado * 100 : null, comisiones, precio: pnl - comisiones,
+        rendimiento: rend, rendMedido: medido, rendEstimado: estimado, rendDiarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? rend / cd.capDays * 100 : null, volatilidad: vol, volPct: aportado > 0 ? vol / aportado * 100 : null,
         capDias: cd.capDays, diarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? pnl / cd.capDays * 100 : null, dias: cd.days, n: d.n ?? 0, vaults };
       res[label].ajuste = ajuste;
-      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos${ajuste ? `, ${ajuste > 0 ? "+" : "−"}${f2(Math.abs(ajuste))} ${ajuste > 0 ? "recibidos de" : "pasados a"} otra estrategia` : ""}) · valor ${f2(valor)} = en vaults ${f2(enVault)} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · ganancia real ${sg(pnl)} (${pc(res[label].pnlPct)}) = comisiones est. ${sg(comisiones)} + precio/rango ${sg(pnl - comisiones)}` +
+      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos${ajuste ? `, ${ajuste > 0 ? "+" : "−"}${f2(Math.abs(ajuste))} ${ajuste > 0 ? "recibidos de" : "pasados a"} otra estrategia` : ""}) · valor ${f2(valor)} = en vaults ${f2(enVault)}${porCobrar >= 0.005 ? ` + por cobrar ${f2(porCobrar)}` : ""} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · RENDIMIENTO ${sg(rend)} (medido ${f2(medido)}, estimado ${f2(estimado)}) · VOLATILIDAD ${sg(vol)} (precio + pérdida impermanente) · total ${sg(pnl)} (${pc(res[label].pnlPct)})` +
         `${res[label].diarioPct !== null ? ` · ${pc(res[label].diarioPct)} por día` : ""} · vaults: ${vaults.map((v) => `${v.id} ${v.error ? "error " + v.error : f2(v.usd)}`).join(", ") || "—"}`);
     } catch (e) { out.push(`dca estrategia ${s.net.beefy} ${label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
   }
   await s.store.set("wrapFees", fees).catch(() => {});
   const L = Object.values(res);
   if (L.length) {
-    const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });
-    s0.lastStrategy = { at: now, ...t, pnlPct: t.aportado > 0 ? t.pnl / t.aportado * 100 : null, precio: t.pnl - t.comisiones, diarioPct: t.capDias > 0 ? t.pnl / t.capDias * 100 : null, n: L.reduce((a, x) => a + x.n, 0) };
+    const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, rendimiento: a.rendimiento + x.rendimiento, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, rendimiento: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });
+    s0.lastStrategy = { at: now, ...t, pnlPct: t.aportado > 0 ? t.pnl / t.aportado * 100 : null, precio: t.pnl - t.comisiones, diarioPct: t.capDias > 0 ? t.pnl / t.capDias * 100 : null, n: L.reduce((a, x) => a + x.n, 0),
+      rendDiarioPct: t.capDias > 0 ? t.rendimiento / t.capDias * 100 : null, volatilidad: t.pnl - t.rendimiento, volPct: t.aportado > 0 ? (t.pnl - t.rendimiento) / t.aportado * 100 : null };
     s0.lastStrategies = res;
     const hist = (await s.store.get("dcaStrategyHist").catch(() => null)) ?? [];
     hist.push({ at: new Date(now).toISOString(), aportado: +t.aportado.toFixed(4), valor: +t.valor.toFixed(4), pnl: +t.pnl.toFixed(4), comisiones: +t.comisiones.toFixed(4) });
