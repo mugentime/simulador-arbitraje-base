@@ -35,3 +35,19 @@ const c = concentration({ a: "800", b: "150", c: "50", d: "0" });
 assert.equal(c.holders, 3); assert.equal(c.top1, 80); assert.equal(c.top3, 100); assert.equal(c.topAddr, "a");
 assert.equal(concentration({}).top1, null);
 console.log("test_sniper ok");
+
+// F1: candidatos a semilla (vault que compone sobre reward pool; sin Stock Tokens; par con estable; E ≥ $100)
+import { Sniper } from "../server/sniper.mjs";
+const sn = new Sniper({ provider: null, store: null, diag: () => {}, chainKey: "robinhood" });
+const add = (o) => sn.v.set(o.id, { apiTvl: 10000, usdPair: true, stock: false, gov: false, ...o });
+add({ id: "pons-vault", name: "PONS-USDG", assets: ["PONS", "USDG"], Eapi: 370 });
+add({ id: "pons-rp", name: "PONS-USDG RP", assets: ["USDG", "PONS"], Eapi: 400, gov: true });
+add({ id: "nvda", name: "NVDA-USDG", assets: ["NVDA", "USDG"], Eapi: 200, stock: true });
+add({ id: "boner", name: "BONER-WETH", assets: ["BONER", "WETH"], Eapi: 255, usdPair: false });
+add({ id: "cash", name: "CASHCAT-USDG", assets: ["CASHCAT", "USDG"], Eapi: 126, holders: { c: { top1: 90 } } });
+add({ id: "chico", name: "X-USDG", assets: ["X", "USDG"], Eapi: 60 });
+add({ id: "sinsym", name: "Y-USDG", assets: ["Y", "USDG"], Eapi: 500, stock: undefined });
+const cands = sn.seedCandidates().map((c) => c.id);
+assert.deepEqual(cands, ["pons-vault", "cash"]);
+assert.ok(sn.isSeedCandidate("cash") && !sn.isSeedCandidate("boner"));
+console.log("test_sniper F1 ok");

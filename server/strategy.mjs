@@ -5,7 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap, vaultValue } from "./beefyclm.mjs";
 import { scanHighApy, pickTarget, exitCheck, exitThreshold, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import * as core from "../src/core.js";
@@ -381,6 +381,122 @@ export class Strategy {
     return false;
   }
 
+  /**
+   * Sniper F1–F3 (doc 22), con SNIPER_TRADE=1 y el radar (this.sniper) en el mismo worker. Una acción por llamada (true si actuó).
+   *  F1 semillas: SNIPER_SEED_USD ($5) en hasta SNIPER_SEEDS_MAX (3) candidatos del radar donde aún no hay posición.
+   *  F2 disparo: al detectar un éxodo (≤ 2 h), SNIPER_SHOT_USD ($20) en ese vault (hasta SNIPER_SHOTS_MAX abiertos, 2).
+   *     Salidas: pérdida ≥ 10 %; rendimiento medido < 0.5 %/día (6 h, desde las 6 h); 7 días. Semillas: pérdida ≥ 10 % o 24 h
+   *     fuera de la lista de candidatos. Todo vuelve al estable de la cadena (sin swap a nativo).
+   *  F3: cada 5 disparos exitosos (salida > lo invertido) el monto se duplica hasta SNIPER_SHOT_MAX (por defecto = SNIPER_SHOT_USD:
+   *     no sube solo; avisa que está listo). Tope de capital abierto: SNIPER_BUDGET_USD ($60).
+   */
+  async snipeStep(ctx) {
+    const sn = this.sniper;
+    if (!sn || process.env.SNIPER_TRADE !== "1") return false;
+    const now = Date.now(), H = 3600_000;
+    const st = (this.s.snipe ??= { pos: {}, handled: {}, wins: 0, losses: 0, level: 0 });
+    const base = Number(process.env.SNIPER_SHOT_USD ?? 20), max = Number(process.env.SNIPER_SHOT_MAX ?? base);
+    const shotUsd = Math.min(max, base * 2 ** (st.level ?? 0));
+    const seedUsd = Number(process.env.SNIPER_SEED_USD ?? 5), seedsMax = Number(process.env.SNIPER_SEEDS_MAX ?? 3), shotsMax = Number(process.env.SNIPER_SHOTS_MAX ?? 2);
+    const budget = Number(process.env.SNIPER_BUDGET_USD ?? 60);
+    const D = this.net.stableDec, fmt = (raw) => Number(ethers.formatUnits(BigInt(raw ?? "0"), D));
+    const open = () => Object.values(st.pos).filter((p) => p.status === "abierta");
+
+    // a) seguimiento y salidas (cada 15 min por posición)
+    for (const [key, p] of Object.entries(st.pos)) {
+      if (p.status !== "abierta" || now - (p.checkAt ?? 0) < 15 * 60_000) continue;
+      p.checkAt = now;
+      let v; try { v = await vaultValue(this, p.id); } catch { continue; }
+      const val = fmt(v.value) + fmt(v.pending), basis = fmt(p.basis);
+      if (!(basis > 0)) continue;
+      p.samples = [...(p.samples ?? []), [now, +val.toPrecision(8)]].slice(-400);
+      const pnl = val / basis - 1; p.pnlPct = +(pnl * 100).toFixed(2);
+      const s6 = p.samples.find(([t]) => t >= now - 6 * H);
+      const rate = s6 && now - s6[0] >= 3 * H && s6[1] > 0 ? (val / s6[1] - 1) * (24 * H / (now - s6[0])) : null;
+      p.ratePct = rate == null ? null : +(rate * 100).toFixed(2);
+      const age = now - Date.parse(p.at);
+      if (p.kind === "semilla") { if (sn.isSeedCandidate(p.id)) p.outSince = null; else p.outSince ??= now; }
+      let why = null;
+      if (pnl <= -0.10) why = `pérdida ${(pnl * 100).toFixed(1)} %`;
+      else if (p.kind === "disparo" && age >= 6 * H && rate !== null && rate < 0.005) why = `rendimiento ${(rate * 100).toFixed(2)} %/día < 0.5 %`;
+      else if (p.kind === "disparo" && age >= 7 * 24 * H) why = "7 días";
+      else if (p.kind === "semilla" && p.outSince && now - p.outSince >= 24 * H) why = "24 h fuera de la lista de candidatos";
+      if (!why) continue;
+      this.run = this.s.runs[`${this.label}-snipe-exit-${key}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", extra: true };
+      this.run.extra = true; this.vaultId = p.id; this.keepStable = true;
+      try {
+        await exitClm(this, ctx);
+        const out = fmt(this.run.usdcOut) + fmt(this.run.claimedStable);
+        Object.assign(p, { status: "cerrada", closedAt: new Date().toISOString(), why, out, resultPct: +((out / basis - 1) * 100).toFixed(2) });
+        this.run.status = "hecho";
+        const okExit = out > basis;
+        if (p.kind === "disparo") okExit ? st.wins++ : st.losses++;
+        await this.diag(`sniper ${p.kind} cerrado · ${p.id} · ${why} · invertido ${basis.toPrecision(5)} → salió ${out.toPrecision(5)} ${this.net.stableSym} (${p.resultPct > 0 ? "+" : ""}${p.resultPct} %) · disparos exitosos ${st.wins}, fallidos ${st.losses}`);
+        if (p.kind === "disparo" && okExit && st.wins % 5 === 0) {
+          if (shotUsd < max) { st.level = (st.level ?? 0) + 1; await this.diag(`sniper F3: ${st.wins} disparos exitosos · el disparo sube de $${shotUsd} a $${Math.min(max, base * 2 ** st.level)}`); }
+          else await this.diag(`sniper F3: ${st.wins} disparos exitosos con $${shotUsd} · listo para subir el monto (SNIPER_SHOT_USD / SNIPER_SHOT_MAX)`);
+        }
+      } catch (e) {
+        const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
+        if (/STF|exceeds balance/i.test(msg)) delete this.s.runs[`${this.label}-snipe-exit-${key}`];
+        p.checkAt = now + (e.retry ? 0 : 45 * 60_000); if (p.exitErr !== msg) { p.exitErr = msg; await this.diag(`sniper: salida de ${p.id} falló · ${msg} · reintento`); }
+      } finally { this.vaultId = null; this.keepStable = false; }
+      return true;
+    }
+
+    const usedUsd = open().reduce((a, p) => a + (p.usd ?? 0), 0);
+    const enter = async (kind, id, usd, extra = {}) => {
+      const key = `${kind}-${id}-${now}`;
+      this.run = this.s.runs[`${this.label}-snipe-${key}`] = { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd, extra: true };
+      this.vaultId = id; this.dcaUsd = usd; this.sweepStable = undefined;
+      this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
+      try {
+        await enterClm(this, ctx);
+        this.run.status = "hecho";
+        st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
+        await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
+        return "ok";
+      } catch (e) {
+        const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
+        this.run.status = "error"; this.run.error = msg;
+        await this.diag(`sniper: ${kind} en ${id} no entró · ${msg}`);
+        return e.noFunds ? "sinFondos" : e.retry ? "reintento" : "error";
+      } finally { this.vaultId = null; this.dcaUsd = null; }
+    };
+
+    // b) F2 disparos: éxodos detectados en las últimas 2 h
+    for (const rq of sn.requests ?? []) {
+      if (st.handled[rq.key] || now - rq.at > 2 * H) continue;
+      const info = sn.info(rq.id);
+      const minE = Number(process.env.SNIPER_SHOT_MIN_E ?? 50);
+      let skip = null;
+      if (info?.stock !== false) skip = "Stock Token o tokens sin verificar";
+      else if ((rq.E ?? 0) < minE) skip = `emisiones $${Math.round(rq.E ?? 0)}/día < $${minE}`;
+      else if (open().filter((p) => p.kind === "disparo").length >= shotsMax) skip = `ya hay ${shotsMax} disparos abiertos`;
+      else if (open().some((p) => p.kind === "disparo" && p.id === rq.id)) skip = "ya hay un disparo en ese vault";
+      else if (usedUsd + shotUsd > budget) skip = `tope de capital $${budget}`;
+      if (skip) { st.handled[rq.key] = { at: now, skip }; await this.diag(`sniper: éxodo en ${rq.id} sin disparo · ${skip}`); return true; }
+      const r = await enter("disparo", rq.id, shotUsd, { E: rq.E, T: rq.T });
+      if (r === "ok" || r === "error" || (rq.tries = (rq.tries ?? 0) + 1) >= 5) st.handled[rq.key] = { at: now, r };
+      return true;
+    }
+
+    // c) F1 semillas
+    const seeds = open().filter((p) => p.kind === "semilla");
+    if (seeds.length < seedsMax && usedUsd + seedUsd <= budget && now >= (st.seedRetryAt ?? 0)) {
+      for (const c of sn.seedCandidates()) {
+        if (open().some((p) => p.id === c.id) || (st.skipSeed?.[c.id] && now - st.skipSeed[c.id] < 24 * H)) continue;
+        // si la wallet ya tiene posición en ese vault (DCA o depósito manual), ya cumple el papel de semilla
+        try { const v = await vaultValue(this, c.id); if (v.shares > 0n) { (st.skipSeed ??= {})[c.id] = now; continue; } } catch { continue; }
+        const r = await enter("semilla", c.id, seedUsd, { E: c.E, T: c.tvl });
+        if (r === "sinFondos") st.seedRetryAt = now + H;
+        else if (r !== "ok") (st.skipSeed ??= {})[c.id] = now;
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Al arrancar: verifica (sin enviar nada) que el vault del DCA principal y los de DCA_EXTRA se puedan usar. */
   async checkVaults() {
     const ids = [];
@@ -569,7 +685,7 @@ export class Strategy {
       this.busy = true; this.busySince = Date.now(); this.stuckLogged = false;
       try {
         if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
-        this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx));
+        this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
         this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
         this.stage = "dca"; if (!m && !x) await this.dca(ctx);
         this.stage = "listo";

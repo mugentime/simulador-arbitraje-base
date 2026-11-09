@@ -26,6 +26,7 @@ const I = new ethers.Interface([
   "function rewardToken() view returns (address)",
 ]);
 const STABLES = new Set(["USDG", "USDC", "USDT", "USD₮0", "USDC.E", "DAI", "WETH", "ETH", "WBNB", "USDT0"]);
+const USD = new Set(["USDG", "USDC", "USDT", "USD₮0", "USDC.E", "DAI", "USDT0", "USDBC"]);
 const HOUR = 3600_000;
 
 /** Tasa diaria equivalente a un APY en % (en espacio logarítmico: APY de 10²⁹ % no desborda). */
@@ -129,7 +130,18 @@ export class Sniper {
       x.Eapi = emissionsPerDay(x.apiTvl, x.apy);
       const amt = raw ? Number(ethers.formatUnits(BigInt(raw), 18)) : 0;
       if (amt > 0 && x.apiTvl > 0) x.lp = x.apiTvl / amt;
+      x.depTokens = (v.depositTokenAddresses ?? []).filter((a) => ethers.isAddress(a));
+      x.usdPair = x.assets.some((a) => USD.has(String(a).toUpperCase()));
       this.v.set(v.id, x);
+    }
+    // símbolos on-chain (una vez por vault): los Stock Tokens de Robinhood (sufijo "rh") solo se transfieren entre wallets aprobadas
+    const need = [...this.v.values()].filter((x) => x.syms === undefined && x.depTokens?.length && x.Eapi >= this.minE);
+    if (need.length) {
+      const S = new ethers.Interface(["function symbol() view returns (string)"]);
+      const flat = need.flatMap((x) => x.depTokens.map((t) => [t, S.encodeFunctionData("symbol")]));
+      const r = await core.multicall(ethers, this.p, flat).catch(() => []);
+      let k = 0;
+      for (const x of need) { x.syms = x.depTokens.map(() => { const raw = r[k++]; try { return raw ? S.decodeFunctionResult("symbol", raw)[0] : null; } catch { return null; } }); x.stock = this.chain === "robinhood" && x.syms.some((y) => /rh$/i.test(y ?? "")); }
     }
     // conjunto vigilado: los de mayores emisiones (y todo lo que ya tenía alerta abierta)
     const ranked = [...this.v.values()].filter((x) => x.Eapi >= this.minE && x.apiTvl >= 500).sort((a, b) => b.Eapi - a.Eapi);
@@ -177,6 +189,7 @@ export class Sniper {
     const conc = x.holders?.c ? ` · mayor depositante ${x.holders.c.top1 ?? "?"} %` : "";
     const gauge = x.gauge?.hoursLeft != null ? ` · emisiones del gauge por ${x.gauge.hoursLeft.toFixed(0)} h` : "";
     const a = { t: now, key, id: x.id, kind: s.kind, s, T, E };
+    if (s.kind === "éxodo" && x.addr) (this.requests ??= []).push({ key: `${x.id}|${now}`, id: x.id, at: now, E, T, stock: !!x.stock, gov: !!x.gov });
     this.alerts.push(a); if (this.alerts.length > 200) this.alerts.shift();
     const txt = s.kind === "éxodo de token"
       ? `${s.token}: ${s.vaults.length} vaults pierden TVL (−${s.dropPct.toFixed(0)} % en 6 h) · ${s.vaults.join(", ")}`
@@ -271,6 +284,21 @@ export class Sniper {
     await this.diag(msg.slice(0, 3500));
   }
 
+  /**
+   * Candidatos a semilla (F1): E ≥ SNIPER_SEED_MIN_E ($100/día), TVL ≥ $5k, par con estable en dólares, sin Stock Tokens de
+   * Robinhood; si un par tiene vault que compone y reward pool, el vault (ahí lo que deja el que sale se reparte, doc 22 §7).
+   * Orden: E con un plus por concentración (no es filtro).
+   */
+  seedCandidates() {
+    const minE = Number(process.env.SNIPER_SEED_MIN_E ?? 100);
+    const ok = [...this.v.values()].filter((x) => x.Eapi >= minE && (x.apiTvl ?? 0) >= 5000 && x.usdPair && x.stock === false);
+    const byPair = {};
+    for (const x of ok) { const k = [...x.assets].map(String).sort().join("-"); const cur = byPair[k]; if (!cur || (cur.gov && !x.gov) || (cur.gov === x.gov && x.Eapi > cur.Eapi)) byPair[k] = x; }
+    return Object.values(byPair).map((x) => ({ id: x.id, name: x.name, E: x.Eapi, tvl: x.tvl ?? x.apiTvl, score: x.Eapi * (1 + 0.5 * ((x.holders?.c?.top1 ?? 0) / 100)) })).sort((a, b) => b.score - a.score);
+  }
+  isSeedCandidate(id) { return this.seedCandidates().some((c) => c.id === id); }
+  info(id) { return this.v.get(id) ?? null; }
+
   summaryLine() {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
     const row = (x) => { const h1 = at(x.ser ?? [], HOUR), h6 = at(x.ser ?? [], 6 * HOUR); const d = (p) => (p?.tvl ? `${(((x.tvl ?? 0) / p.tvl - 1) * 100).toFixed(0)}%` : "—"); return `${x.name} TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)} (1h ${d(h1)}, 6h ${d(h6)}) E $${Math.round(x.Eapi ?? 0)}/d${x.Emeas != null ? ` medido $${Math.round(x.Emeas)}/d` : ""}${x.holders?.c ? ` top1 ${x.holders.c.top1}%` : x.holders ? " top1 …" : ""}${x.gauge?.hoursLeft != null ? ` gauge ${x.gauge.hoursLeft.toFixed(0)}h` : ""}`; };
@@ -279,6 +307,6 @@ export class Sniper {
   /** Para /api/sniper */
   view() {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
-    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse() };
+    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse(), seeds: this.seedCandidates().slice(0, 10), requests: (this.requests ?? []).slice(-20) };
   }
 }

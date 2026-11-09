@@ -325,6 +325,7 @@ async function dcaOnlyLoop(exec, p) {
   }
   if (!sniper) { sniper = new Sniper({ provider: p, store, diag, chainKey: CHAIN_CFG.key }); await sniper.init(); }
   else sniper.p = p;
+  if (strategy) strategy.sniper = sniper; // F1–F3: la estrategia ejecuta lo que detecta el radar (SNIPER_TRADE=1)
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
   let n = 0, lastTickErr = null;
