@@ -423,7 +423,9 @@ export class Strategy {
       if (p.status !== "abierta" || now - (p.checkAt ?? 0) < 15 * 60_000) continue;
       p.checkAt = now;
       let v; try { v = await vaultValue(this, p.id); } catch { continue; }
-      const val = fmt(v.value) + fmt(v.pending), basis = fmt(p.basis);
+      // solo nuestra parte: participaciones de esta posición / participaciones de la wallet en el vault (otras estrategias depositan ahí)
+      const frac = p.vshares && v.vshares > 0n ? Math.min(1, Number(BigInt(p.vshares) * 1_000_000n / v.vshares) / 1e6) : 1;
+      const val = (fmt(v.value) + fmt(v.pending)) * frac, basis = fmt(p.basis);
       if (!(basis > 0)) continue;
       p.samples = [...(p.samples ?? []), [now, +val.toPrecision(8)]].slice(-400);
       const pnl = val / basis - 1; p.pnlPct = +(pnl * 100).toFixed(2);
@@ -437,9 +439,20 @@ export class Strategy {
       else if (p.kind === "disparo" && age >= 6 * H && rate !== null && rate < 0.005) why = `rendimiento ${(rate * 100).toFixed(2)} %/día < 0.5 %`;
       else if (p.kind === "disparo" && age >= 7 * 24 * H) why = "7 días";
       else if (p.kind === "semilla" && p.outSince && now - p.outSince >= 24 * H) why = "24 h fuera de la lista de candidatos";
+      else if (p.kind === "cosecha") {
+        if (age >= 6 * H && rate !== null && rate < 0.005) why = `rendimiento ${(rate * 100).toFixed(2)} %/día < 0.5 %`;
+        else {
+          // rotación: otro vault paga ≥ 2× lo nuestro (medido) durante 12 h
+          const mine = sn.harvestCandidates().find((c) => c.id === p.id)?.pct ?? (rate != null ? rate * 100 : 0);
+          const best = sn.harvestCandidates().find((c) => !open().some((q) => q.id === c.id));
+          if (best && mine > 0 && best.pct >= 2 * mine) p.betterSince ??= now; else p.betterSince = null;
+          if (p.betterSince && now - p.betterSince >= 12 * H) why = `rotación: ${best.name} paga ${best.pct} %/día vs ${mine.toFixed(2)} %`;
+        }
+      }
       if (!why) continue;
       this.run = this.s.runs[`${this.label}-snipe-exit-${key}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", extra: true };
       this.run.extra = true; this.vaultId = p.id; this.keepStable = true;
+      this.exitShares = p.vshares ? BigInt(p.vshares) : null; // salida parcial: solo las participaciones de esta posición
       try {
         await exitClm(this, ctx);
         const out = fmt(this.run.usdcOut) + fmt(this.run.claimedStable);
@@ -447,7 +460,13 @@ export class Strategy {
         this.run.status = "hecho";
         const okExit = out > basis;
         if (p.kind === "disparo") okExit ? st.wins++ : st.losses++;
+        if (p.kind === "cosecha") okExit ? (st.hWins = (st.hWins ?? 0) + 1) : (st.hLosses = (st.hLosses ?? 0) + 1);
         await this.diag(`sniper ${p.kind} cerrado · ${p.id} · ${why} · invertido ${basis.toPrecision(5)} → salió ${out.toPrecision(5)} ${this.net.stableSym} (${p.resultPct > 0 ? "+" : ""}${p.resultPct} %) · disparos exitosos ${st.wins}, fallidos ${st.losses}`);
+        if (p.kind === "cosecha" && okExit && st.hWins % 5 === 0) {
+          const hb = Number(process.env.SNIPER_HARVEST_USD ?? 20), hm = Number(process.env.SNIPER_HARVEST_USD_MAX ?? hb), cur = Math.min(hm, hb * 2 ** (st.hLevel ?? 0));
+          if (cur < hm) { st.hLevel = (st.hLevel ?? 0) + 1; await this.diag(`sniper cosecha: ${st.hWins} salidas con ganancia · el monto sube de $${cur} a $${Math.min(hm, hb * 2 ** st.hLevel)}`); }
+          else await this.diag(`sniper cosecha: ${st.hWins} salidas con ganancia con $${cur} · listo para subir el monto (SNIPER_HARVEST_USD / SNIPER_HARVEST_USD_MAX)`);
+        }
         if (p.kind === "disparo" && okExit && st.wins % 5 === 0) {
           if (shotUsd < max) { st.level = (st.level ?? 0) + 1; await this.diag(`sniper F3: ${st.wins} disparos exitosos · el disparo sube de $${shotUsd} a $${Math.min(max, base * 2 ** st.level)}`); }
           else await this.diag(`sniper F3: ${st.wins} disparos exitosos con $${shotUsd} · listo para subir el monto (SNIPER_SHOT_USD / SNIPER_SHOT_MAX)`);
@@ -456,11 +475,11 @@ export class Strategy {
         const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
         if (/STF|exceeds balance/i.test(msg)) delete this.s.runs[`${this.label}-snipe-exit-${key}`];
         p.checkAt = now + (e.retry ? 0 : 45 * 60_000); if (p.exitErr !== msg) { p.exitErr = msg; await this.diag(`sniper: salida de ${p.id} falló · ${msg} · reintento`); }
-      } finally { this.vaultId = null; this.keepStable = false; }
+      } finally { this.vaultId = null; this.keepStable = false; this.exitShares = null; }
       return true;
     }
 
-    const usedUsd = open().reduce((a, p) => a + (p.usd ?? 0), 0);
+    const usedUsd = open().filter((p) => p.kind !== "cosecha").reduce((a, p) => a + (p.usd ?? 0), 0); // la cosecha tiene su propio tope
     const enter = async (kind, id, usd, extra = {}) => {
       const key = `${kind}-${id}-${now}`;
       this.run = this.s.runs[`${this.label}-snipe-${key}`] = { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd, extra: true };
@@ -469,7 +488,7 @@ export class Strategy {
       try {
         await enterClm(this, ctx);
         this.run.status = "hecho";
-        st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
+        st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
         await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
         return "ok";
       } catch (e) {
@@ -497,7 +516,22 @@ export class Strategy {
       return true;
     }
 
-    // c) F1 semillas
+    // c) cosecha: rendimiento real ≥ 1.5 %/día sobre TVL; $SNIPER_HARVEST_USD por vault, hasta SNIPER_HARVEST_MAX, uno por token
+    const hUsd = Math.min(Number(process.env.SNIPER_HARVEST_USD_MAX ?? process.env.SNIPER_HARVEST_USD ?? 20), Number(process.env.SNIPER_HARVEST_USD ?? 20) * 2 ** (st.hLevel ?? 0));
+    const hMax = Number(process.env.SNIPER_HARVEST_MAX ?? 3), hBudget = Number(process.env.SNIPER_HARVEST_BUDGET_USD ?? 60);
+    const hOpen = open().filter((p) => p.kind === "cosecha");
+    if (process.env.SNIPER_HARVEST !== "0" && hOpen.length < hMax && hOpen.reduce((a, p) => a + (p.usd ?? 0), 0) + hUsd <= hBudget && now >= (st.hRetryAt ?? 0)) {
+      for (const c of sn.harvestCandidates()) {
+        if (open().some((p) => p.kind === "cosecha" && (p.id === c.id || (c.token && p.token === c.token)))) continue; // uno por token volátil
+        if (st.hSkip?.[c.id] && now - st.hSkip[c.id] < 12 * H) continue;
+        const r = await enter("cosecha", c.id, hUsd, { E: c.perDay, T: c.tvl, pct: c.pct, token: c.token });
+        if (r === "sinFondos") st.hRetryAt = now + H;
+        else if (r !== "ok") (st.hSkip ??= {})[c.id] = now;
+        return true;
+      }
+    }
+
+    // c2) F1 semillas
     const seeds = open().filter((p) => p.kind === "semilla");
     if (seeds.length < seedsMax && usedUsd + seedUsd <= budget && now >= (st.seedRetryAt ?? 0)) {
       for (const c of sn.seedCandidates()) {

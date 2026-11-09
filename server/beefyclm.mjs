@@ -481,17 +481,19 @@ export async function exitClm(s, ctx) {
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
+    const part = s.exitShares != null && s.exitShares > 0n && s.exitShares < held ? s.exitShares : null; // salida parcial (sniper)
     if (r.gov && held > 0n && r.claimedStable === undefined) {
       // las recompensas cobradas al salir son rendimiento de la estrategia: se registran (valuadas en el estable)
       const got = await claimRewards(s, "getReward antes de salir").catch(() => []);
       let v = 0n; for (const g of got) if (g.amount > 0n) v += await tokenValue(s, g.token, g.amount).catch(() => 0n);
-      r.claimedStable = String(v); await s.save();
+      r.claimedStable = String(part ? v * part / held : v); await s.save(); // parcial: solo la parte de esta posición
     }
-    if (held > 0n) await s.send(r.gov ? "withdraw reward pool Beefy" : "withdrawAll vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("withdraw(uint256)", [held]) : C.encodeFunctionData("withdrawAll") });
+    if (part) { r.partial = String(part); await s.send(r.gov ? "withdraw reward pool Beefy (parcial)" : "withdraw vault Beefy (parcial)", { to: r.vault, data: C.encodeFunctionData("withdraw(uint256)", [part]) }); }
+    else if (held > 0n) await s.send(r.gov ? "withdraw reward pool Beefy" : "withdrawAll vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("withdraw(uint256)", [held]) : C.encodeFunctionData("withdrawAll") });
     r.clmOut = String((await bal(s, r.clm)) - before); await s.save();
   }
   if (r.usdcOut === undefined) {
-    const sh = await bal(s, r.clm);
+    const sh = r.partial ? BigInt(r.clmOut) : await bal(s, r.clm); // parcial: solo el CLM que salió de esta posición
     const bU0 = await bal(s, s.net.stable), bX0 = await bal(s, r.x);
     if (r.noStable) r.b1Before = String(await bal(s, r.t1));
     if (sh > 0n) {
@@ -507,7 +509,7 @@ export async function exitClm(s, ctx) {
       if (g1 > 0n) await routeSwap(s, r.t1, s.net.stable, g1, `swap token1→${s.net.stableSym}`);
       r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(g0); await s.save();
     } else {
-    const xGot = await bal(s, r.x); // todo el X de la wallet: lo retirado + sobrantes de depósitos anteriores en este vault
+    const xGot = r.partial ? (await bal(s, r.x)) - bX0 : await bal(s, r.x); // todo el X de la wallet (parcial: solo lo retirado)
     const uFromX = xGot > 0n ? (r.dex === "otro" ? await routeSwap(s, r.x, s.net.stable, xGot, `swap X→${s.net.stableSym}`) : await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`)) : 0n;
     r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(xGot); r.usdcFromX = String(uFromX); await s.save();
     }
@@ -610,18 +612,19 @@ export async function vaultValue(s, id) {
     await resolve(s);
     const r = s.run, N = s.net;
     let sh = await bal(s, r.vault);
+    const vshares = sh;
     if (!r.gov && sh > 0n) sh = sh * (await call(s, r.vault, "getPricePerFullShare"))[0] / 10n ** 18n;
     sh += await bal(s, r.clm);
     const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
     // recompensas por cobrar del reward pool (en los CLM son las comisiones), valuadas en el estable
     let pending = 0n;
     if (r.gov) { try { const [tk, am] = await call(s, r.vault, "earned(address)", [s.me]); for (let i = 0; i < tk.length; i++) pending += await tokenValue(s, tk[i], am[i]); } catch {} }
-    if (sh === 0n) return { value: 0n, tokens, shares: 0n, gov: !!r.gov, pending };
+    if (sh === 0n) return { value: 0n, tokens, shares: 0n, vshares, gov: !!r.gov, pending };
     const [[a0, a1], [ts]] = await Promise.all([call(s, r.clm, "balances"), call(s, r.clm, "totalSupply")]);
     const q = [a0 * sh / ts, a1 * sh / ts];
     let value = 0n;
     for (let i = 0; i < 2; i++) value += lc(tokens[i]) === lc(N.stable) ? q[i] : q[i] > 0n ? ((await bestPath(s, tokens[i], N.stable, q[i]).catch(() => null))?.out ?? 0n) : 0n;
-    return { value, tokens, shares: sh, gov: !!r.gov, pending };
+    return { value, tokens, shares: sh, vshares, gov: !!r.gov, pending };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
 }
 /** Valor en estable crudo de un saldo de token (0 si no hay ruta). */

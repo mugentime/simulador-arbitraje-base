@@ -73,3 +73,18 @@ import { ethers } from "ethers";
   assert.equal(s2.topFees(5)[0].id, "v1");
   console.log("test_sniper comisiones ok");
 }
+
+// cosecha: rendimiento real / TVL (ppfs 6 h en vaults que componen; APY o comisiones en reward pools)
+{
+  const s3 = new Sniper({ provider: null, store: null, diag: () => {}, chainKey: "robinhood" });
+  const add = (o) => s3.v.set(o.id, { stock: false, gov: false, usdPair: true, ...o });
+  add({ id: "ai-usdg", name: "AI-USDG", token: "AI", tvl: 3068, Emeas6: 107 });               // 3.49 %/día
+  add({ id: "ai-weth-rp", name: "AI-WETH RP", token: "AI", gov: true, usdPair: false, tvl: 4857, Eapi: 88, fees: { perDay: 74, covered: 1 } }); // 1.81 %/día × 0.7
+  add({ id: "cash", name: "CASHCAT-USDG RP", token: "CASHCAT", gov: true, tvl: 21454, Eapi: 100, fees: { perDay: 207, covered: 1 } }); // 0.96 %/día
+  add({ id: "tiny", name: "X-USDG", token: "X", tvl: 900, Emeas6: 500 });                      // TVL < $2k
+  add({ id: "stock", name: "NVDA-USDG", token: "NVDA", stock: true, tvl: 9000, Emeas6: 900 });
+  const h = s3.harvestCandidates();
+  assert.deepEqual(h.map((c) => c.id), ["ai-usdg", "ai-weth-rp"]);
+  assert.equal(h[0].pct, 3.49); assert.equal(h[1].pct, 1.81);
+  console.log("test_sniper cosecha ok");
+}

@@ -178,6 +178,8 @@ export class Sniper {
       const h1 = at(x.ser, HOUR, now);
       if (h1?.pp && pt.pp && BigInt(h1.pp) > 0n && now - h1.t > 20 * 60_000) { const g = Number(BigInt(pt.pp) * 1_000_000n / BigInt(h1.pp)) / 1e6 - 1; x.Emeas = +(g * (24 * HOUR / (now - h1.t)) * tvl).toFixed(2); }
       const h6 = at(x.ser, 6 * HOUR, now);
+      const h6p = at(x.ser, 6 * HOUR, now) ?? x.ser.find((p) => p.pp);
+      if (h6p?.pp && pt.pp && BigInt(h6p.pp) > 0n && now - h6p.t >= 3 * HOUR) { const g = Number(BigInt(pt.pp) * 1_000_000n / BigInt(h6p.pp)) / 1e6 - 1; x.Emeas6 = +(g * (24 * HOUR / (now - h6p.t)) * tvl).toFixed(2); }
       if (h6) rows.push({ id: x.id, token: x.token, tvl6h: h6.tvl, tvl: h6.amt ? h6.tvl * (pt.amt / h6.amt) : tvl });
       for (const s of detectSignals(x.ser, { now, minE: this.minE })) await this.alert(x, s);
     }
@@ -354,6 +356,25 @@ export class Sniper {
     for (const x of ok) { const k = [...x.assets].map(String).sort().join("-"); const cur = byPair[k]; if (!cur || (cur.gov && !x.gov) || (cur.gov === x.gov && x.Eapi > cur.Eapi)) byPair[k] = x; }
     return Object.values(byPair).map((x) => ({ id: x.id, name: x.name, E: val(x), fees: x.fees?.perDay ?? null, tvl: x.tvl ?? x.apiTvl, score: val(x) * (1 + 0.5 * ((x.holders?.c?.top1 ?? 0) / 100)) })).sort((a, b) => b.score - a.score);
   }
+  /**
+   * Cosecha (doc 22 §10): rendimiento REAL por día / TVL. Vault que compone: crecimiento del ppfs en ~6 h (incluye comisiones y
+   * recompensas). Reward pool: el mayor entre el APY de Beefy (ya incluye comisiones del CLM) y las comisiones medidas.
+   * Filtros: ≥ SNIPER_HARVEST_MIN_PCT (1.5 %/día), TVL ≥ $2k, sin Stock Tokens. Pares con estable primero (los de WETH valen 0.7).
+   */
+  harvestCandidates() {
+    const minPct = Number(process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5);
+    const out = [];
+    for (const x of this.v.values()) {
+      const tvl = x.tvl ?? x.apiTvl ?? 0;
+      if (tvl < 2000 || x.stock !== false) continue;
+      const day = x.gov ? Math.max(x.Eapi ?? 0, x.fees?.covered >= 1 ? x.fees.perDay ?? 0 : 0) : x.Emeas6;
+      if (!(day > 0)) continue;
+      const pct = (day / tvl) * 100;
+      if (pct < minPct) continue;
+      out.push({ id: x.id, name: x.name, token: x.token, tvl, perDay: +day.toFixed(2), pct: +pct.toFixed(2), usdPair: !!x.usdPair, score: pct * (x.usdPair ? 1 : 0.7), how: x.gov ? "APY/comisiones" : "ppfs 6 h" });
+    }
+    return out.sort((a, b) => b.score - a.score);
+  }
   isSeedCandidate(id) { return this.seedCandidates().some((c) => c.id === id); }
   info(id) { return this.v.get(id) ?? null; }
 
@@ -361,7 +382,8 @@ export class Sniper {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
     const row = (x) => { const h1 = at(x.ser ?? [], HOUR), h6 = at(x.ser ?? [], 6 * HOUR); const d = (p) => (p?.tvl ? `${(((x.tvl ?? 0) / p.tvl - 1) * 100).toFixed(0)}%` : "—"); return `${x.name} TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)} (1h ${d(h1)}, 6h ${d(h6)}) E $${Math.round(x.Eapi ?? 0)}/d${x.Emeas != null ? ` medido $${Math.round(x.Emeas)}/d` : ""}${x.holders?.c ? ` top1 ${x.holders.c.top1}%` : x.holders ? " top1 …" : ""}${x.fees?.perDay != null ? ` comisiones $${Math.round(x.fees.perDay)}/d (APR ${x.fees.aprPct}%)` : ""}${x.gauge?.hoursLeft != null ? ` gauge ${x.gauge.hoursLeft.toFixed(0)}h` : ""}`; };
     const fx = this.topFees(5).map((x) => `${x.name} $${Math.round(x.fees.perDay)}/d APR ${x.fees.aprPct}% TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)}`).join(" | ");
-    return `radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}${fx ? ` · comisiones medidas 24 h (top): ${fx}` : ""}`;
+    const hv = this.harvestCandidates().slice(0, 5).map((c) => `${c.name} ${c.pct}%/día ($${Math.round(c.perDay)}/d, TVL $${Math.round(c.tvl)}, ${c.how})`).join(" | ");
+    return `${hv ? `cosecha (≥ ${process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5} %/día): ${hv} · ` : ""}radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}${fx ? ` · comisiones medidas 24 h (top): ${fx}` : ""}`;
   }
   /** CLM con más comisiones medidas en 24 h (día completo escaneado y precios conocidos), sin repetir CLM. */
   topFees(n = 10) {
@@ -371,6 +393,6 @@ export class Sniper {
   /** Para /api/sniper */
   view() {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
-    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, fees: x.fees ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse(), seeds: this.seedCandidates().slice(0, 10), fees: this.topFees(15).map((x) => ({ id: x.id, name: x.name, tvl: x.tvl ?? x.apiTvl, ...x.fees })), requests: (this.requests ?? []).slice(-20) };
+    return { chain: this.chain, at: Date.now(), vaults: this.v.size, lastError: this.lastError ?? null, watch: w.map((x) => ({ id: x.id, name: x.name, token: x.token, tvl: x.tvl, apiTvl: x.apiTvl, apyPct: x.apy, E: x.Eapi, Emeas: x.Emeas ?? null, per100: x.Eapi ? +(x.Eapi * 100 / ((x.tvl ?? x.apiTvl) + 100)).toFixed(2) : null, holders: x.holders?.c ?? null, holdersScan: x.holders ? (x.holders.done ? "completo" : `bloque ${x.holders.from}`) : null, gauge: x.gauge ?? null, fees: x.fees ?? null, ser: (x.ser ?? []).filter((_, i, a) => i % 3 === 0 || i === a.length - 1).map((p) => [p.t, p.tvl]) })), alerts: this.alerts.slice(-50).reverse(), seeds: this.seedCandidates().slice(0, 10), harvest: this.harvestCandidates().slice(0, 10), fees: this.topFees(15).map((x) => ({ id: x.id, name: x.name, tvl: x.tvl ?? x.apiTvl, ...x.fees })), requests: (this.requests ?? []).slice(-20) };
   }
 }
