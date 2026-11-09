@@ -5,7 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap } from "./beefyclm.mjs";
 import { scanHighApy, pickTarget, exitCheck, exitThreshold, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import * as core from "../src/core.js";
@@ -84,6 +84,37 @@ export class Strategy {
     this.compound = process.env.STRATEGY_COMPOUND === "1";
     this.compoundEveryMs = Number(process.env.COMPOUND_EVERY_H ?? 24) * 3600_000;
     this.compoundMinUsd = Number(process.env.COMPOUND_MIN_USD ?? 0.2);
+    // pausa del DCA principal (DCA_MAIN_PAUSE=1): sin depósitos diarios, reinversiones, rotaciones ni destinos nuevos; las
+    // posiciones abiertas se quedan (siguen las reglas de salida) y el capital por reinvertir se estaciona en PARK_TOKEN
+    // (p. ej. USDG en Robinhood) en lugar de ir a otro vault. Los DCA_EXTRA no se tocan.
+    this.pauseMain = process.env.DCA_MAIN_PAUSE === "1";
+    this.parkToken = process.env.PARK_TOKEN || null;
+  }
+
+  /** DCA principal en pausa: salidas por reglas (cada hora), cobro de ganancias del demo y estacionamiento del sobrante. */
+  async pausedMain(ctx, d, now) {
+    if (d.pausedSince === undefined) { d.pausedSince = new Date(now).toISOString(); await this.diag(`estrategia ${this.kind}: DCA principal EN PAUSA (DCA_MAIN_PAUSE=1) · sin depósitos ni reinversiones · posiciones abiertas: ${Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id).join(", ") || "—"} · sobrante → ${this.parkToken ?? "se queda en " + this.net.stableSym}`); }
+    if (process.env.STRATEGY_VAULT_ID === "auto" && (!this.autoAt || now - this.autoAt >= 3600_000)) { this.autoAt = now; if (await this.autoTick(ctx, d, now)) return; }
+    if (this.dynamic && (!d.profitAt || now - d.profitAt >= this.profitEveryMs)) {
+      d.profitAt = now;
+      for (const [id, h] of Object.entries(d.holdings ?? {})) if (!h.closed) await this.takeProfit(d, id, h, now).catch(async (e) => this.diag(`estrategia dinámica: cobro de ${id} falló · ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`));
+      return;
+    }
+    const amt = BigInt(d.redeploy ?? "0");
+    if (!this.parkToken || amt <= 0n || (d.parkRetryAt && now < d.parkRetryAt)) return;
+    const label = `${this.label}-park-${d.redeployTag ?? now}`;
+    this.run = this.s.runs[label] ??= { kind: "park", startedAt: now, txs: [], status: "pendiente" };
+    try {
+      const got = await routeSwap(this, this.net.stable, this.parkToken, amt, `swap sobrante ${this.net.stableSym}→estacionado`);
+      this.run.status = "hecho"; this.run.endedAt = Date.now(); this.run.usdcIn = String(amt); this.run.parkedOut = String(got);
+      d.redeploy = "0"; d.parkRetryAt = 0;
+      (d.parked ??= []).push({ at: new Date(now).toISOString(), token: this.parkToken, in: String(amt), out: String(got), txs: this.run.txs.map((t) => t.hash) });
+      await this.diag(`estrategia ${this.kind}: sobrante estacionado · ${ethers.formatUnits(amt, this.net.stableDec)} ${this.net.stableSym} → ${got} (crudo) de ${this.parkToken}`);
+    } catch (e) {
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
+      this.run.status = "pendiente"; this.run.error = msg; d.parkRetryAt = now + 3600_000;
+      await this.diag(`estrategia ${this.kind}: estacionar sobrante falló · ${msg} · reintento en 1 h (el capital queda apartado en ${this.net.stableSym})`);
+    }
   }
 
   /** Cobra y reinvierte las recompensas de `id` (si valen ≥ COMPOUND_MIN_USD). Pasos reanudables: cobro y depósito por separado. */
@@ -183,7 +214,7 @@ export class Strategy {
       if (!c.exit && this.lossPct > 0 && pc && pc.invested > 0 && Number.isFinite(pc.pnlPct) && pc.pnlPct <= -this.lossPct) Object.assign(c, { exit: true, why: `pérdida ${pc.pnlPct.toFixed(1)} % sobre lo invertido (≥ ${this.lossPct} %)` });
       h.badSince = c.badSince; h.lastApyPct = scan.byId[id]?.apyPct ?? null; h.lastTvl = scan.byId[id]?.tvl ?? null;
       // demo dinámico: rotación si otro vault elegible paga mucho más durante HIGH_APY_ROTATE_HOURS
-      if (!c.exit && this.rotate && id === d.target) {
+      if (!c.exit && this.rotate && !this.pauseMain && id === d.target) {
         const rc = rotateCheck(scan.byId[id] ?? null, elig.filter((x) => x.id !== id)[0] ?? null, h.rotateSince ?? null, now, rules);
         h.rotateSince = rc.since;
         if (rc.rotate) Object.assign(c, { exit: true, why: rc.why });
@@ -196,13 +227,14 @@ export class Strategy {
         if (this.dynamic) await this.takeProfit(d, id, h, now, "antes de salir").catch(() => {});
         this.run = this.s.runs[label];
         await exitClm(this, ctx); this.addClaimed(this.vaultId, Number(ethers.formatUnits(BigInt(this.run.claimedStable ?? "0"), this.net.stableDec)) * this.stableUsd()); this.run.status = "hecho"; h.closed = new Date(now).toISOString(); h.exitWhy = c.why; if (d.target === id) d.target = null;
-        if (this.redeployOnExit && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = pickTarget(elig.filter((x) => x.id !== id), null); }
-        await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.redeployOnExit ? ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}` : ""}`);
+        if (this.redeployOnExit && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = this.pauseMain ? null : pickTarget(elig.filter((x) => x.id !== id), null); }
+        await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.redeployOnExit ? (this.pauseMain ? ` · DCA en pausa: se estaciona en ${this.parkToken ?? this.net.stableSym}` : ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}`) : ""}`);
       }
       catch (e) { this.run.status = "error"; this.run.error = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`estrategia auto: salida de ${id} falló · ${this.run.error}`); }
       return true;
     }
-    // destino
+    // destino (en pausa no se elige ninguno: no entra capital nuevo a ningún vault)
+    if (this.pauseMain) { d.target = null; return false; }
     const prev = d.target ?? null;
     const pinOpen = this.pin && !d.holdings?.[this.pin]?.closed;
     d.target = pinOpen ? this.pin : pickTarget(elig, prev);
@@ -413,6 +445,7 @@ export class Strategy {
       await this.diag(`estrategia ${this.kind}: tokens sueltos vendidos (${lsTag}) · +${ethers.formatUnits(total, this.net.stableDec)} ${this.net.stableSym}${this.redeployOnExit ? " al capital por reinvertir" : ""} · ${parts.join(" | ") || "nada que vender"}`);
       return;
     }
+    if (this.pauseMain) return this.pausedMain(ctx, d, now);
     // modo automático (STRATEGY_VAULT_ID=auto): solo vaults con APY publicado ≥ HIGH_APY_MIN_PCT; reglas de salida cada hora
     if (process.env.STRATEGY_VAULT_ID === "auto") {
       if (!this.autoAt || now - this.autoAt >= 3600_000) { this.autoAt = now; if (await this.autoTick(ctx, d, now)) return; }
