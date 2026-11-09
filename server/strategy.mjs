@@ -55,7 +55,9 @@ export async function resolveVaultSpec(spec, chain) {
   const all = [...vs, ...gs].filter((v) => v.chain === chain && v.status === "active" && v.type !== "cowcentrated");
   const byId = all.find((v) => v.id === spec);
   if (byId) return byId.id;
-  const m = all.filter((v) => String(v.name).toLowerCase() === spec.toLowerCase()).sort((a, b) => (tv[b.id] ?? 0) - (tv[a.id] ?? 0));
+  // nombre sin distinguir mayúsculas, sin el sufijo "Reward Pool" y sin importar el orden del par (CASHCAT-USDG = USDG-CASHCAT)
+  const norm = (x) => String(x ?? "").toLowerCase().replace(/\s*reward pool\s*$/, "").replace(/\s*\(gov\)\s*$/, "").trim().split("-").map((t) => t.trim()).sort().join("-");
+  const m = all.filter((v) => norm(v.name) === norm(spec)).sort((a, b) => (tv[b.id] ?? 0) - (tv[a.id] ?? 0));
   if (!m.length) throw new Error("sin coincidencias");
   return m[0].id;
 }
@@ -306,9 +308,11 @@ export class Strategy {
     const now = Date.now();
     for (const id of ids) {
       if (st.done[id] || st.errors[id]?.final) continue;
+      if (st.errors[id] && !st.errors[id].extraFix) st.errors[id] = { n: 0, extraFix: true }; // corridas previas al arreglo de pares sin estable
       const er = st.errors[id];
       if (er?.retryAt && now < er.retryAt) continue;
-      this.run = this.s.runs[`${this.label}-exit-${tag}-${id}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", exitTag: tag };
+      this.run = this.s.runs[`${this.label}-exit-${tag}-${id}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", exitTag: tag, extra: true };
+      this.run.extra = true;
       this.vaultId = id; this.keepStable = true;
       try {
         await exitClm(this, ctx);
