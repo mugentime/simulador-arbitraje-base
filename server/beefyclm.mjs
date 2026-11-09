@@ -675,6 +675,7 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 40 } = {}) {
         let x;
         try { x = await sharesAt(s, r, lg.blockNumber); }
         catch { x = await sharesAt(s, r, "latest"); st.approx++; } // sin estado histórico: participación actual (aproximado)
+        st.tot0 = String(BigInt(st.tot0 ?? "0") + fee0); st.tot1 = String(BigInt(st.tot1 ?? "0") + fee1);
         if (x.ts > 0n && x.sh > 0n) { st.my0 = String(BigInt(st.my0) + fee0 * x.sh / x.ts); st.my1 = String(BigInt(st.my1) + fee1 * x.sh / x.ts); }
         st.n++;
       }
@@ -682,6 +683,14 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 40 } = {}) {
       if (logs.length < 50 && span < 400000) span *= 2;
     }
     st.span = span; st.tokens = tokens;
+    if (!st.diagDone) {
+      // diagnóstico único: qué eventos emite la estrategia (por si no usa Harvest(fee0, fee1)) y cuánto cobró el CLM entero
+      st.diagDone = true;
+      const lg = await s.provider.getLogs({ address: st.strategy, fromBlock: Math.max(0, head - 20000), toBlock: head }).catch(() => []);
+      const cnt = {}; for (const l of lg) cnt[l.topics[0]?.slice(0, 10)] = (cnt[l.topics[0]?.slice(0, 10)] ?? 0) + 1;
+      const [tv0, tv1] = await Promise.all([tokenValue(s, tokens[0], BigInt(st.tot0 ?? "0")), tokenValue(s, tokens[1], BigInt(st.tot1 ?? "0"))]);
+      s.diag?.(`comisiones medidas ${id}: estrategia ${st.strategy} · ${st.n} harvests desde el bloque inicial · CLM entero cobró ${Number(tv0 + tv1) / 10 ** (N.stableDec ?? 18)} (en ${N.stableSym}) · nuestra parte crudo ${st.my0}/${st.my1} · eventos últimos 20k bloques ${JSON.stringify(cnt)} (Harvest=${HARVEST_TOPIC.slice(0, 10)})`);
+    }
     const usd = (await tokenValue(s, tokens[0], BigInt(st.my0))) + (await tokenValue(s, tokens[1], BigInt(st.my1)));
     return { usd, n: st.n, behindBlocks: Math.max(0, head - st.from + 1), approx: st.approx };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }

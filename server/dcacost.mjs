@@ -349,12 +349,12 @@ export async function dcaCostReport(s, { ethUsd = null } = {}) {
  */
 export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
   // copia liviana: vaultValue cambia run/vaultId y no debe pisar un depósito en curso de la estrategia
-  const s = Object.assign(Object.create(Object.getPrototypeOf(s0)), s0, { save: async () => {}, diag: async () => {} });
+  const s = Object.assign(Object.create(Object.getPrototypeOf(s0)), s0, { save: async () => {}, diag: async (m) => { if (/^comisiones medidas/.test(m)) await s0.diag?.(m); } });
   if (!(ethUsd > 0)) return [`dca estrategia ${s.net.beefy}: sin precio del ETH`];
   const D = s.net.stableDec, toUsd = (raw) => Number(raw) / 10 ** D * ethUsd, now = Date.now();
   const apy = await fetch("https://api.beefy.finance/apy/breakdown", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json()).catch(() => ({}));
   const fees = (await s.store.get("wrapFees")) ?? {};
-  const hv = (await s.store.get("harvestFees").catch(() => null)) ?? {};
+  const hv = (await s.store.get("harvestFees2").catch(() => null)) ?? {};
   const out = [], seenTok = new Set(), res = {};
   const recs = Object.entries(s.s?.dca ?? {}).filter(([, d]) => d && (d.totalUsd > 0 || d.redeploy)).sort(([, a], [, b]) => (b.extra ? 1 : 0) - (a.extra ? 1 : 0)); // primero los extra: se quedan con sus tokens
   for (const [label, d] of recs) {
@@ -414,7 +414,7 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
     } catch (e) { out.push(`dca estrategia ${s.net.beefy} ${label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
   }
   await s.store.set("wrapFees", fees).catch(() => {});
-  await s.store.set("harvestFees", hv).catch(() => {});
+  await s.store.set("harvestFees2", hv).catch(() => {});
   const L = Object.values(res);
   if (L.length) {
     const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, rendimiento: a.rendimiento + x.rendimiento, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, rendimiento: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });
