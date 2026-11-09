@@ -390,7 +390,7 @@ const server = http.createServer(async (req, res) => {
     const runs = Object.entries(st?.runs ?? {}).map(([label, r]) => ({ label, kind: r.kind, status: r.status, startedAt: r.startedAt, error: r.error ?? null, vault: r.vaultId ?? r.id ?? null,
       usdcIn: r.usdcIn ?? null, usdcOut: r.usdcOut ?? null, txs: (r.txs ?? []).map((t) => (typeof t === "string" ? { hash: t } : { step: t.step ?? t.name ?? null, hash: t.hash ?? null })) })).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 30);
     res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
-      cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlBy: strategy?.lastStrategies ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
+      cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
   }
   if (req.url.startsWith("/api/withdraw-audit")) {
     const addr = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0];

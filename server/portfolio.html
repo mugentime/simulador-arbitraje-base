@@ -446,19 +446,11 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   const PRIO = { act: { k: "crit", t: "Acción" }, check: { k: "warn", t: "Revisar" }, info: { k: "neutral", t: "Info" }, ok: { k: "good", t: "Bien" } };
   const volTxt = (v) => (!fin(v) ? "—" : `<span class="mut">${v >= 0 ? "+" : "−"}${usd(Math.abs(v))}</span>`); // gris: esperada, no es resultado
 
-  /** Estrategias del bot con sus dos indicadores (una por worker en Base/BSC; una por etiqueta en Robinhood). */
+  /** Estrategias del bot con sus dos indicadores (una por worker en Base/BSC). */
   function strategyCards() {
     const NAME = { base: "DCA en Base", bsc: "DCA en BSC", robinhood: "Robinhood" }, cards = [];
     for (const r of S.reports) {
-      if (r.pnlBy && Object.keys(r.pnlBy).length) {
-        for (const [lbl, p] of Object.entries(r.pnlBy)) {
-          const d = r.dca?.[lbl] ?? {};
-          const title = d.extra ? `${NAME[r.chain] ?? r.chain} · depósito diario en ${esc(short(d.vaultId))}` : `${NAME[r.chain] ?? r.chain} · ${r.auto?.dynamic ? "demo dinámico" : "estrategia principal"}`;
-          const sub = d.extra ? short(d.vaultId) : [...new Set([...(d.target ? [d.target] : []), ...Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id)])].map(short).join(", ");
-          cards.push({ title, sub, closed: Object.values(d.holdings ?? {}).filter((h) => h.closed).length,
-            p: { aportado: p.aportado, valor: p.valor, enVault: p.enVault, porCobrar: p.porCobrar ?? 0, sueltos: p.sueltos ?? 0, reservado: p.reservado ?? 0, pnl: p.pnl, rend: p.rendimiento, rendMedido: p.rendMedido, rendEstimado: p.rendEstimado, rendDiarioPct: p.rendDiarioPct, vol: p.volatilidad, volPct: p.volPct, precio: null, il: null, dias: p.dias, n: p.n } });
-        }
-      } else if (r.pnl && fin(r.pnl.aportado)) {
+      if (r.pnl && fin(r.pnl.aportado)) {
         const C = Object.values(r.cost ?? {});
         const precio = C.reduce((a, c) => a + (fin(c.precioEf) ? c.precioEf : 0), 0), il = C.reduce((a, c) => a + (fin(c.il) ? c.il : 0), 0);
         const medido = C.filter((c) => c.rendSrc === "medido").reduce((a, c) => a + (c.rend ?? 0), 0), estimado = C.filter((c) => c.rendSrc !== "medido").reduce((a, c) => a + (c.rend ?? 0), 0);
@@ -500,7 +492,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   function vaultRows() {
     const pos = S.pf?.wallet?.positions ?? [], mg = managerOf(), s24 = snapAgo(24);
     const costOf = {}; for (const r of S.reports) for (const [id, c] of Object.entries(r.cost ?? {})) costOf[id] = { ...c, chain: r.chain };
-    const rhVault = {}; for (const r of S.reports) for (const p of Object.values(r.pnlBy ?? {})) for (const v of p.vaults ?? []) rhVault[v.id] = v;
+    const rhVault = {}; for (const r of S.reports) if (r.chain === "robinhood") for (const d of Object.values(r.dca ?? {})) for (const id of [d.vaultId, d.target, ...Object.keys(d.holdings ?? {})]) if (id) rhVault[id] = true;
     return pos.map((x) => {
       const c = costOf[x.id], st = mg[x.id], h = st?.d?.holdings?.[x.id];
       const v = { id: x.id, name: x.name ?? short(x.id), chain: x.chain, x, c, st, role: st ? st.role : c ? "DCA del bot" : rhVault[x.id] ? "bot (Robinhood)" : "manual",
@@ -578,7 +570,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     $("bestworst").innerHTML = (best ? card(best, "🏆 Mejor rendimiento") : "") + (worst && worst.id !== best?.id ? card(worst, "⚠️ Peor rendimiento") : "");
     // 3 · sugerencias
     const sg = suggestions(ranked, rows, best, worst, cards);
-    const runAt = Math.max(0, ...S.reports.flatMap((r) => Object.values(r.cost ?? {}).map((c) => c.at ?? 0)), ...S.reports.flatMap((r) => Object.values(r.pnlBy ?? {}).map((c) => c.at ?? 0)), S.pf.at ? Date.parse(S.pf.at) : 0);
+    const runAt = Math.max(0, ...S.reports.flatMap((r) => Object.values(r.cost ?? {}).map((c) => c.at ?? 0)), S.pf.at ? Date.parse(S.pf.at) : 0);
     $("suggAt").textContent = runAt ? `corrida ${hm(runAt)} · ${sg.filter((x) => x.p === "act").length} acciones, ${sg.filter((x) => x.p === "check").length} por revisar` : "";
     $("sugg").innerHTML = sg.map((x) => `<li><div>${badge(PRIO[x.p].k, PRIO[x.p].t)}</div><div><b>${x.t}</b>${x.w ? `<div class="why2">${x.w}</div>` : ""}</div></li>`).join("");
     try {
