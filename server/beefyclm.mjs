@@ -329,7 +329,8 @@ async function enterPair(s, ctx) {
     await s.save();
   }
   if (r.mooShares === undefined) {
-    const sh = BigInt(r.clmShares);
+    // todo el CLM suelto de la wallet (incluye lo que quedó de corridas cortadas: el CLM sin depositar no cobra recompensas)
+    const loose = await bal(s, r.clm), sh = loose > 0n ? loose : BigInt(r.clmShares);
     await approve(s, r.clm, r.vault, sh, "approve CLM→vault");
     const before = await bal(s, r.vault);
     await s.send(r.gov ? "stake reward pool Beefy" : "deposit vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
@@ -464,7 +465,8 @@ export async function enterClm(s, ctx) {
   }
   // 4) participaciones del CLM → vault que compone
   if (r.mooShares === undefined) {
-    const sh = BigInt(r.clmShares);
+    // todo el CLM suelto de la wallet (incluye lo que quedó de corridas cortadas: el CLM sin depositar no cobra recompensas)
+    const loose = await bal(s, r.clm), sh = loose > 0n ? loose : BigInt(r.clmShares);
     await approve(s, r.clm, r.vault, sh, "approve CLM→vault");
     const before = await bal(s, r.vault);
     await s.send(r.gov ? "stake reward pool Beefy" : "deposit vault Beefy", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
@@ -728,4 +730,18 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 25 } = {}) {
     }
     return { usd, n, behindBlocks: Math.max(0, head - st.from + 1), approx: 0 };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
+}
+
+/** Deposita en el vault / reward pool todo el CLM suelto de la wallet para `id`. Devuelve las participaciones del CLM depositadas. */
+export async function stakeLoose(s, id) {
+  const prev = s.run, prevId = s.vaultId;
+  s.vaultId = id; s.run = s.run ?? { txs: [], extra: true }; s.run.extra = true;
+  try {
+    await resolve(s);
+    const r = s.run, sh = await bal(s, r.clm);
+    if (sh <= 0n) return 0n;
+    await approve(s, r.clm, r.vault, sh, "approve CLM suelto→vault");
+    await s.send(r.gov ? "stake reward pool Beefy (CLM suelto)" : "deposit vault Beefy (CLM suelto)", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
+    return sh;
+  } finally { s.vaultId = prevId; if (prev) s.run = prev; }
 }

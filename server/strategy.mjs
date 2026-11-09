@@ -5,7 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap, vaultValue } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap, vaultValue, stakeLoose } from "./beefyclm.mjs";
 import { scanHighApy, pickTarget, exitCheck, exitThreshold, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import * as core from "../src/core.js";
@@ -390,6 +390,22 @@ export class Strategy {
    *  F3: cada 5 disparos exitosos (salida > lo invertido) el monto se duplica hasta SNIPER_SHOT_MAX (por defecto = SNIPER_SHOT_USD:
    *     no sube solo; avisa que está listo). Tope de capital abierto: SNIPER_BUDGET_USD ($60).
    */
+  /** STAKE_LOOSE="<id>,<id>@<etiqueta>" (una vez por vault y etiqueta): deposita el CLM suelto de la wallet en su vault / reward pool. */
+  async stakeLooseOnce() {
+    const m = /^\s*(.+?)\s*@\s*([\w.-]+)\s*$/.exec(process.env.STAKE_LOOSE ?? "");
+    if (!m) return false;
+    const done = ((this.s.stakeLoose ??= {})[m[2]] ??= {});
+    for (const id of m[1].split(",").map((x) => x.trim()).filter(Boolean)) {
+      if (done[id]) continue;
+      this.run = { txs: [], extra: true };
+      try { const sh = await stakeLoose(this, id); done[id] = { at: new Date().toISOString(), shares: String(sh) }; await this.diag(`estrategia: CLM suelto de ${id} depositado · ${sh} participaciones${this.run.txs.length ? ` · txs ${this.run.txs.map((t) => t.hash).join(", ")}` : " (no había)"}`); }
+      catch (e) { done[id] = { error: (e.shortMessage || e.message || String(e)).slice(0, 160) }; await this.diag(`estrategia: CLM suelto de ${id} falló · ${done[id].error}`); }
+      finally { this.run = null; }
+      return true;
+    }
+    return false;
+  }
+
   async snipeStep(ctx) {
     const sn = this.sniper;
     if (!sn || process.env.SNIPER_TRADE !== "1") return false;
@@ -685,7 +701,7 @@ export class Strategy {
       this.busy = true; this.busySince = Date.now(); this.stuckLogged = false;
       try {
         if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
-        this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
+        this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (await this.stakeLooseOnce()) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
         this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
         this.stage = "dca"; if (!m && !x) await this.dca(ctx);
         this.stage = "listo";

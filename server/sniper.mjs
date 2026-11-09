@@ -132,6 +132,7 @@ export class Sniper {
       if (amt > 0 && x.apiTvl > 0) x.lp = x.apiTvl / amt;
       x.depTokens = (v.depositTokenAddresses ?? []).filter((a) => ethers.isAddress(a));
       x.usdPair = x.assets.some((a) => USD.has(String(a).toUpperCase()));
+      if (this.chain !== "robinhood") x.stock = false; // las restricciones de transferencia solo aplican a los Stock Tokens de Robinhood
       this.v.set(v.id, x);
     }
     // símbolos on-chain (una vez por vault): los Stock Tokens de Robinhood (sufijo "rh") solo se transfieren entre wallets aprobadas
