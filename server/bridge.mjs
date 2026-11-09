@@ -223,3 +223,72 @@ export function topupTargets(env = process.env) {
   if (env.TOPUP_TARGETS) return env.TOPUP_TARGETS.split(",").map((x) => x.trim()).filter(Boolean).map((x, i) => { const [chainKey, token, usd] = x.split(":"); return { chainKey, token, targetUsd: Number(usd), storeKey: i === 0 && chainKey === env.TOPUP_CHAIN ? "topup" : `topup-${chainKey}` }; });
   return env.TOPUP_CHAIN ? [{ chainKey: env.TOPUP_CHAIN, token: env.TOPUP_TOKEN || "", targetUsd: Number(env.TOPUP_TARGET_USD ?? 10), storeKey: "topup" }] : [];
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Consolidación remota desde el worker de Base (orden de Jose 2026-11-08 22:32: "solo necesitas hacer los bridges necesarios").
+// BRIDGE_REMOTE="optimism,monad@<etiqueta>": en cada cadena (con la misma llave) desenvuelve el WETH suelto y puentea el nativo
+// (menos una reserva para gas) a USDC en Base con Relay. Una vez por cadena y etiqueta. Sirve aunque esa cadena no tenga worker.
+const REMOTE = {
+  monad: { id: 143, sym: "MON", rpcs: ["https://rpc.monad.xyz", "https://rpc1.monad.xyz", "https://monad-mainnet.drpc.org"] },
+};
+const WETH_I = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function withdraw(uint256)"]);
+export function parseBridgeRemote(v) {
+  const m = /^\s*(.+?)\s*@\s*([\w.-]+)\s*$/.exec(v ?? "");
+  return m ? { chains: m[1].split(",").map((x) => x.trim()).filter(Boolean), tag: m[2] } : null;
+}
+export class RemoteBridge {
+  constructor({ executor, store, diag }) { this.x = executor; this.store = store; this.diag = diag; this.busy = false; this.nextAt = 0; }
+  get wanted() { return !!parseBridgeRemote(process.env.BRIDGE_REMOTE) && core.CHAIN.id === BASE_ID && this.x?.wallet && this.x.mode === "live"; }
+  async init() { this.s = (await this.store.get("bridge-remote")) ?? {}; }
+  async save() { await this.store.set("bridge-remote", this.s); }
+  cfg(key) {
+    if (REMOTE[key]) return REMOTE[key];
+    const c = CHAINS[key]; if (!c) return null;
+    return { id: c.id, sym: c.native ?? "ETH", rpcs: c.rpcs, weth: c.tokens?.WETH?.address ?? null };
+  }
+  async onBlock() {
+    if (!this.wanted || this.busy || Date.now() < this.nextAt) return;
+    this.busy = true; this.nextAt = Date.now() + 5 * 60_000;
+    const { chains, tag } = parseBridgeRemote(process.env.BRIDGE_REMOTE);
+    const st = (this.s[tag] ??= {});
+    try {
+      for (const key of chains) {
+        const r = (st[key] ??= { status: "pendiente" });
+        if (r.status === "hecho" || r.status === "omitido" || r.status === "error") continue;
+        const c = this.cfg(key);
+        if (!c) { r.status = "error"; r.error = "cadena desconocida"; await this.diag(`puente remoto ${key}: cadena desconocida`); continue; }
+        try {
+          const p = new ethers.FallbackProvider(c.rpcs.slice(0, 3).map((u, i) => ({ provider: new ethers.JsonRpcProvider(u, c.id, { staticNetwork: true }), priority: i + 1, weight: 1, stallTimeout: 2500 })), c.id, { quorum: 1 });
+          const w = this.x.wallet.connect(p), me = w.address;
+          if (c.weth && !r.unwrapped) {
+            const wb = WETH_I.decodeFunctionResult("balanceOf", await p.call({ to: c.weth, data: WETH_I.encodeFunctionData("balanceOf", [me]) }))[0];
+            if (wb > 0n) { const tx = await w.sendTransaction({ to: c.weth, data: WETH_I.encodeFunctionData("withdraw", [wb]) }); await tx.wait(1, 120_000); await this.diag(`puente remoto ${key}: ${ethers.formatEther(wb)} WETH desenvuelto · tx ${tx.hash}`); }
+            r.unwrapped = true; await this.save();
+          }
+          const bal = await p.getBalance(me), fee = await p.getFeeData(), gp = fee.maxFeePerGas ?? fee.gasPrice ?? 0n;
+          const amount = bal - gp * 1_000_000n - bal / 50n; // reserva: gas de ~1M y 2 %
+          if (amount <= 0n) { r.status = "omitido"; r.reason = `saldo ${ethers.formatEther(bal)} ${c.sym}`; await this.diag(`puente remoto ${key}: nada que puentear (${r.reason})`); continue; }
+          const body = { user: me, recipient: me, originChainId: c.id, destinationChainId: BASE_ID, originCurrency: NATIVE, destinationCurrency: BASE_USDC, amount: amount.toString(), tradeType: "EXACT_INPUT" };
+          const res = await fetch(`${RELAY}/quote/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+          const q = await res.json().catch(() => null);
+          if (!res.ok) throw new Error(`Relay ${res.status}: ${(q?.message ?? JSON.stringify(q ?? {})).slice(0, 160)}`);
+          const pq = parseQuote(q);
+          if (!pq.txs.length || pq.txs.some((t) => t.chainId !== c.id)) throw new Error("cotización de Relay inesperada");
+          if (pq.outUsd < Number(process.env.BRIDGE_MIN_USD ?? 2)) { r.status = "omitido"; r.reason = `solo ~$${pq.outUsd?.toFixed?.(2)} llegarían`; await this.diag(`puente remoto ${key}: ${r.reason}; no vale la comisión`); continue; }
+          const feePct = Number.isFinite(pq.inUsd) && pq.inUsd > 0 ? (1 - pq.outUsd / pq.inUsd) * 100 : null;
+          if (feePct !== null && feePct > Number(process.env.BRIDGE_MAX_FEE_PCT ?? 5)) throw new Error(`comisión ${feePct.toFixed(1)} %`);
+          const hashes = [];
+          for (const t of pq.txs) { const tx = await w.sendTransaction({ to: t.to, data: t.data, value: t.value }); const rc = await tx.wait(1, 180_000); if (!rc || rc.status !== 1) throw new Error(`tx ${tx.hash} revertida`); hashes.push(tx.hash); }
+          Object.assign(r, { status: "hecho", at: new Date().toISOString(), amount: ethers.formatEther(amount), inUsd: pq.inUsd, outUsd: pq.outUsd, feePct, txs: hashes, requestId: pq.requestId });
+          await this.diag(`puente remoto ${key}: ${ethers.formatEther(amount)} ${c.sym} ($${pq.inUsd?.toFixed?.(2) ?? "?"}) → ~$${pq.outUsd?.toFixed?.(2) ?? "?"} USDC en Base (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · txs ${hashes.join(", ")}`);
+        } catch (e) {
+          const msg = (e.shortMessage || e.message || String(e)).slice(0, 220);
+          if ((r.retries = (r.retries ?? 0) + 1) <= 5) { r.lastError = msg; await this.diag(`puente remoto ${key}: intento ${r.retries} falló · ${msg} · reintento en 5 min`); }
+          else { r.status = "error"; r.error = msg; await this.diag(`puente remoto ${key}: detenido · ${msg}`); }
+        }
+        await this.save();
+        break; // una cadena por vuelta
+      }
+    } finally { this.busy = false; await this.save().catch(() => {}); }
+  }
+}

@@ -19,7 +19,7 @@ import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy } from "./strategy.mjs";
-import { Bridger, Topup, topupTargets } from "./bridge.mjs";
+import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
@@ -210,6 +210,7 @@ let lpLending = null;
 let revertLend = null;
 let topups = []; // TOPUP_TARGETS / TOPUP_CHAIN: mantiene fondeadas otras cadenas desde Base (Relay)
 let bridger = null; // BRIDGE_RUN: gas nativo de esta cadena → USDC en Base (Relay)
+let remoteBridge = null; // BRIDGE_REMOTE: consolida en Base el nativo de otras cadenas (corre en el worker de Base)
 let sniper = null; // radar de éxodos de TVL (doc 22); SNIPER=0 lo apaga
 let strategy = null; // estrategia de capital (STRATEGY + STRATEGY_RUN), una ejecución por etiqueta
 let fast = null;
@@ -323,6 +324,7 @@ async function dcaOnlyLoop(exec, p) {
     if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
     else { bridger.x = exec; bridger.provider = p; }
   }
+  if (process.env.BRIDGE_REMOTE) { if (!remoteBridge) { remoteBridge = new RemoteBridge({ executor: exec, store, diag }); await remoteBridge.init(); } else remoteBridge.x = exec; }
   if (!sniper) { sniper = new Sniper({ provider: p, store, diag, chainKey: CHAIN_CFG.key }); await sniper.init(); }
   else sniper.p = p;
   if (strategy) strategy.sniper = sniper; // F1–F3: la estrategia ejecuta lo que detecta el radar (SNIPER_TRADE=1)
@@ -335,6 +337,7 @@ async function dcaOnlyLoop(exec, p) {
     if (++n % 60 === 0) await exec.refreshBalance().catch(() => {});
     const rs = await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
     sniper?.onBlock(ctx).catch(() => {}); // en paralelo: el radar no frena el DCA
+    remoteBridge?.onBlock().catch(() => {});
     for (const x of rs) if (x.status === "rejected") { const m = String(x.reason?.shortMessage || x.reason?.message || x.reason).slice(0, 200); if (m !== lastTickErr) { lastTickErr = m; await diag(`ciclo DCA: error no controlado · ${m}`); } }
     await new Promise((r) => setTimeout(r, tick));
   }
