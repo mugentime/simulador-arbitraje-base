@@ -106,7 +106,7 @@ export class Sniper {
     try {
       if (Date.now() - this.listAt > 15 * 60_000) await this.refreshList();
       await this.tick();
-      await this.holdersStep();
+      await this.holdersStep().catch((e) => { this.holdersError = (e.shortMessage || e.message || String(e)).slice(0, 160); });
       await this.inspect().catch((e) => this.diag(`sniper: diagnóstico falló · ${(e.shortMessage || e.message).slice(0, 160)}`));
       if (Date.now() - this.reportAt > HOUR) { this.reportAt = Date.now(); await this.diag(`sniper ${this.chain}: ${this.summaryLine()}`); }
       if (Date.now() - this.saveAt > 30 * 60_000) { this.saveAt = Date.now(); await this.save(); }
@@ -192,13 +192,13 @@ export class Sniper {
     for (const x of ws) {
       if (budget <= 0) break;
       const h = (x.holders ??= { bals: {}, from: null, span: 50_000 });
-      if (h.from == null) { h.from = await this.blockAt(x.createdAt * 1000 - HOUR, head); budget -= 2; }
+      if (h.from == null) { try { h.from = await this.blockAt(x.createdAt * 1000 - HOUR, head); } catch { continue; } budget -= 2; }
       while (h.from <= head && budget > 0) {
         const to = Math.min(head, h.from + h.span - 1);
         budget--;
         let logs;
         try { logs = await this.p.getLogs({ address: x.addr, topics: [TRANSFER], fromBlock: h.from, toBlock: to }); }
-        catch { if (h.span > 1000) { h.span = Math.floor(h.span / 4); continue; } break; }
+        catch (e) { if (h.span > 1000) { h.span = Math.floor(h.span / 4); continue; } h.error = (e.shortMessage || e.message || "").slice(0, 120); break; }
         for (const l of logs) {
           const from = ethers.dataSlice(l.topics[1], 12).toLowerCase(), dest = ethers.dataSlice(l.topics[2], 12).toLowerCase(), amt = BigInt(l.data);
           if (from !== ethers.ZeroAddress) h.bals[from] = String(BigInt(h.bals[from] ?? "0") - amt);
@@ -213,9 +213,14 @@ export class Sniper {
     }
   }
   async blockAt(ms, head) {
-    const target = Math.floor(ms / 1000); let lo = 0, hi = head ?? (await this.p.getBlockNumber());
-    while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); const b = await this.p.getBlock(mid); if (b && b.timestamp < target) lo = mid; else hi = mid; }
-    return lo;
+    // sin lecturas de bloques viejos (algunos nodos públicos piden token para "archive"): tiempo de bloque medido en los
+    // últimos 2,000 bloques y, si hace falta, ajuste con bloques ya cercanos al objetivo
+    head ??= await this.p.getBlockNumber();
+    const [hb, pb] = await Promise.all([this.p.getBlock(head), this.p.getBlock(Math.max(0, head - 2000))]);
+    const bt = Math.max(0.01, (hb.timestamp - pb.timestamp) / Math.min(2000, head));
+    let b = Math.max(0, Math.floor(head - (hb.timestamp - ms / 1000) / bt));
+    for (let i = 0; i < 4; i++) { try { const x = await this.p.getBlock(b); if (!x) break; const d = Math.round((x.timestamp - ms / 1000) / bt); if (Math.abs(d) < 50) break; b = Math.max(0, Math.min(head, b - d)); } catch { break; } }
+    return b;
   }
 
   /** Gauge de la estrategia (si lo expone): ritmo de recompensa y horas hasta periodFinish. */
@@ -247,7 +252,8 @@ export class Sniper {
     const scan = async (address, topics) => { const out = []; let f = fromB, span = 20_000; while (f <= toB) { const t = Math.min(toB, f + span - 1); try { out.push(...(await this.p.getLogs({ address, topics, fromBlock: f, toBlock: t }))); f = t + 1; } catch { if (span > 500) span = Math.floor(span / 4); else throw new Error("eth_getLogs no responde"); } } return out; };
     const tr = await scan(vault, [TRANSFER]);
     const burns = {}, mints = {};
-    for (const l of tr) { const fr = ethers.dataSlice(l.topics[1], 12).toLowerCase(), to = ethers.dataSlice(l.topics[2], 12).toLowerCase(), amt = BigInt(l.data); if (to === ethers.ZeroAddress) burns[fr] = (burns[fr] ?? 0n) + amt; if (fr === ethers.ZeroAddress) mints[to] = (mints[to] ?? 0n) + amt; }
+    const burnBlocks = [];
+    for (const l of tr) { const fr = ethers.dataSlice(l.topics[1], 12).toLowerCase(), to = ethers.dataSlice(l.topics[2], 12).toLowerCase(), amt = BigInt(l.data); if (to === ethers.ZeroAddress) { burns[fr] = (burns[fr] ?? 0n) + amt; burnBlocks.push(l.blockNumber); } if (fr === ethers.ZeroAddress) mints[to] = (mints[to] ?? 0n) + amt; }
     let pp = 10n ** 18n; try { [pp] = I.decodeFunctionResult("getPricePerFullShare", await this.p.call({ to: vault, data: I.encodeFunctionData("getPricePerFullShare") })); } catch {}
     const usd = (sh) => (x?.lp ? Number(ethers.formatUnits((sh * pp) / 10n ** 18n, 18)) * x.lp : null);
     const fmt = (o) => Object.entries(o).sort((p, q) => (q[1] > p[1] ? 1 : -1)).slice(0, 5).map(([k, v]) => `${k} ${ethers.formatUnits(v, 18).slice(0, 10)} parts${usd(v) != null ? ` (~$${usd(v).toFixed(0)})` : ""}`).join(" | ") || "ninguno";
@@ -260,7 +266,7 @@ export class Sniper {
         const clmT = await scan(x.clm, [TRANSFER, null, ZERO32]); stratTxt += ` · CLM quemado (retiros del CLM) ${clmT.length} eventos`;
       } catch (e) { stratTxt = ` · estrategia: ${(e.shortMessage || e.message).slice(0, 80)}`; }
     }
-    const msg = `sniper diagnóstico ${x?.name ?? vault} bloques ${fromB}–${toB} (${a} → ${b}): ${tr.length} Transfer · retiros (quema de participaciones): ${fmt(burns)} · depósitos: ${fmt(mints)}${stratTxt}`;
+    const msg = `sniper diagnóstico ${x?.name ?? vault} bloques ${fromB}–${toB} (${a} → ${b}): ${tr.length} Transfer · retiros (quema de participaciones, bloques ${burnBlocks.join(",") || "—"}): ${fmt(burns)} · depósitos: ${fmt(mints)}${stratTxt}`;
     this.inspected[spec] = new Date().toISOString();
     await this.diag(msg.slice(0, 3500));
   }

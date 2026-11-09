@@ -369,6 +369,8 @@ export class Strategy {
         await this.diag(`estrategia depósito único ${tag}: $${e.usd} en ${d.vaultId} hecho · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
       } catch (err) {
         const msg = (err.shortMessage || err.message || String(err)).slice(0, 300);
+        // corrida a medias (p. ej. cortada por un reinicio): el siguiente intento empieza de cero con saldos actuales
+        if (/STF|exceeds balance/i.test(msg)) { delete this.s.runs[`${this.label}-once-${tag}-${key}`]; if ((d.balResets = (d.balResets ?? 0) + 1) <= 2) { d.retryAt = now + 120_000; d.retries = 0; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} · corrida reiniciada por saldo (${msg.slice(0, 80)}) · reintento en 2 min`); return true; } }
         if (err.retry && (d.retries = (d.retries ?? 0) + 1) <= 60) { d.retryAt = now + 60_000; if (d.retries === 1 || d.retries % 10 === 0) await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} reintento ${d.retries} en 1 min · ${msg}`); }
         else if (err.noFunds) { d.retryAt = now + 3600_000; if (!d.noFundsLogged) { d.noFundsLogged = true; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} · ${msg} · reintento cada hora hasta que haya fondos`); } }
         else if ((d.fails = (d.fails ?? 0) + 1) < 3) { d.retryAt = now + 3600_000; d.retries = 0; this.run.error = msg; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} falló (intento ${d.fails} de 3) · ${msg} · reintento en 1 h`); }
