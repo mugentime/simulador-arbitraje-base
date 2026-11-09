@@ -57,6 +57,8 @@ export async function resolveVaultSpec(spec, chain) {
   if (byId) return byId.id;
   // nombre sin distinguir mayúsculas, sin el sufijo "Reward Pool" y sin importar el orden del par (CASHCAT-USDG = USDG-CASHCAT)
   const norm = (x) => String(x ?? "").toLowerCase().replace(/\s*reward pool\s*$/, "").replace(/\s*\(gov\)\s*$/, "").trim().split("-").map((t) => t.trim()).sort().join("-");
+  const exact = all.filter((v) => String(v.name).toLowerCase() === spec.toLowerCase()).sort((a, b) => (tv[b.id] ?? 0) - (tv[a.id] ?? 0));
+  if (exact.length) return exact[0].id; // el nombre exacto gana (p. ej. "AI-USDG" = el vault, no su Reward Pool)
   const m = all.filter((v) => norm(v.name) === norm(spec)).sort((a, b) => (tv[b.id] ?? 0) - (tv[a.id] ?? 0));
   if (!m.length) throw new Error("sin coincidencias");
   return m[0].id;
@@ -470,6 +472,16 @@ export class Strategy {
       if (this.redeployOnExit) {
         // reinversión del capital que salió de un vault (rotación o salida) en el nuevo destino
         if (d.redeploy && BigInt(d.redeploy) > 0n && d.target) {
+          // el capital por reinvertir no puede ser mayor que el estable que de verdad hay en la wallet (evita que un
+          // saldo contable sin respaldo haga fallar cada destino y los descarte uno por uno)
+          try {
+            const have = await new ethers.Contract(this.net.stable, ["function balanceOf(address) view returns (uint256)"], this.provider).balanceOf(this.me);
+            if (have < BigInt(d.redeploy)) {
+              await this.diag(`estrategia dinámica: capital por reinvertir ajustado a lo que hay en la wallet · ${ethers.formatUnits(d.redeploy, this.net.stableDec)} → ${ethers.formatUnits(have, this.net.stableDec)} ${this.net.stableSym}`);
+              d.redeploy = String(have);
+              if (have === 0n) return;
+            }
+          } catch {}
           const rl = `${this.label}-redeploy-${d.redeployTag ?? 0}`;
           this.run = this.s.runs[rl] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", redeploy: true };
           this.vaultId = d.target; this.dcaUsd = null; this.sweepStable = Number(ethers.formatUnits(d.redeploy, this.net.stableDec));
