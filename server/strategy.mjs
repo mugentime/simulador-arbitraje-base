@@ -433,7 +433,7 @@ export class Strategy {
       let v; try { v = await vaultValue(this, p.id); } catch { continue; }
       // solo nuestra parte: participaciones de esta posición / participaciones de la wallet en el vault (otras estrategias depositan ahí)
       const frac = p.vshares && v.vshares > 0n ? Math.min(1, Number(BigInt(p.vshares) * 1_000_000n / v.vshares) / 1e6) : 1;
-      const val = (fmt(v.value) + fmt(v.pending)) * frac, basis = fmt(p.basis);
+      const val = (fmt(v.value) + fmt(v.pending)) * frac, basis = fmt(p.basis) + Number(p.basisAdd ?? 0);
       if (!(basis > 0)) continue;
       if (v.shares > 0n && v.value === 0n) { if (!p.noValueLogged) { p.noValueLogged = true; await this.diag(`sniper: ${p.id} no se puede valuar (sin ruta de precio); no se toma ninguna salida automática`); } continue; }
       if (val < basis * 0.5 && !p.confirmLow) { p.confirmLow = true; continue; } // una caída > 50 % se confirma en la siguiente revisión antes de salir
@@ -490,6 +490,9 @@ export class Strategy {
       return true;
     }
 
+    // reserva para la siguiente entrada del sniper (orden de Jose 2026-11-09: los 20 USDG sueltos van en la siguiente llamada)
+    const rm = /^\s*(0x[0-9a-fA-F]{40})\s*:\s*(\d+)\s*:\s*([0-9.]+)\s*@\s*([\w.-]+)\s*$/.exec(process.env.SNIPER_RESERVE ?? "");
+    if (rm && !(st.reserveTags ??= {})[rm[4]]) { st.reserveTags[rm[4]] = true; st.reserve = { token: rm[1].toLowerCase(), amount: rm[2], usd: Number(rm[3]) }; await this.diag(`sniper: reserva para la siguiente entrada · ${rm[2]} de ${rm[1]} (~$${rm[3]})`); }
     const usedUsd = open().filter((p) => p.kind !== "cosecha").reduce((a, p) => a + (p.usd ?? 0), 0); // la cosecha tiene su propio tope
     const enter = async (kind, id, usd, extra = {}) => {
       // una entrada pendiente se reanuda con la misma corrida tras un reinicio (antes cada intento empezaba de cero y duplicaba swaps)
@@ -497,10 +500,19 @@ export class Strategy {
       const key = `${kind}-${id}-${pend.at}`;
       this.run = this.s.runs[`${this.label}-snipe-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd, extra: true };
       await this.save();
-      this.vaultId = id; this.dcaUsd = usd; this.sweepStable = undefined;
+      this.vaultId = id; this.dcaUsd = usd; this.sweepStable = undefined; this.carryExtra = null;
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
+      // reserva: si el token es del par entra tal cual (y se envuelve menos nativo); si no, se cambia antes al estable de la cadena
+      const rsv = st.reserve && BigInt(st.reserve.amount) > 0n ? st.reserve : null;
+      let rsvUsed = null;
+      if (rsv && this.run.usdcIn === undefined) {
+        const toks = (sn.info(id)?.depTokens ?? []).map((a) => String(a).toLowerCase());
+        if (toks.includes(rsv.token)) { this.carryExtra = { [rsv.token]: rsv.amount }; this.dcaUsd = Math.max(1, usd - rsv.usd); rsvUsed = rsv; }
+        else { this.vaultId = id; await routeSwap(this, rsv.token, this.net.stable, BigInt(rsv.amount), `swap reserva→${this.net.stableSym}`); rsvUsed = rsv; }
+      }
       try {
         await enterClm(this, ctx);
+        if (rsvUsed) { st.reserve = null; extra.basisAddUsd = rsvUsed.usd; extra.reserve = true; if (this.carryExtra) extra.basisAdd = ctx?.ethUsd > 0 && this.net.wrapNative ? String(rsvUsed.usd / ctx.ethUsd) : String(rsvUsed.usd); }
         this.run.status = "hecho"; st.pending = null;
         if (st.need?.kind === kind) st.need = null;
         await this.save(); // que la demanda de fondos se borre ya (si no, un reinicio la deja viva y Base vuelve a puentear)
@@ -514,7 +526,7 @@ export class Strategy {
         await this.diag(`sniper: ${kind} en ${id} no entró · ${msg}`);
         if (e.noFunds && kind !== "semilla") st.need = { usd: usd + Number(process.env.SNIPER_NEED_GAS_USD ?? 2), kind, id, at: now };
         return e.noFunds ? "sinFondos" : e.retry ? "reintento" : "error";
-      } finally { this.vaultId = null; this.dcaUsd = null; }
+      } finally { this.vaultId = null; this.dcaUsd = null; this.carryExtra = null; }
     };
 
     // b) F2 disparos: éxodos detectados en las últimas 2 h

@@ -285,6 +285,8 @@ async function enterPair(s, ctx) {
     // sobrantes de depósitos anteriores en este mismo vault (tokens que el CLM no tomó): entran ahora, valuados en estable
     const carry = { t0: 0n, t1: 0n };
     for (const [k, o] of Object.entries(s.s?.runs ?? {})) if (o !== r && o.vaultId === r.vaultId && o.leftover && !o.leftoverUsed && o.leftover.t0 !== undefined) { carry.t0 += BigInt(o.leftover.t0); carry.t1 += BigInt(o.leftover.t1); o.leftoverUsed = true; }
+    // reserva asignada por el sniper (tokens sueltos en la wallet que deben entrar en este depósito): s.carryExtra[token]
+    for (const [tk, amt] of Object.entries(s.carryExtra ?? {})) { if (lc(tk) === lc(r.t0)) carry.t0 += BigInt(amt); if (lc(tk) === lc(r.t1)) carry.t1 += BigInt(amt); }
     const w0 = await bal(s, r.t0), w1 = await bal(s, r.t1);
     if (carry.t0 > w0) carry.t0 = w0; if (carry.t1 > w1) carry.t1 = w1;
     r.carry = { t0: String(carry.t0), t1: String(carry.t1) };
