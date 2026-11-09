@@ -447,6 +447,9 @@ const server = http.createServer(async (req, res) => {
     try { res.writeHead(200, headers); return res.end(J(await beefyWallet(addr, { provider: executor?.provider }))); }
     catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
   }
+  if (req.url.startsWith("/api/needs")) {
+    res.writeHead(200, headers); return res.end(JSON.stringify(strategy?.fundingNeed?.() ?? { needUsd: 0 }));
+  }
   if (req.url.startsWith("/api/sniper")) {
     res.writeHead(200, headers); return res.end(JSON.stringify(sniper ? sniper.view() : { ready: false }));
   }

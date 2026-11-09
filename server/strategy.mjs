@@ -406,6 +406,12 @@ export class Strategy {
     return false;
   }
 
+  /** Fondos que esta cadena necesita para lo que el sniper quiere hacer (vigente 3 h); lo lee la recarga del worker de Base. */
+  fundingNeed() {
+    const n = this.s?.snipe?.need;
+    return n && Date.now() - n.at < 3 * 3600_000 ? { needUsd: n.usd, why: `${n.kind} en ${n.id}` } : { needUsd: 0 };
+  }
+
   async snipeStep(ctx) {
     const sn = this.sniper;
     if (!sn || process.env.SNIPER_TRADE !== "1") return false;
@@ -493,6 +499,7 @@ export class Strategy {
       try {
         await enterClm(this, ctx);
         this.run.status = "hecho";
+        if (st.need?.kind === kind) st.need = null;
         st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
         await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
         return "ok";
@@ -500,6 +507,7 @@ export class Strategy {
         const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
         this.run.status = "error"; this.run.error = msg;
         await this.diag(`sniper: ${kind} en ${id} no entró · ${msg}`);
+        if (e.noFunds && kind !== "semilla") st.need = { usd: usd + Number(process.env.SNIPER_NEED_GAS_USD ?? 2), kind, id, at: now };
         return e.noFunds ? "sinFondos" : e.retry ? "reintento" : "error";
       } finally { this.vaultId = null; this.dcaUsd = null; }
     };
@@ -530,7 +538,7 @@ export class Strategy {
         if (open().some((p) => p.kind === "cosecha" && (p.id === c.id || (c.token && p.token === c.token)))) continue; // uno por token volátil
         if (st.hSkip?.[c.id] && now - st.hSkip[c.id] < 12 * H) continue;
         const r = await enter("cosecha", c.id, hUsd, { E: c.perDay, T: c.tvl, pct: c.pct, token: c.token });
-        if (r === "sinFondos") st.hRetryAt = now + H;
+        if (r === "sinFondos") st.hRetryAt = now + 10 * 60_000;
         else if (r !== "ok") (st.hSkip ??= {})[c.id] = now;
         return true;
       }

@@ -121,7 +121,7 @@ export class Topup {
     this.gasMinUsd = Number(process.env.TOPUP_GAS_MIN_USD ?? 0.5);
     this.gasUsd = Number(process.env.TOPUP_GAS_USD ?? 1);
     this.everyMs = Number(process.env.TOPUP_CHECK_MIN ?? 60) * 60_000;
-    this.maxPerDay = Number(process.env.TOPUP_MAX_PER_DAY ?? 3);
+    this.maxPerDay = Number(process.env.TOPUP_MAX_PER_DAY ?? Infinity); // sin tope por defecto (orden de Jose 2026-11-09)
     this.busy = false; this.nextAt = 0;
   }
   get wanted() { return !!this.chainKey && (this.native || ethers.isAddress(this.token)) && core.CHAIN.id === BASE_ID && this.x?.wallet && this.x.mode === "live"; }
@@ -167,14 +167,24 @@ export class Topup {
       const sentToday = this.s.sends.filter((x) => x.at.startsWith(today)).length;
       const jobs = [];
       if (!this.native && natHaveUsd !== null && natHaveUsd < this.gasMinUsd) jobs.push({ kind: "gas", usd: this.gasUsd, currency: NATIVE });
-      const need = topupNeed(haveUsd, this.targetUsd);
-      if (need > 0) jobs.push({ kind: "token", usd: need, currency: this.native ? NATIVE : this.token });
+      // lo que la cadena destino pide para operar (sniper/cosecha sin fondos): GET <worker de esa cadena>/api/needs. Se suma al
+      // objetivo y esos envíos no cuentan para el tope diario (orden de Jose: si faltan fondos en otra cadena, puentear desde Base).
+      const demand = await this.remoteNeed();
+      const need = topupNeed(haveUsd, this.targetUsd + demand);
+      if (need > 0) jobs.push({ kind: demand > 0 ? "demanda" : "token", usd: need, currency: this.native ? NATIVE : this.token });
       for (const j of jobs) {
-        if (sentToday + 1 > this.maxPerDay) { await this.diag(`recarga ${this.chainKey}: tope de ${this.maxPerDay} envíos hoy; pendiente ${j.kind} $${j.usd}`); break; }
+        if (sentToday + 1 > this.maxPerDay && j.kind !== "demanda") { await this.diag(`recarga ${this.chainKey}: tope de ${this.maxPerDay} envíos hoy; pendiente ${j.kind} $${j.usd}`); break; }
         await this.send(j, ctx);
       }
     } catch (e) { this.s.lastError = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`recarga ${this.chainKey}: error ${this.s.lastError}`); }
     finally { this.busy = false; await this.save().catch(() => {}); }
+  }
+
+  /** $ que pide el worker de la cadena destino (0 si no responde). */
+  async remoteNeed() {
+    const host = process.env[`RAILWAY_SERVICE_WORKER_${this.chainKey.toUpperCase()}_URL`];
+    if (!host) return 0;
+    try { const r = await fetch(`https://${host.replace(/^https?:\/\//, "")}/api/needs`, { signal: AbortSignal.timeout(10_000) }); const j = await r.json(); const u = Number(j?.needUsd ?? 0); if (u > 0) await this.diag(`recarga ${this.chainKey}: la cadena pide $${u.toFixed(2)} (${j?.why ?? "sin detalle"})`); return u > 0 ? Math.min(u, Number(process.env.TOPUP_DEMAND_MAX_USD ?? 60)) : 0; } catch { return 0; }
   }
 
   async nativeUsd() {
