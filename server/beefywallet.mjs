@@ -162,7 +162,7 @@ export async function beefyWallet(address, { provider = null } = {}) {
         valueUsd: usd, valueUsdBeefy: usdBeefy !== null ? +usdBeefy.toFixed(4) : null, valueSource: x.onchain ? "pool" : "beefy", apyPct: a.totalApy != null ? +(a.totalApy * 100).toFixed(2) : null, tvlUsd: Math.round(tvlById[v.id] ?? 0),
         netDepositedUsd: n ? +n.netUsd.toFixed(2) : null, pnlUsd: n && usd !== null ? +(usd - n.netUsd).toFixed(2) : null, txs: n?.txs ?? null,
         firstDeposit: n?.first ?? null, url: `https://app.beefy.com/vault/${v.id}`,
-        address: v.earnContractAddress, tokenAddress: v.tokenAddress ?? v.depositTokenAddress ?? null, underlying: amt, dailyRate: Number.isFinite(Number(a.totalDaily)) ? Number(a.totalDaily) : null,
+        address: v.earnContractAddress, tokenAddress: v.tokenAddress ?? v.depositTokenAddress ?? null, underlying: amt, dailyRate: Number.isFinite(Number(a.totalDaily)) ? Number(a.totalDaily) : Number.isFinite(Number(a.totalApy)) ? Math.pow(1 + Number(a.totalApy), 1 / 365) - 1 : null,
         depositTokenAddresses: v.depositTokenAddresses ?? null, isClmLike: v.type === "cowcentrated" || all.some((w) => w.type === "cowcentrated" && w.earnContractAddress?.toLowerCase() === String(v.tokenAddress ?? "").toLowerCase()),
         pending: x.pending ?? null, pendingUsd: x.pending ? +x.pending.reduce((a, r) => a + (r.usd ?? 0), 0).toFixed(4) : null });
     }

@@ -175,17 +175,22 @@ export async function beefyDashboard(address, { provider = null } = {}) {
     if (row.atDepositUsd) row.pnlPct = +(100 * row.pnlUsd / row.atDepositUsd).toFixed(2);
     rows.push(row);
   }
+  // diagnóstico: historiales sin posición y posiciones sin historial (para cuadrar con Beefy)
+  const usedKeys = new Set([...groups.values()].map((g) => g.addr));
+  const orphan = [...Object.keys(clmBy).map((k) => `clm ${clmBy[k][0]?.display_name ?? ""} ${k}`).filter((x) => !usedKeys.has(x.split(" ").pop())),
+    ...Object.keys(classicBy).filter((k) => !usedKeys.has(k)).map((k) => `classic ${classicBy[k][0]?.display_name ?? ""} ${k}`)];
+  const noHist = rows.filter((r) => r.noHistory).map((r) => `${r.id} (${r.kind} ${[...groups.values()].find((g) => g.positions.some((p) => p.id === r.id))?.addr})`);
   // Beefy no muestra polvo: filas de menos de 1 centavo fuera
   const shown = rows.filter((r) => r.nowUsd >= 0.01).sort((a, b) => b.nowUsd - a.nowUsd);
   const sum = (k) => +shown.reduce((s, r) => s + (Number.isFinite(r[k]) ? r[k] : 0), 0).toFixed(2);
   return { address: w.address, at: new Date().toISOString(),
     summary: { depositedUsd: sum("nowUsd"), vaults: shown.length, yieldUsd: sum("yieldUsd"), dailyUsd: sum("dailyUsd"), monthlyUsd: +(sum("dailyUsd") * 30).toFixed(2), atDepositUsd: sum("atDepositUsd"), pnlUsd: sum("pnlUsd") },
-    rows: shown, timeline: { clm: Array.isArray(clmTl) ? clmTl.length : 0, databarn: Array.isArray(dbTl) ? dbTl.length : 0 }, errors };
+    rows: shown, diag: { orphan, noHist }, timeline: { clm: Array.isArray(clmTl) ? clmTl.length : 0, databarn: Array.isArray(dbTl) ? dbTl.length : 0 }, errors };
 }
 
 export function beefyDashLine(d) {
   const f = (v) => (v === null || v === undefined ? "—" : `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}`);
   return `beefy dashboard ${d.address}: depositado ${f(d.summary.depositedUsd)} · ${d.summary.vaults} vaults · rendimiento ${f(d.summary.yieldUsd)} · diario ${f(d.summary.dailyUsd)} · PnL ${f(d.summary.pnlUsd)} · ` +
     d.rows.map((r) => `[${r.chain}] ${r.name}: al depositar ${f(r.atDepositUsd)} ahora ${f(r.nowUsd)} rend ${f(r.yieldUsd)} PnL ${f(r.pnlUsd)} APY ${r.apyPct ?? "—"}% diario ${f(r.dailyUsd)}`).join(" | ") +
-    ` · historial clm-api ${d.timeline.clm} / databarn ${d.timeline.databarn}` + (d.errors.length ? ` · errores: ${d.errors.slice(0, 4).join(" | ")}` : "");
+    ` · historial clm-api ${d.timeline.clm} / databarn ${d.timeline.databarn}` + (d.diag?.noHist?.length ? ` · sin historial: ${d.diag.noHist.join(", ")}` : "") + (d.diag?.orphan?.length ? ` · historial sin posición: ${d.diag.orphan.slice(0, 8).join(", ")}` : "") + (d.errors.length ? ` · errores: ${d.errors.slice(0, 4).join(" | ")}` : "");
 }
