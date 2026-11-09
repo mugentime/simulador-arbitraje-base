@@ -107,6 +107,12 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 .sugg { list-style: none; margin: 0; padding: 0; counter-reset: s; } .sugg li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: start; }
 .sugg li:last-child { border-bottom: 0; } .sugg .why2 { color: var(--mut); font-size: 12px; margin-top: 2px; }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr 1fr; } .hero .main { grid-column: 1 / -1; } .rank .row { grid-template-columns: 1fr 96px 70px; } .rank .row .hs { display: none; } .pair { grid-template-columns: 1fr; } .hero .main b { font-size: 32px; } .sugg li { grid-template-columns: 1fr; gap: 4px; } }
+.bd-sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+.bd-sum div { background: var(--soft); border-radius: 10px; padding: 10px 12px; } .bd-sum span { display: block; color: var(--mut); font-size: 12px; } .bd-sum b { display: block; font-size: 20px; font-weight: 650; }
+.bd-sum small { color: var(--mut); font-size: 11px; }
+#bd table tr.r { cursor: pointer; } #bd table tr.r:hover td { background: var(--soft); }
+#bd td.det { white-space: normal; background: var(--soft); font-size: 12px; } #bd .sub2 { color: var(--mut); font-size: 11px; display: block; }
+@media (max-width: 760px) { .bd-sum { grid-template-columns: 1fr 1fr; } #bd .hm { display: none; } }
 </style>
 </head>
 <body>
@@ -140,6 +146,14 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     </div>
     <h2 style="font-size:15px;margin:18px 0 8px">4 · Detalle</h2>
   </section>
+
+  <div class="card" id="bdCard">
+    <h2>Beefy · tu dashboard <span class="mut" style="font-weight:400;font-size:12px">mismas columnas y mismas cuentas que app.beefy.com/dashboard</span>
+      <span class="sp"><span class="mut" style="font-size:12px" id="bdAt"></span><a id="bdLink" target="_blank" rel="noopener" style="font-size:12px">abrir en Beefy ↗</a></span></h2>
+    <div class="bd-sum" id="bdSum"><div><span>Depositado</span><b class="mut">…</b></div><div><span>Vaults</span><b class="mut">…</b></div><div><span>Rendimiento</span><b class="mut">…</b></div><div><span>Diario</span><b class="mut">…</b></div></div>
+    <div class="tbl" id="bd"><div class="mut">cargando…</div></div>
+    <div class="note">Al depositar: lo que valían al entrar los depósitos que siguen dentro (FIFO, como Beefy). Ahora: valor on-chain. Rendimiento: comisiones compuestas por el CLM (tu parte de cada cosecha) + recompensas cobradas + pendientes; en vaults clásicos, subyacente ganado × precio. PnL: ahora + cobradas + pendientes − al depositar. Diario: valor × rendimiento diario publicado por Beefy. Toca una fila para ver el detalle.</div>
+  </div>
 
   <div class="kpis" id="kpis"></div>
   <div class="prices" id="prices"></div>
@@ -630,6 +644,43 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   $("refresh").onclick = () => { tick(); loadReports(); };
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); loadReports(); } });
   window.addEventListener("resize", () => renderChart());
+  // ---- espejo del dashboard de Beefy
+  let bd = null, bdErr = null; const bdOpen = new Set();
+  async function loadBeefyDash() {
+    try { bd = await get(`${BASE}/api/beefy-dashboard`, 120000); bdErr = null; } catch (e) { bdErr = e.message; }
+    renderBeefyDash();
+  }
+  function renderBeefyDash() {
+    if (!bd) { if (bdErr) $("bd").innerHTML = `<div class="err">${esc(bdErr)}</div>`; return; }
+    const S = bd.summary;
+    $("bdLink").href = `https://app.beefy.com/dashboard/${bd.address}`;
+    $("bdAt").textContent = (bdErr ? "⚠ " : "") + "actualizado " + ago(bd.at);
+    $("bdSum").innerHTML = `<div><span>Depositado</span><b>${usd(S.depositedUsd)}</b><small>al depositar ${usd(S.atDepositUsd)}</small></div>` +
+      `<div><span>Vaults</span><b>${S.vaults}</b><small>PnL ${sgnU(S.pnlUsd)}</small></div>` +
+      `<div><span>Rendimiento</span><b>${usd(S.yieldUsd)}</b><small>comisiones + recompensas</small></div>` +
+      `<div><span>Diario</span><b>${usd(S.dailyUsd)}</b><small>mensual ${usd(S.monthlyUsd)}</small></div>`;
+    const rows = bd.rows.map((r, i) => {
+      const open = bdOpen.has(r.id);
+      const pnl = r.pnlUsd === null ? '<span class="mut">sin historial</span>' : `${sgnU(r.pnlUsd)}<span class="sub2">${sgnP(r.pnlPct, 2)}</span>`;
+      let tr = `<tr class="r" data-id="${esc(r.id)}"><td class="name"><b>${esc(r.name)}</b> <span class="tag">${esc(CH[r.chain] ?? r.chain)}</span>${r.status !== "active" ? ` <span class="tag warn">${esc(r.status)}</span>` : ""}<span class="sub2">${esc(r.platform ?? "")}${r.type === "gov" ? " · reward pool" : r.kind === "clm" ? " · CLM" : ""}</span></td>` +
+        `<td class="n hm">${r.atDepositUsd === null ? "—" : usd(r.atDepositUsd)}</td><td class="n">${usd(r.nowUsd)}</td><td class="n hm">${r.yieldUsd === null ? "—" : usd(r.yieldUsd)}</td><td class="n">${pnl}</td><td class="n">${apyTxt(r.apyPct)}</td><td class="n hm">${usd(r.dailyUsd)}</td></tr>`;
+      if (open) {
+        const y = r.yield ?? {};
+        const t = r.tokensAtDeposit; const sy = (r.assets ?? []);
+        const toks = t ? `Tokens al depositar: ${(+t.amount0).toPrecision(5)} ${esc(sy[0] ?? "token0")}${t.entryPx0 ? ` @ ${usd(t.entryPx0, t.entryPx0 < 10 ? 4 : 2)}` : ""} + ${(+t.amount1).toPrecision(5)} ${esc(sy[1] ?? "token1")}${t.entryPx1 ? ` @ ${usd(t.entryPx1, t.entryPx1 < 10 ? 4 : 2)}` : ""}` : r.underlying ? `Subyacente: ${(+r.underlying.atDeposit).toPrecision(6)} al depositar → ${(+r.underlying.now).toPrecision(6)} ahora` : "";
+        tr += `<tr><td class="det" colspan="7"><div class="kv">` +
+          `<div><span>Compuesto${y.harvests ? ` (${y.harvests} cosechas)` : ""}</span><b>${usd(y.compoundedUsd, 4)}</b></div><div><span>Recompensas cobradas</span><b>${usd(y.claimedUsd, 4)}</b></div><div><span>Pendientes</span><b>${usd(y.pendingUsd, 4)}</b></div>` +
+          `<div><span>Primer depósito (tramo actual)</span><b>${hm(r.firstDeposit)}</b></div><div><span>Movimientos</span><b>${r.txs ?? "—"}</b></div><div><span>TVL del vault</span><b>${usdK(r.tvlUsd)}</b></div></div>` +
+          `<div class="note">${toks}${(r.pending ?? []).length ? ` · pendientes: ${r.pending.map((p) => `${p.amount} ${esc(p.symbol ?? "")}`).join(", ")}` : ""} · capas: ${r.layers.map(esc).join(", ")} · <a href="${esc(r.url)}" target="_blank" rel="noopener">vault en Beefy ↗</a></div></td></tr>`;
+      }
+      return tr;
+    }).join("");
+    $("bd").innerHTML = `<table><thead><tr><th>Vault</th><th class="n hm">Al depositar</th><th class="n">Ahora</th><th class="n hm">Rendimiento</th><th class="n">PnL</th><th class="n">APY</th><th class="n hm">Diario</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="mut">sin posiciones</td></tr>'}</tbody></table>` +
+      (bd.errors?.length ? `<div class="note err">${bd.errors.slice(0, 3).map(esc).join(" · ")}</div>` : "");
+    $("bd").querySelectorAll("tr.r").forEach((tr) => tr.onclick = () => { const id = tr.dataset.id; bdOpen.has(id) ? bdOpen.delete(id) : bdOpen.add(id); renderBeefyDash(); });
+  }
+  loadBeefyDash(); setInterval(() => { if (!document.hidden) loadBeefyDash(); }, 120_000);
+
   loadReports(); setInterval(() => { if (!document.hidden) loadReports(); }, REPORT_MS);
   tick();
 })();

@@ -14,6 +14,7 @@ import { Liquidator } from "./liquidator.mjs";
 import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
+import { beefyDashboard, beefyDashLine } from "./beefydash.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
@@ -429,6 +430,17 @@ const server = http.createServer(async (req, res) => {
     const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
     return res.end(fs.readFileSync(new URL("./positions.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`));
   }
+  if (req.url.startsWith("/api/beefy-dashboard")) {
+    // espejo del dashboard de Beefy; caché de 2 min por dirección
+    const q = new URL(req.url, "http://x").searchParams;
+    const addr = (q.get("address") || (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0]).toLowerCase();
+    try {
+      const c = beefyDashCache.get(addr);
+      const d = c && Date.now() - c.at < 120_000 && !q.has("fresh") ? c.d : await beefyDashboard(addr, { provider: executor?.provider });
+      if (!c || c.d !== d) beefyDashCache.set(addr, { at: Date.now(), d });
+      res.writeHead(200, headers); return res.end(J(d));
+    } catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
   if (req.url.startsWith("/api/beefy-wallet")) {
     const q = new URL(req.url, "http://x").searchParams;
     const addr = q.get("address") || executor?.p1?.wallet;
@@ -504,6 +516,7 @@ if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada BEEFY_WALLET_EVERY_MIN (60) minutos (solo Base);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
 let lastAudit = null;
+const beefyDashCache = new Map();
 async function logBeefyWallets() {
   if (CHAIN_CFG.key !== "base") return;
   const list = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -513,6 +526,8 @@ async function logBeefyWallets() {
       try { lastAudit = await auditWallet(a, { whitelist: whitelist(), provider: executor?.provider }); console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
+      try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`); }
+      catch (e) { console.log(`${new Date().toISOString()} beefy dashboard ${a}: error ${e.message}`); }
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
       const h = (await store.get("beefyWalletHist")) ?? [];
       h.push({ at: r.at, address: r.address, totalUsd: r.totalUsd, prices: r.prices, positions: r.positions.map((p) => ({ id: p.id, chain: p.chain, valueUsd: p.valueUsd !== null ? +p.valueUsd.toFixed(4) : null, apyPct: p.apyPct, tvlUsd: p.tvlUsd })) });
