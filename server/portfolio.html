@@ -125,7 +125,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     <div class="card">
       <h2>1 · ¿Funcionan las estrategias del bot? <span class="mut" style="font-weight:400;font-size:12px">rendimiento (comisiones + recompensas) separado de la volatilidad</span></h2>
       <div class="grid" id="works"><div class="mut">cargando…</div></div>
-      <div class="note"><b>Rendimiento</b> = comisiones + recompensas: lo que la estrategia gana y lo que decide si funciona. En reward pools se mide (recompensas por cobrar + cobradas); en vaults que componen solos se estima con el APY de Beefy hora a hora. <b>Volatilidad</b> = cambio de precio de los tokens + pérdida impermanente del CLM: en un DCA es esperada y no es pérdida mientras no se venda. "Al ritmo actual" usa lo realmente ganado ÷ los días invertidos; la proyección con el APY publicado es aparte y no está garantizada.</div>
+      <div class="note"><b>Rendimiento</b> = comisiones + recompensas: lo que la estrategia gana y lo que decide si funciona. Se estima hora a hora con el APY total que publica Beefy (comisiones del CLM, que se componen dentro de la posición, + recompensas del pool) sobre el valor de cada posición. <b>Volatilidad</b> = cambio de precio de los tokens + pérdida impermanente del CLM: en un DCA es esperada y no es pérdida mientras no se venda. "Al ritmo actual" usa lo realmente ganado ÷ los días invertidos; la proyección con el APY publicado es aparte y no está garantizada.</div>
     </div>
     <div class="card">
       <h2>2 · Ranking de vaults por rendimiento <span class="mut" style="font-weight:400;font-size:12px">comisiones + recompensas por día sobre lo invertido; la volatilidad va aparte</span></h2>
@@ -478,7 +478,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     $("works").innerHTML = cards.map(({ title, p, sub, closed }) => {
       const vk = yieldVerdict(p.rendDiarioPct), a = (p.dias ?? 0) >= 7 ? yr(p.rendDiarioPct) : null; // anualizado solo con ≥ 7 días de datos
       const rate = fin(p.rendDiarioPct) ? `${p.rendDiarioPct >= 0 ? "+" : ""}${pct(p.rendDiarioPct, 3)} al día sobre lo invertido${fin(a) && Math.abs(a) < 1e5 ? ` (≈ ${pct(a, 0)} al año)` : ""}` : "aún sin suficiente historia";
-      const src = p.rendMedido > 0.0005 && p.rendEstimado > 0.0005 ? `medido ${usd(p.rendMedido, 3)} + estimado ${usd(p.rendEstimado, 3)}` : p.rendMedido > 0.0005 ? "recompensas medidas en el reward pool" : "comisiones estimadas con el APY de Beefy";
+      const src = "estimado: valor × APY total de Beefy, hora a hora";
       return `<div class="card works" style="margin:0">
         <h3 style="font-size:14px;margin:0">${title}</h3>${sub ? `<div class="mut" style="font-size:12px">${esc(sub)}${closed ? ` · ${closed} vault(s) anteriores cerrados` : ""}</div>` : ""}
         <div class="sent">${badge(vk)} Rendimiento ${sgnU(p.rend, 3)} · ${rate}</div>
@@ -518,7 +518,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   /** Razones (por qué) de un vault: + suma al rendimiento, − resta, • contexto (la volatilidad es contexto, no resultado). */
   function reasons(v) {
     const R = [];
-    if (fin(v.rend)) R.push([v.rend > 0 ? "plus" : "info", `Rendimiento ${usd(v.rend, 3)} (${v.rendSrc === "medido" ? "recompensas medidas" : "comisiones estimadas"})${fin(v.rendDaily) ? `, ${pct(v.rendDaily, 3)} al día` : ""}${apyOk(v.apy) ? `; APY publicado hoy ${pct(v.apy, v.apy < 100 ? 1 : 0)}` : ""}.`]);
+    if (fin(v.rend)) R.push([v.rend > 0 ? "plus" : "info", `Rendimiento ${usd(v.rend, 3)} (estimado con el APY)${fin(v.rendDaily) ? `, ${pct(v.rendDaily, 3)} al día` : ""}${apyOk(v.apy) ? `; APY publicado hoy ${pct(v.apy, v.apy < 100 ? 1 : 0)}` : ""}.`]);
     if (apyOk(v.apy) && apyOk(v.apyEntry) && v.apyEntry > 0 && v.apy < v.apyEntry * 0.5) R.push(["minus", `El APY cayó de ${pct(v.apyEntry)} al entrar a ${pct(v.apy)}: el rendimiento futuro será menor.`]);
     else if (apyOk(v.apy) && apyOk(v.apy24) && v.apy24 > 0 && v.apy < v.apy24 * 0.5) R.push(["minus", `El APY cayó a menos de la mitad en 24 h (${pct(v.apy24)} → ${pct(v.apy)}).`]);
     if (fin(v.apy) && !apyOk(v.apy)) R.push(["minus", "Beefy publica un APY irreal: no es confiable."]);
@@ -557,7 +557,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       const w = Math.max(0, v.rend) / maxR * 100;
       return `<div class="row" data-i="${i}"><div class="nm"><b>${i + 1}. <a href="https://app.beefy.com/vault/${esc(v.id)}" target="_blank" rel="noopener">${esc(v.name)}</a></b><div>${CH[v.chain] ?? esc(v.chain)} · ${esc(v.role)} · invertido ${usd(v.inv)}</div></div>
         <div>${badge(yieldVerdict(v.rendDaily))}</div>
-        <div class="hs"><div class="dv"><div class="axis" style="left:0"></div><div class="b p" style="left:0;width:${Math.max(0.6, w).toFixed(2)}%"></div></div><div class="mut" style="font-size:11px;margin-top:2px">${v.rendSrc === "medido" ? "medido (recompensas del reward pool)" : "estimado (APY × valor, hora a hora)"}</div></div>
+        <div class="hs"><div class="dv"><div class="axis" style="left:0"></div><div class="b p" style="left:0;width:${Math.max(0.6, w).toFixed(2)}%"></div></div><div class="mut" style="font-size:11px;margin-top:2px">estimado (APY × valor, hora a hora)</div></div>
         <div class="num"><b>${sgnU(v.rend, 3)}</b><div>${fin(v.rendDaily) ? `${pct(v.rendDaily, 3)}/día` : ""}</div></div>
         <div class="num hs">${volTxt(v.vol)}<div>${fin(v.volPct) ? pct(v.volPct, 1) : ""}</div></div></div>`;
     }).join("") : "") + (noSplit.length ? `<div class="note" style="margin-top:8px">Sin desglose rendimiento/volatilidad (Robinhood y manuales; Beefy solo da el total): ${noSplit.map((v) => `${esc(v.name)} ${fin(v.total) ? `${v.total >= 0 ? "+" : "−"}${usd(Math.abs(v.total))}` : ""}`).join(" · ")}. El rendimiento de Robinhood está por estrategia en la sección 1.</div>` : "");
