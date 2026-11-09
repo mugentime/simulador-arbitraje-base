@@ -194,7 +194,9 @@ export class RevertLoan {
       if (this.s.migrating) { const li = await vault.loanInfo(id); if (li.debt === 0n) await this.borrowMax(id, "migración"); this.s.migrating = false; await this.save(); }
       return;
     }
-    const m = (this.s.migration ??= { tries: 0 });
+    let m = (this.s.migration ??= { tries: 0 });
+    const mt = process.env.RVL_LOAN_MIGRATE_TAG || "m1";
+    if (m.tag !== mt) { m = this.s.migration = { tries: 0, tag: mt }; }
     if (m.tries >= 3) { if (!m.gaveUp) { m.gaveUp = true; this.s.migrating = false; await this.note(`migración al contrato detenida tras 3 intentos · ${m.error}`); } return; }
     try {
       this.s.migrating = true;
@@ -204,7 +206,17 @@ export class RevertLoan {
         if (shares > 0n) {
           const li = await vault.loanInfo(id);
           const need = li.debt + li.debt / 1000n + 10n;
-          const usdc = await this.c(RVL.USDC).balanceOf(this.me);
+          let usdc = await this.c(RVL.USDC).balanceOf(this.me);
+          if (usdc < need) {
+            // falta USDC (la estrategia de DCA usa el USDC libre de la wallet): se completa con ETH sin bajar de la reserva
+            const { p } = await this.state();
+            const ethIn = ethers.parseEther((Number(need - usdc) / 1e6 / p * 1.03).toFixed(18));
+            const prm = { tokenIn: RVL.WETH, tokenOut: RVL.USDC, fee: RVL.SWAP_FEE, recipient: this.me, amountIn: ethIn, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };
+            const simOut = I.decodeFunctionResult("exactInputSingle", await this.provider.call({ from: this.me, to: RVL.ROUTER, value: ethIn, data: I.encodeFunctionData("exactInputSingle", [prm]) }))[0];
+            prm.amountOutMinimum = simOut * BigInt(10_000 - this.cfg.slipBps) / 10_000n;
+            await this.send(`migración: swap ${ethers.formatEther(ethIn)} ETH → USDC para repagar`, { to: RVL.ROUTER, value: ethIn, data: I.encodeFunctionData("exactInputSingle", [prm]) }, { floorEth: this.cfg.reserveEth });
+            usdc = await this.c(RVL.USDC).balanceOf(this.me);
+          }
           if (usdc < need) throw new Error(`USDC insuficiente para repagar (${ethers.formatUnits(usdc, 6)} < ${ethers.formatUnits(need, 6)})`);
           await this.approve(RVL.USDC, RVL.VAULT, need);
           await this.send(`migración: repago total ${ethers.formatUnits(li.debt, 6)} USDC`, { to: RVL.VAULT, data: I.encodeFunctionData("repay", [id, shares, true]) });
