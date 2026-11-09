@@ -134,13 +134,21 @@ export class Sniper {
       x.Eapi = emissionsPerDay(x.apiTvl, x.apy);
       const amt = raw ? Number(ethers.formatUnits(BigInt(raw), 18)) : 0;
       if (amt > 0 && x.apiTvl > 0) x.lp = x.apiTvl / amt;
-      x.depTokens = (v.depositTokenAddresses ?? []).filter((a) => ethers.isAddress(a));
+      const apiToks = (v.depositTokenAddresses ?? []).filter((a) => ethers.isAddress(a));
+      if (apiToks.length || !x.depTokens?.length) x.depTokens = apiToks;
       x.usdPair = x.assets.some((a) => USD.has(String(a).toUpperCase()));
       if (this.chain !== "robinhood") x.stock = false; // las restricciones de transferencia solo aplican a los Stock Tokens de Robinhood
       this.v.set(v.id, x);
     }
     // símbolos on-chain (una vez por vault): los Stock Tokens de Robinhood (sufijo "rh") solo se transfieren entre wallets aprobadas
-    const need = [...this.v.values()].filter((x) => x.syms === undefined && x.depTokens?.length && x.Eapi >= this.minE);
+    // tokens del par: depositTokenAddresses de la API o, si no vienen (CLM de Robinhood), wants() del CLM on-chain
+    const noTok = [...this.v.values()].filter((x) => x.syms === undefined && !x.depTokens?.length && x.clm && (x.Eapi >= this.minE || (x.apiTvl ?? 0) >= 2000));
+    if (noTok.length) {
+      const W = new ethers.Interface(["function wants() view returns (address,address)"]);
+      const rw = await core.multicall(ethers, this.p, noTok.map((x) => [x.clm, W.encodeFunctionData("wants")])).catch(() => []);
+      noTok.forEach((x, i) => { try { if (rw[i]) x.depTokens = [...W.decodeFunctionResult("wants", rw[i])]; } catch {} });
+    }
+    const need = [...this.v.values()].filter((x) => x.syms === undefined && x.depTokens?.length && (x.Eapi >= this.minE || (x.apiTvl ?? 0) >= 2000));
     if (need.length) {
       const S = new ethers.Interface(["function symbol() view returns (string)"]);
       const flat = need.flatMap((x) => x.depTokens.map((t) => [t, S.encodeFunctionData("symbol")]));
