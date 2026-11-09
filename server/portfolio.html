@@ -120,10 +120,19 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   <header>
     <h1>Panel de posiciones</h1>
     <span class="addr" id="addr"></span>
+    <a href="#bdCard" style="font-size:13px;font-weight:600">Beefy ↓</a>
     <span class="live"><i class="dot" id="dot"></i><span id="upd">conectando…</span></span>
     <button id="refresh" title="Actualizar ahora">↻</button>
     <button id="theme" title="Tema claro / oscuro">◐</button>
   </header>
+
+  <div class="card" id="bdCard" style="border:2px solid var(--acc)">
+    <h2>Beefy · tu dashboard <span class="mut" style="font-weight:400;font-size:12px">mismas columnas y mismas cuentas que app.beefy.com/dashboard</span>
+      <span class="sp"><span class="mut" style="font-size:12px" id="bdAt"></span><a id="bdLink" target="_blank" rel="noopener" style="font-size:12px">abrir en Beefy ↗</a></span></h2>
+    <div class="bd-sum" id="bdSum"><div><span>Depositado</span><b class="mut">…</b></div><div><span>Vaults</span><b class="mut">…</b></div><div><span>Rendimiento</span><b class="mut">…</b></div><div><span>Diario</span><b class="mut">…</b></div></div>
+    <div class="tbl" id="bd"><div class="mut">cargando…</div></div>
+    <div class="note">Al depositar: lo que valían al entrar los depósitos que siguen dentro (FIFO, como Beefy). Ahora: valor on-chain. Rendimiento: comisiones compuestas por el CLM (tu parte de cada cosecha) + recompensas cobradas + pendientes; en vaults clásicos, subyacente ganado × precio. PnL: ahora + cobradas + pendientes − al depositar. Diario: valor × rendimiento diario publicado por Beefy. Toca una fila para ver el detalle.</div>
+  </div>
 
   <section id="analysis">
     <div class="hero" id="hero"><div class="main"><span>Rendimiento de las estrategias del bot</span><b class="mut">…</b><small>cargando reportes de los workers</small></div></div>
@@ -146,14 +155,6 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     </div>
     <h2 style="font-size:15px;margin:18px 0 8px">4 · Detalle</h2>
   </section>
-
-  <div class="card" id="bdCard">
-    <h2>Beefy · tu dashboard <span class="mut" style="font-weight:400;font-size:12px">mismas columnas y mismas cuentas que app.beefy.com/dashboard</span>
-      <span class="sp"><span class="mut" style="font-size:12px" id="bdAt"></span><a id="bdLink" target="_blank" rel="noopener" style="font-size:12px">abrir en Beefy ↗</a></span></h2>
-    <div class="bd-sum" id="bdSum"><div><span>Depositado</span><b class="mut">…</b></div><div><span>Vaults</span><b class="mut">…</b></div><div><span>Rendimiento</span><b class="mut">…</b></div><div><span>Diario</span><b class="mut">…</b></div></div>
-    <div class="tbl" id="bd"><div class="mut">cargando…</div></div>
-    <div class="note">Al depositar: lo que valían al entrar los depósitos que siguen dentro (FIFO, como Beefy). Ahora: valor on-chain. Rendimiento: comisiones compuestas por el CLM (tu parte de cada cosecha) + recompensas cobradas + pendientes; en vaults clásicos, subyacente ganado × precio. PnL: ahora + cobradas + pendientes − al depositar. Diario: valor × rendimiento diario publicado por Beefy. Toca una fila para ver el detalle.</div>
-  </div>
 
   <div class="kpis" id="kpis"></div>
   <div class="prices" id="prices"></div>
