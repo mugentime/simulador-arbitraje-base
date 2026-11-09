@@ -201,6 +201,9 @@ export class Strategy {
 
   /** Selección y salidas del modo automático. Devuelve true si ejecutó una salida en esta llamada. */
   async autoTick(ctx, d, now) {
+    // AUTO_CLEAR_FAILED=<etiqueta> (una vez): los destinos descartados por un fallo de reinversión vuelven a ser elegibles
+    const cf = process.env.AUTO_CLEAR_FAILED;
+    if (cf && d.clearFailedTag !== cf) { d.clearFailedTag = cf; const n = Object.keys(d.failed ?? {}).length; d.failed = {}; await this.diag(`estrategia auto: ${n} destino(s) descartado(s) por fallo vuelven a ser elegibles (AUTO_CLEAR_FAILED=${cf})`); }
     const rules = RULES();
     let scan;
     // solo CLM que tengan el estable de la cadena (WETH en Robinhood, USDT en BSC)
@@ -491,7 +494,7 @@ export class Strategy {
             const h = ((d.holdings ??= {})[d.target] ??= { since: new Date(now).toISOString(), entryApyPct: this.lastScan?.byId?.[d.target]?.apyPct ?? null, entryTvl: this.lastScan?.byId?.[d.target]?.tvl ?? null, usd: 0 });
             h.basis = String(BigInt(h.basis ?? "0") + BigInt(this.run.usdcIn ?? "0")); h.tokens ??= [this.run.t0 ?? this.run.x, this.run.t1].filter(Boolean);
             await this.diag(`estrategia dinámica: capital reinvertido en ${d.target} · ${ethers.formatUnits(this.run.usdcIn ?? "0", this.net.stableDec)} ${this.net.stableSym}`);
-          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) { (d.failed ??= {})[d.target] = now; d.target = null; d.redeployTag = now; this.autoAt = 0; } await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló; se busca otro destino"} · ${msg}`); }
+          } catch (e) { const msg = (e.shortMessage || e.message || String(e)).slice(0, 200); this.run.status = e.retry ? "pendiente" : "error"; this.run.error = msg; this.retryAt = now + 60_000; if (!e.retry) { if (!/exceeds balance|insufficient/i.test(msg)) (d.failed ??= {})[d.target] = now; d.target = null; d.redeployTag = now; this.autoAt = 0; } await this.diag(`estrategia dinámica: reinversión ${e.retry ? "reintenta" : "falló; se busca otro destino"} · ${msg}`); }
           finally { this.sweepStable = undefined; }
           return;
         }
