@@ -166,6 +166,7 @@ export class RevertLoan {
       if (tag && !this.s.runs[tag]?.done) await this.open(tag);
       if (this.s.tokenId && this.cfg.manager) { await this.ensureManager(); await this.migrate(); }
       if (this.s.tokenId) await this.monitor();
+      if (this.s.manager && this.s.tokenId && process.env.RVL_LOAN_SIMTEST && this.s.simTest !== process.env.RVL_LOAN_SIMTEST) { this.s.simTest = process.env.RVL_LOAN_SIMTEST; await this.simTest(); }
     } finally { this.busy = false; await this.save().catch(() => {}); }
   }
 
@@ -419,6 +420,27 @@ export class RevertLoan {
       await this.note(`precio ${inRange ? "cerca del borde" : "fuera"} del rango [${pos.tickLower}, ${pos.tickUpper}] (tick ${st.tick}, ETH $${st.p.toFixed(2)}) → re-centra`);
       await this.recenter(id, li, st, pos);
     }
+  }
+
+  /** Prueba sin enviar (eth_call contra el estado real): desapalancar $1 y re-centrar con flashloan. */
+  async simTest() {
+    const id = this.s.tokenId, li = await this.c(RVL.VAULT).loanInfo(id), st = await this.state(), pos = await this.c(RVL.NPM).positions(id);
+    const res = [];
+    try {
+      const need = 1_000_000n, frac = Number(need) / Number(li.fullValue) * 1.05;
+      await this.provider.call({ from: this.me, ...this.mgr("deleverage", [{ tokenId: id, liquidity: BigInt(Math.floor(Number(pos.liquidity) * frac)), minUsdcOut: 0n, deadline: BigInt(Math.floor(Date.now() / 1000) + 600) }, need]) });
+      res.push("desapalancar $1 con flashloan: OK");
+    } catch (e) { res.push(`desapalancar: FALLA ${(e.shortMessage || e.message).slice(0, 160)}`); }
+    try {
+      // re-centrar requiere margen: se simula sobre el estado real tal cual (salud ~1.055) y además con un desapalanque previo no es posible en un solo eth_call
+      const { lower, upper } = rangeTicks(st.tick + 300, this.cfg.rangePct);
+      const now = amountsFor(Number(pos.liquidity), st.sqrtP, Number(pos.tickLower), Number(pos.tickUpper));
+      const sw = rebalanceSwap(now.a0, now.a1, st.sqrtP, lower, upper);
+      const flash = li.debt + li.debt / 2000n + 10n;
+      await this.provider.call({ from: this.me, ...this.mgr("recenter", [{ tokenId: id, tickLower: lower, tickUpper: upper, sellToken0: sw.sellToken0, swapAmountIn: sw.amountIn, swapMinOut: sw.minOut, deadline: BigInt(Math.floor(Date.now() / 1000) + 600) }, flash]) });
+      res.push(`re-centrar con flashloan: OK (ticks ${lower}…${upper})`);
+    } catch (e) { res.push(`re-centrar: ${(e.shortMessage || e.message).slice(0, 160)}`); }
+    await this.note(`prueba simulada (${this.s.simTest}) · ${res.join(" · ")}`);
   }
 
   line() {
