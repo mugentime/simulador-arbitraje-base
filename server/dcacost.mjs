@@ -381,7 +381,9 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
         }
         // rendimiento MEDIDO: nuestra parte de cada Harvest del CLM (comisiones netas compuestas en la posición) + recompensas
         // por cobrar + cobradas. Mientras el escaneo no llega al bloque actual se usa la estimación con APY.
-        const since = Date.parse(d.extra ? d.deposits?.[0]?.at : d.holdings?.[id]?.since) || now - 3 * 86400_000;
+        const tms = (x) => typeof x === "number" ? x : Date.parse(x);
+        const cands = [...(d.extra ? (d.deposits ?? []).map((x) => tms(x.at)) : []), tms(d.holdings?.[id]?.since)].filter(Number.isFinite);
+        const since = cands.length ? Math.min(...cands) : now - 7 * 86400_000;
         let m = null;
         try { m = await harvestFees(s, id, (hv[id] ??= {}), { sinceMs: since }); } catch (e) { s.diag?.(`comisiones medidas ${id}: ${(e.shortMessage || e.message || String(e)).slice(0, 100)}`); }
         const cob = Number(s.s?.claimed?.[id] ?? 0);
