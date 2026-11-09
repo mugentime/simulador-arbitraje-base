@@ -244,7 +244,7 @@ export class RemoteBridge {
   cfg(key) {
     if (REMOTE[key]) return REMOTE[key];
     const c = CHAINS[key]; if (!c) return null;
-    return { id: c.id, sym: c.native ?? "ETH", rpcs: c.rpcs, weth: c.tokens?.WETH?.address ?? null };
+    return { id: c.id, sym: c.native ?? "ETH", rpcs: c.rpcs.filter((u) => !/publicnode/.test(u)), weth: c.tokens?.WETH?.address ?? null }; // publicnode responde 403 a varias lecturas
   }
   async onBlock() {
     if (!this.wanted || this.busy || Date.now() < this.nextAt) return;
