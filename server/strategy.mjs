@@ -492,13 +492,16 @@ export class Strategy {
 
     const usedUsd = open().filter((p) => p.kind !== "cosecha").reduce((a, p) => a + (p.usd ?? 0), 0); // la cosecha tiene su propio tope
     const enter = async (kind, id, usd, extra = {}) => {
-      const key = `${kind}-${id}-${now}`;
-      this.run = this.s.runs[`${this.label}-snipe-${key}`] = { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd, extra: true };
+      // una entrada pendiente se reanuda con la misma corrida tras un reinicio (antes cada intento empezaba de cero y duplicaba swaps)
+      const pend = st.pending?.kind === kind && st.pending?.id === id ? st.pending : (st.pending = { kind, id, at: now });
+      const key = `${kind}-${id}-${pend.at}`;
+      this.run = this.s.runs[`${this.label}-snipe-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd, extra: true };
+      await this.save();
       this.vaultId = id; this.dcaUsd = usd; this.sweepStable = undefined;
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
       try {
         await enterClm(this, ctx);
-        this.run.status = "hecho";
+        this.run.status = "hecho"; st.pending = null;
         if (st.need?.kind === kind) st.need = null;
         st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
         await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
@@ -506,6 +509,7 @@ export class Strategy {
       } catch (e) {
         const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
         this.run.status = "error"; this.run.error = msg;
+        if (!e.retry || /STF|exceeds balance/i.test(msg)) { st.pending = null; } // error definitivo o por saldo: la próxima vez empieza de cero
         await this.diag(`sniper: ${kind} en ${id} no entró · ${msg}`);
         if (e.noFunds && kind !== "semilla") st.need = { usd: usd + Number(process.env.SNIPER_NEED_GAS_USD ?? 2), kind, id, at: now };
         return e.noFunds ? "sinFondos" : e.retry ? "reintento" : "error";
