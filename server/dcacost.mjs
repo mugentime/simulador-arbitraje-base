@@ -11,7 +11,7 @@
 import { ethers } from "ethers";
 import { priceFromSqrtX96 } from "./beefywallet.mjs";
 import { CHAINS } from "../src/chains.js";
-import { bestPath, vaultValue, tokenValue } from "./beefyclm.mjs";
+import { bestPath, vaultValue, tokenValue, harvestFees } from "./beefyclm.mjs";
 
 const TRANSFER = ethers.id("Transfer(address,address,uint256)");
 const I = new ethers.Interface([
@@ -354,13 +354,14 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
   const D = s.net.stableDec, toUsd = (raw) => Number(raw) / 10 ** D * ethUsd, now = Date.now();
   const apy = await fetch("https://api.beefy.finance/apy/breakdown", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json()).catch(() => ({}));
   const fees = (await s.store.get("wrapFees")) ?? {};
+  const hv = (await s.store.get("harvestFees").catch(() => null)) ?? {};
   const out = [], seenTok = new Set(), res = {};
   const recs = Object.entries(s.s?.dca ?? {}).filter(([, d]) => d && (d.totalUsd > 0 || d.redeploy)).sort(([, a], [, b]) => (b.extra ? 1 : 0) - (a.extra ? 1 : 0)); // primero los extra: se quedan con sus tokens
   for (const [label, d] of recs) {
     try {
       const ids = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...Object.keys(d.holdings ?? {}), ...Object.keys(d.failed ?? {}), ...(d.target ? [d.target] : [])])];
       const open = d.extra ? ids : ids.filter((id) => !(d.holdings?.[id]?.closed));
-      let enVault = 0, sueltos = 0, rend = 0, porCobrar = 0; const vaults = []; let medido = 0, estimado = 0;
+      let enVault = 0, sueltos = 0, rend = 0, porCobrar = 0; const vaults = []; let medido = 0, estimado = 0, cobradas = 0, nHarv = 0, pendientes = 0, aprox = 0;
       const toks = new Set();
       for (const id of ids) {
         let v = null;
@@ -378,8 +379,16 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
           fees[id] = accrueFees(fees[id] ?? { since: new Date(now).toISOString(), at: now, usd: 0 }, { now, valueUsd: usd, apy: Number.isFinite(a) && a < 200 ? a : NaN }); // APY > 20,000 % = irreal, no cuenta
           vaults.push({ id, usd: +usd.toFixed(4), apyPct: Number.isFinite(a) ? a * 100 : null, gov: v.gov, pending: +pend.toFixed(4) });
         }
-        // rendimiento: reward pool → recompensas medidas (por cobrar + cobradas); vault normal → comisiones estimadas
-        rend += fees[id]?.usd ?? 0; estimado += fees[id]?.usd ?? 0; medido += pend; // medido = por cobrar (ya dentro del valor; informativo)
+        // rendimiento MEDIDO: nuestra parte de cada Harvest del CLM (comisiones netas compuestas en la posición) + recompensas
+        // por cobrar + cobradas. Mientras el escaneo no llega al bloque actual se usa la estimación con APY.
+        const since = Date.parse(d.extra ? d.deposits?.[0]?.at : d.holdings?.[id]?.since) || now - 3 * 86400_000;
+        let m = null;
+        try { m = await harvestFees(s, id, (hv[id] ??= {}), { sinceMs: since }); } catch (e) { s.diag?.(`comisiones medidas ${id}: ${(e.shortMessage || e.message || String(e)).slice(0, 100)}`); }
+        const cob = Number(s.s?.claimed?.[id] ?? 0);
+        if (m && m.behindBlocks < 5000) {
+          const u = toUsd(m.usd) + pend + cob; rend += u; medido += u; cobradas += toUsd(m.usd); nHarv += m.n; aprox += m.approx;
+          const vv = vaults.find((x) => x.id === id); if (vv) { vv.medido = +u.toFixed(4); vv.harvests = m.n; }
+        } else { rend += fees[id]?.usd ?? 0; estimado += fees[id]?.usd ?? 0; if (m) pendientes++; }
         enVault += usd; porCobrar += pend;
       }
       for (const t of toks) {
@@ -400,11 +409,12 @@ export async function wrapStrategyReport(s0, { ethUsd = null } = {}) {
         rendimiento: rend, rendMedido: medido, rendEstimado: estimado, rendDiarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? rend / cd.capDays * 100 : null, volatilidad: vol, volPct: aportado > 0 ? vol / aportado * 100 : null,
         capDias: cd.capDays, diarioPct: cd.capDays >= aportado * 0.25 && cd.capDays > 0 ? pnl / cd.capDays * 100 : null, dias: cd.days, n: d.n ?? 0, vaults };
       res[label].ajuste = ajuste;
-      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos${ajuste ? `, ${ajuste > 0 ? "+" : "−"}${f2(Math.abs(ajuste))} ${ajuste > 0 ? "recibidos de" : "pasados a"} otra estrategia` : ""}) · valor ${f2(valor)} = en vaults ${f2(enVault)}${porCobrar >= 0.005 ? ` + por cobrar ${f2(porCobrar)}` : ""} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · RENDIMIENTO ${sg(rend)} (comisiones + recompensas estimadas con el APY de Beefy${medido >= 0.005 ? `; por cobrar ${f2(medido)}` : ""}) · VOLATILIDAD ${sg(vol)} (precio + pérdida impermanente) · total ${sg(pnl)} (${pc(res[label].pnlPct)})` +
+      out.push(`dca estrategia ${s.net.beefy} ${label}: aportado ${f2(aportado)} (${d.n ?? 0} depósitos${ajuste ? `, ${ajuste > 0 ? "+" : "−"}${f2(Math.abs(ajuste))} ${ajuste > 0 ? "recibidos de" : "pasados a"} otra estrategia` : ""}) · valor ${f2(valor)} = en vaults ${f2(enVault)}${porCobrar >= 0.005 ? ` + por cobrar ${f2(porCobrar)}` : ""} + tokens sueltos ${f2(sueltos)} + apartado ${f2(reservado)} · RENDIMIENTO ${sg(rend)} (${medido || !estimado ? `medido ${f2(medido)}: comisiones compuestas en ${nHarv} harvests ${f2(cobradas)}${porCobrar >= 0.005 ? ` + recompensas por cobrar ${f2(porCobrar)}` : ""}${aprox ? ` · ${aprox} harvests con participación aproximada` : ""}` : ""}${estimado ? `${medido ? " + " : ""}estimado con APY ${f2(estimado)}${pendientes ? ` (medición en curso en ${pendientes} vault(s))` : ""}` : ""}) · VOLATILIDAD ${sg(vol)} (precio + pérdida impermanente) · total ${sg(pnl)} (${pc(res[label].pnlPct)})` +
         `${res[label].diarioPct !== null ? ` · ${pc(res[label].diarioPct)} por día` : ""} · vaults: ${vaults.map((v) => `${v.id} ${v.error ? "error " + v.error : f2(v.usd)}`).join(", ") || "—"}`);
     } catch (e) { out.push(`dca estrategia ${s.net.beefy} ${label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); }
   }
   await s.store.set("wrapFees", fees).catch(() => {});
+  await s.store.set("harvestFees", hv).catch(() => {});
   const L = Object.values(res);
   if (L.length) {
     const t = L.reduce((a, x) => ({ aportado: a.aportado + x.aportado, valor: a.valor + x.valor, pnl: a.pnl + x.pnl, comisiones: a.comisiones + x.comisiones, rendimiento: a.rendimiento + x.rendimiento, capDias: a.capDias + x.capDias, posiciones: a.posiciones + x.enVault, sueltos: a.sueltos + x.sueltos, reservado: a.reservado + x.reservado }), { aportado: 0, valor: 0, pnl: 0, comisiones: 0, rendimiento: 0, capDias: 0, posiciones: 0, sueltos: 0, reservado: 0 });

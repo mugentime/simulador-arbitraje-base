@@ -628,3 +628,61 @@ export async function tokenValue(s, token, amount) {
   if (lc(token) === lc(s.net.stable)) return amount;
   return (await bestPath(s, token, s.net.stable, amount).catch(() => null))?.out ?? 0n;
 }
+
+// ---------------------------------------------------------------- comisiones MEDIDAS (eventos Harvest del CLM)
+// En cada harvest la estrategia del CLM cobra las comisiones del pool, descuenta la parte de Beefy y compone el resto en la
+// posición, emitiendo Harvest(fee0, fee1). Nuestra parte = fee × (participaciones nuestras / totalSupply del CLM) en ese bloque.
+const HV = new ethers.Interface(["event Harvest(uint256 fee0, uint256 fee1)"]);
+const HARVEST_TOPIC = HV.getEvent("Harvest").topicHash;
+const callAt = async (s, to, fn, args, blockTag) => C.decodeFunctionResult(fn, await s.provider.call({ from: s.me, to, data: C.encodeFunctionData(fn, args), blockTag }));
+/** Participaciones del CLM nuestras en un bloque (reward pool o vault + CLM suelto). Lanza si el nodo no da estado histórico. */
+async function sharesAt(s, r, blockTag) {
+  let sh = (await callAt(s, r.vault, "balanceOf", [s.me], blockTag))[0];
+  if (!r.gov && sh > 0n) sh = sh * (await callAt(s, r.vault, "getPricePerFullShare", [], blockTag))[0] / 10n ** 18n;
+  sh += (await callAt(s, r.clm, "balanceOf", [s.me], blockTag))[0];
+  const [ts] = await callAt(s, r.clm, "totalSupply", [], blockTag);
+  return { sh, ts };
+}
+/**
+ * Avanza el escaneo de Harvest de un vault desde sinceMs (primer depósito) y acumula nuestra parte en st (estado persistente,
+ * se modifica). budget = máx. llamadas eth_getLogs por corrida. Devuelve {usd (crudo en estable), n, behindBlocks, approx}.
+ */
+export async function harvestFees(s, id, st, { sinceMs, budget = 40 } = {}) {
+  const prev = s.run, prevId = s.vaultId;
+  s.run = { txs: [], extra: true }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
+  try {
+    await resolve(s);
+    const r = s.run, N = s.net;
+    const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
+    st.strategy ??= (await call(s, r.clm, "strategy"))[0];
+    const head = await s.provider.getBlockNumber();
+    if (st.from == null) {
+      // bloque del primer depósito: estimado con el tiempo de bloque reciente (con margen de 10 %)
+      const [b1, b0] = await Promise.all([s.provider.getBlock(head), s.provider.getBlock(Math.max(0, head - 20000))]);
+      const bt = Math.max(0.05, (b1.timestamp - b0.timestamp) / Math.max(1, b1.number - b0.number));
+      st.from = Math.max(0, head - Math.ceil((Date.now() - (sinceMs ?? Date.now())) / 1000 / bt * 1.1));
+      st.my0 = "0"; st.my1 = "0"; st.n = 0; st.approx = 0;
+    }
+    let span = st.span ?? 50000, calls = 0;
+    while (st.from <= head && calls < budget) {
+      const to = Math.min(head, st.from + span - 1);
+      calls++;
+      let logs;
+      try { logs = await s.provider.getLogs({ address: st.strategy, topics: [HARVEST_TOPIC], fromBlock: st.from, toBlock: to }); }
+      catch { if (span > 500) { span = Math.max(500, Math.floor(span / 4)); continue; } throw new Error("eth_getLogs no responde"); }
+      for (const lg of logs) {
+        const { fee0, fee1 } = HV.parseLog(lg).args;
+        let x;
+        try { x = await sharesAt(s, r, lg.blockNumber); }
+        catch { x = await sharesAt(s, r, "latest"); st.approx++; } // sin estado histórico: participación actual (aproximado)
+        if (x.ts > 0n && x.sh > 0n) { st.my0 = String(BigInt(st.my0) + fee0 * x.sh / x.ts); st.my1 = String(BigInt(st.my1) + fee1 * x.sh / x.ts); }
+        st.n++;
+      }
+      st.from = to + 1;
+      if (logs.length < 50 && span < 400000) span *= 2;
+    }
+    st.span = span; st.tokens = tokens;
+    const usd = (await tokenValue(s, tokens[0], BigInt(st.my0))) + (await tokenValue(s, tokens[1], BigInt(st.my1)));
+    return { usd, n: st.n, behindBlocks: Math.max(0, head - st.from + 1), approx: st.approx };
+  } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
+}

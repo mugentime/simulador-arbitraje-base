@@ -478,7 +478,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     $("works").innerHTML = cards.map(({ title, p, sub, closed }) => {
       const vk = yieldVerdict(p.rendDiarioPct), a = (p.dias ?? 0) >= 7 ? yr(p.rendDiarioPct) : null; // anualizado solo con ≥ 7 días de datos
       const rate = fin(p.rendDiarioPct) ? `${p.rendDiarioPct >= 0 ? "+" : ""}${pct(p.rendDiarioPct, 3)} al día sobre lo invertido${fin(a) && Math.abs(a) < 1e5 ? ` (≈ ${pct(a, 0)} al año)` : ""}` : "aún sin suficiente historia";
-      const src = "estimado: valor × APY total de Beefy, hora a hora";
+      const src = p.rendMedido > 0.0005 && !(p.rendEstimado > 0.0005) ? "medido on-chain: nuestra parte de cada harvest del CLM + recompensas" : p.rendMedido > 0.0005 ? `medido ${usd(p.rendMedido, 3)} + estimado ${usd(p.rendEstimado, 3)} (medición en curso)` : "estimado: valor × APY total de Beefy, hora a hora";
       return `<div class="card works" style="margin:0">
         <h3 style="font-size:14px;margin:0">${title}</h3>${sub ? `<div class="mut" style="font-size:12px">${esc(sub)}${closed ? ` · ${closed} vault(s) anteriores cerrados` : ""}</div>` : ""}
         <div class="sent">${badge(vk)} Rendimiento ${sgnU(p.rend, 3)} · ${rate}</div>
