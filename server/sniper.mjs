@@ -361,14 +361,14 @@ export class Sniper {
    * recompensas). Reward pool: el mayor entre el APY de Beefy (ya incluye comisiones del CLM) y las comisiones medidas.
    * Filtros: ≥ SNIPER_HARVEST_MIN_PCT (1.5 %/día), TVL ≥ $2k, sin Stock Tokens. Pares con estable primero (los de WETH valen 0.7).
    */
-  harvestCandidates() {
-    const minPct = Number(process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5);
+  harvestCandidates(minPct = Number(process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5), why = null) {
     const out = [];
     for (const x of this.v.values()) {
       const tvl = x.tvl ?? x.apiTvl ?? 0;
-      if (tvl < 2000 || x.stock !== false) continue;
+      if (tvl < 2000) continue;
+      if (x.stock !== false) { if (why) why[x.stock === true ? "stock" : "sinSimbolos"] = (why[x.stock === true ? "stock" : "sinSimbolos"] ?? 0) + 1; continue; }
       const day = x.gov ? Math.max(x.Eapi ?? 0, x.fees?.covered >= 1 ? x.fees.perDay ?? 0 : 0) : x.Emeas6;
-      if (!(day > 0)) continue;
+      if (!(day > 0)) { if (why) why.sinMedicion = (why.sinMedicion ?? 0) + 1; continue; }
       const pct = (day / tvl) * 100;
       if (pct < minPct) continue;
       out.push({ id: x.id, name: x.name, token: x.token, tvl, perDay: +day.toFixed(2), pct: +pct.toFixed(2), usdPair: !!x.usdPair, score: pct * (x.usdPair ? 1 : 0.7), how: x.gov ? "APY/comisiones" : "ppfs 6 h" });
@@ -382,8 +382,9 @@ export class Sniper {
     const w = [...this.v.values()].filter((x) => x.watch).sort((a, b) => (b.Eapi ?? 0) - (a.Eapi ?? 0));
     const row = (x) => { const h1 = at(x.ser ?? [], HOUR), h6 = at(x.ser ?? [], 6 * HOUR); const d = (p) => (p?.tvl ? `${(((x.tvl ?? 0) / p.tvl - 1) * 100).toFixed(0)}%` : "—"); return `${x.name} TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)} (1h ${d(h1)}, 6h ${d(h6)}) E $${Math.round(x.Eapi ?? 0)}/d${x.Emeas != null ? ` medido $${Math.round(x.Emeas)}/d` : ""}${x.holders?.c ? ` top1 ${x.holders.c.top1}%` : x.holders ? " top1 …" : ""}${x.fees?.perDay != null ? ` comisiones $${Math.round(x.fees.perDay)}/d (APR ${x.fees.aprPct}%)` : ""}${x.gauge?.hoursLeft != null ? ` gauge ${x.gauge.hoursLeft.toFixed(0)}h` : ""}`; };
     const fx = this.topFees(5).map((x) => `${x.name} $${Math.round(x.fees.perDay)}/d APR ${x.fees.aprPct}% TVL $${Math.round(x.tvl ?? x.apiTvl ?? 0)}`).join(" | ");
-    const hv = this.harvestCandidates().slice(0, 5).map((c) => `${c.name} ${c.pct}%/día ($${Math.round(c.perDay)}/d, TVL $${Math.round(c.tvl)}, ${c.how})`).join(" | ");
-    return `${hv ? `cosecha (≥ ${process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5} %/día): ${hv} · ` : ""}radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}${fx ? ` · comisiones medidas 24 h (top): ${fx}` : ""}`;
+    const why = {}, all = this.harvestCandidates(0, why), minPct = Number(process.env.SNIPER_HARVEST_MIN_PCT ?? 1.5);
+    const hv = all.slice(0, 6).map((c) => `${c.pct >= minPct ? "✓" : "·"} ${c.name} ${c.pct}%/día ($${Math.round(c.perDay)}/d, TVL $${Math.round(c.tvl)}, ${c.how})`).join(" | ");
+    return `cosecha (entra ≥ ${minPct} %/día): ${hv || "sin datos"}${Object.keys(why).length ? ` · excluidos ${JSON.stringify(why)}` : ""} · radar · ${this.v.size} vaults CLM, ${w.length} vigilados (E ≥ $${this.minE}/día) · ${w.map(row).join(" | ")}${fx ? ` · comisiones medidas 24 h (top): ${fx}` : ""}`;
   }
   /** CLM con más comisiones medidas en 24 h (día completo escaneado y precios conocidos), sin repetir CLM. */
   topFees(n = 10) {
