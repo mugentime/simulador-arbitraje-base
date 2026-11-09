@@ -652,10 +652,10 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 25 } = {}) {
     const tokens = [r.t0 ?? (r.usdcIs0 ? N.stable : r.x), r.t1 ?? (r.usdcIs0 ? r.x : N.stable)];
     st.strategy ??= (await call(s, r.clm, "strategy"))[0];
     const head = await s.provider.getBlockNumber();
-    if (st.from == null || st.v !== 3) {
+    if (st.from == null || st.v !== 4) {
       const [b1, b0] = await Promise.all([s.provider.getBlock(head), s.provider.getBlock(Math.max(0, head - 20000))]);
       const bt = Math.max(0.05, (b1.timestamp - b0.timestamp) / Math.max(1, b1.number - b0.number));
-      Object.assign(st, { v: 3, from: Math.max(0, head - Math.ceil((Date.now() - (sinceMs ?? Date.now())) / 1000 / bt * 1.1)), hv: [], sup: [], mine: [], span: 20000 });
+      Object.assign(st, { v: 4, vIn: "0", from: Math.max(0, head - Math.ceil((Date.now() - (sinceMs ?? Date.now())) / 1000 / bt * 1.1)), hv: [], sup: [], mine: [], span: 20000 });
     }
     const wrap = lc(r.vault) !== lc(r.clm) ? r.vault : null; // reward pool / vault que envuelve el CLM
     const logs = (f) => s.provider.getLogs(f);
@@ -682,6 +682,12 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 25 } = {}) {
       if (wrap && !r.gov && (wOut.length || wIn.length)) pp = (await call(s, r.vault, "getPricePerFullShare"))[0];
       for (const l of cIn) st.mine.push({ b: l.blockNumber, d: String(amt(l)) });
       for (const l of cOut) st.mine.push({ b: l.blockNumber, d: String(-amt(l)) });
+      // vault que compone recompensas (no-gov): CLM neto que metimos al vault, para medir lo que creció por el ppfs
+      if (wrap && !r.gov) {
+        const top = (l, i) => lc(ethers.getAddress(ethers.dataSlice(l.topics[i], 12)));
+        for (const l of cOut) if (top(l, 2) === lc(wrap)) st.vIn = String(BigInt(st.vIn ?? "0") + amt(l));
+        for (const l of cIn) if (top(l, 1) === lc(wrap)) st.vIn = String(BigInt(st.vIn ?? "0") - amt(l));
+      }
       for (const l of wIn) st.mine.push({ b: l.blockNumber, d: String(amt(l) * pp / 10n ** 18n) });
       for (const l of wOut) st.mine.push({ b: l.blockNumber, d: String(-amt(l) * pp / 10n ** 18n) });
       st.from = to + 1;
@@ -700,12 +706,23 @@ export async function harvestFees(s, id, st, { sinceMs, budget = 25 } = {}) {
       tot0 += BigInt(e.f0); tot1 += BigInt(e.f1);
       if (ts > 0n && sh > 0n) { my0 += BigInt(e.f0) * sh / ts; my1 += BigInt(e.f1) * sh / ts; n++; }
     }
-    const usd = (await tokenValue(s, tokens[0], my0)) + (await tokenValue(s, tokens[1], my1));
+    let usd = (await tokenValue(s, tokens[0], my0)) + (await tokenValue(s, tokens[1], my1));
+    // recompensas compuestas por el vault (no-gov): CLM que vale hoy nuestra parte del vault − CLM neto que metimos
+    let vaultGain = 0n;
+    if (wrap && !r.gov && st.vIn != null) {
+      const [vs] = await call(s, r.vault, "balanceOf", [s.me]), [pps] = await call(s, r.vault, "getPricePerFullShare");
+      const g = vs * pps / 10n ** 18n - BigInt(st.vIn);
+      if (g > 0n && supNow > 0n) {
+        const [a0, a1] = await call(s, r.clm, "balances");
+        vaultGain = (await tokenValue(s, tokens[0], a0 * g / supNow)) + (await tokenValue(s, tokens[1], a1 * g / supNow));
+        usd += vaultGain;
+      }
+    }
     st.last = { n, all: st.hv.length, my0: String(my0), my1: String(my1), tot0: String(tot0), tot1: String(tot1) };
-    if (!st.diagDone && st.from > head) {
-      st.diagDone = true;
+    if (st.diagV !== 4 && st.from > head) {
+      st.diagV = 4;
       const tv = (await tokenValue(s, tokens[0], tot0)) + (await tokenValue(s, tokens[1], tot1));
-      s.diag?.(`comisiones medidas ${id}: ${st.hv.length} harvests desde el primer depósito (${n} con participación nuestra) · CLM entero cobró ${(Number(tv) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} · nuestra parte ${(Number(usd) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} · movimientos de supply ${st.sup.length}, nuestros ${st.mine.length}`);
+      s.diag?.(`comisiones medidas ${id}: ${st.hv.length} harvests desde el primer depósito (${n} con participación nuestra) · CLM entero cobró ${(Number(tv) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} · nuestra parte ${(Number(usd - vaultGain) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym}${wrap && !r.gov ? ` · recompensas compuestas por el vault ${(Number(vaultGain) / 10 ** (N.stableDec ?? 18)).toPrecision(4)} ${N.stableSym} (CLM neto metido ${st.vIn ?? "?"})` : ""} · movimientos de supply ${st.sup.length}, nuestros ${st.mine.length}`);
     }
     return { usd, n, behindBlocks: Math.max(0, head - st.from + 1), approx: 0 };
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
