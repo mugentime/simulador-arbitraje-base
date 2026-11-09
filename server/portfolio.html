@@ -651,6 +651,15 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     try { bd = await get(`${BASE}/api/beefy-dashboard`, 120000); bdErr = null; } catch (e) { bdErr = e.message; }
     renderBeefyDash();
   }
+  // APY con el mismo formato que Beefy: < 1000 % con 2 decimales, luego agrupado, y desde 1 millón con sufijo (M, B, T, Qa…); fuera de escala 🔥
+  const SCL = { 6: "M", 9: "B", 12: "T", 15: "Qa", 18: "Qi", 21: "Sx", 24: "Sp", 27: "O", 30: "N" };
+  const bApy = (pct) => {
+    if (!fin(pct)) return "?"; const v = +pct; if (v === 0) return "0%";
+    let val = v, unit = "";
+    const e = Math.floor(Math.log10(Math.abs(v)));
+    if (e >= 6) { const raw = Math.trunc(e / 3) * 3; if (raw > 30) return "🔥"; unit = SCL[raw]; val = v / 10 ** raw; }
+    return val.toLocaleString("en-US", { minimumFractionDigits: Math.abs(val) < 1000 ? 2 : 0, maximumFractionDigits: Math.abs(val) < 1000 ? 2 : 0 }) + unit + "%";
+  };
   function renderBeefyDash() {
     if (!bd) { if (bdErr) $("bd").innerHTML = `<div class="err">${esc(bdErr)}</div>`; return; }
     const S = bd.summary;
@@ -664,7 +673,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       const open = bdOpen.has(r.id);
       const pnl = r.pnlUsd === null ? '<span class="mut">sin historial</span>' : `${sgnU(r.pnlUsd)}<span class="sub2">${sgnP(r.pnlPct, 2)}</span>`;
       let tr = `<tr class="r" data-id="${esc(r.id)}"><td class="name"><b>${esc(r.name)}</b> <span class="tag">${esc(CH[r.chain] ?? r.chain)}</span>${r.status !== "active" ? ` <span class="tag warn">${esc(r.status)}</span>` : ""}<span class="sub2">${esc(r.platform ?? "")}${r.type === "gov" ? " · reward pool" : r.kind === "clm" ? " · CLM" : ""}</span></td>` +
-        `<td class="n hm">${r.atDepositUsd === null ? "—" : usd(r.atDepositUsd)}</td><td class="n">${usd(r.nowUsd)}</td><td class="n hm">${r.yieldUsd === null ? "—" : usd(r.yieldUsd)}</td><td class="n">${pnl}</td><td class="n">${apyTxt(r.apyPct)}</td><td class="n hm">${usd(r.dailyUsd)}</td></tr>`;
+        `<td class="n hm">${r.atDepositUsd === null ? "—" : usd(r.atDepositUsd)}</td><td class="n">${usd(r.nowUsd)}</td><td class="n hm">${r.yieldUsd === null ? "—" : usd(r.yieldUsd)}</td><td class="n">${pnl}</td><td class="n">${bApy(r.apyPct)}</td><td class="n hm">${usd(r.dailyUsd)}</td></tr>`;
       if (open) {
         const y = r.yield ?? {};
         const t = r.tokensAtDeposit; const sy = (r.assets ?? []);
