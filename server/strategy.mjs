@@ -422,11 +422,16 @@ export class Strategy {
     for (const [key, p] of Object.entries(st.pos)) {
       if (p.status !== "abierta" || now - (p.checkAt ?? 0) < 15 * 60_000) continue;
       p.checkAt = now;
+      // posiciones en Stock Tokens de Robinhood (entraron antes del filtro): sin acciones automáticas; se manejan a mano
+      if (sn.info(p.id)?.stock === true) { p.status = "manual"; p.why = "Stock Token: sin acciones automáticas"; await this.diag(`sniper: ${p.kind} en ${p.id} es de un Stock Token · queda fuera del manejo automático (revisar a mano)`); return true; }
       let v; try { v = await vaultValue(this, p.id); } catch { continue; }
       // solo nuestra parte: participaciones de esta posición / participaciones de la wallet en el vault (otras estrategias depositan ahí)
       const frac = p.vshares && v.vshares > 0n ? Math.min(1, Number(BigInt(p.vshares) * 1_000_000n / v.vshares) / 1e6) : 1;
       const val = (fmt(v.value) + fmt(v.pending)) * frac, basis = fmt(p.basis);
       if (!(basis > 0)) continue;
+      if (v.shares > 0n && v.value === 0n) { if (!p.noValueLogged) { p.noValueLogged = true; await this.diag(`sniper: ${p.id} no se puede valuar (sin ruta de precio); no se toma ninguna salida automática`); } continue; }
+      if (val < basis * 0.5 && !p.confirmLow) { p.confirmLow = true; continue; } // una caída > 50 % se confirma en la siguiente revisión antes de salir
+      if (val >= basis * 0.5) p.confirmLow = false;
       p.samples = [...(p.samples ?? []), [now, +val.toPrecision(8)]].slice(-400);
       const pnl = val / basis - 1; p.pnlPct = +(pnl * 100).toFixed(2);
       const s6 = p.samples.find(([t]) => t >= now - 6 * H);

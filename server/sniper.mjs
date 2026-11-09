@@ -121,8 +121,13 @@ export class Sniper {
     const get = async (path) => { const r = await fetch(API + path, { signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`); return r.json(); };
     const [vs, gs, tvl, apy, toks, prices] = await Promise.all([get("/vaults"), get("/gov-vaults").catch(() => []), get("/tvl"), get("/apy"), get("/tokens").catch(() => ({})), get("/prices").catch(() => ({}))]);
     // precio y decimales por dirección de token de esta cadena (para valuar las comisiones medidas)
-    this.px = {};
-    for (const t of Object.values(toks?.[this.chain] ?? {})) if (t?.address && ethers.isAddress(t.address)) { const pr = Number(prices?.[t.oracleId]); if (pr > 0) this.px[t.address.toLowerCase()] = { p: pr, d: Number(t.decimals ?? 18) }; }
+    this.px = {}; this.stockAddrs = new Set();
+    for (const [key, t] of Object.entries(toks?.[this.chain] ?? {})) {
+      if (!t?.address || !ethers.isAddress(t.address)) continue;
+      const pr = Number(prices?.[t.oracleId]); if (pr > 0) this.px[t.address.toLowerCase()] = { p: pr, d: Number(t.decimals ?? 18) };
+      // los Stock Tokens de Robinhood se listan con sufijo "rh" (DELLrh, GLDrh, NVDArh…)
+      if (this.chain === "robinhood" && /rh$/i.test(String(key)) || this.chain === "robinhood" && /rh$/i.test(String(t.symbol ?? ""))) this.stockAddrs.add(t.address.toLowerCase());
+    }
     const tv = {}; for (const b of Object.values(tvl ?? {})) for (const [k, x] of Object.entries(b ?? {})) tv[k] = Number(x) || 0;
     const list = [...vs, ...gs.map((g) => ({ ...g, type: "gov" }))].filter((v) => v.chain === this.chain && v.status === "active" && v.type !== "cowcentrated" && /-cow-/.test(v.id) && ethers.isAddress(v.earnContractAddress ?? ""));
     const amts = await core.multicall(ethers, this.p, list.map((v) => [v.earnContractAddress, I.encodeFunctionData(v.type === "gov" ? "totalSupply" : "balance")]));
@@ -149,13 +154,17 @@ export class Sniper {
       noTok.forEach((x, i) => { try { if (rw[i]) x.depTokens = [...W.decodeFunctionResult("wants", rw[i])]; } catch {} });
     }
     const need = [...this.v.values()].filter((x) => x.syms === undefined && x.depTokens?.length && (x.Eapi >= this.minE || (x.apiTvl ?? 0) >= 2000));
+    // Stock Token si: algún asset de la API termina en "rh" (DELLrh, GLDrh: así los nombra Beefy), o su dirección está en la lista
+    // de tokens "rh" de Beefy, o su símbolo on-chain termina en "rh". Sin assets ni tokens conocidos: no apto (undefined).
+    const markStock = () => { if (this.chain !== "robinhood") return; for (const x of this.v.values()) { const byAsset = (x.assets ?? []).some((a) => /rh$/i.test(String(a))); const byAddr = (x.depTokens ?? []).some((a) => this.stockAddrs.has(String(a).toLowerCase())); const bySym = (x.syms ?? []).some((y) => /rh$/i.test(y ?? "")); x.stock = byAsset || byAddr || bySym ? true : (x.assets?.length || x.depTokens?.length) ? false : undefined; } };
     if (need.length) {
       const S = new ethers.Interface(["function symbol() view returns (string)"]);
       const flat = need.flatMap((x) => x.depTokens.map((t) => [t, S.encodeFunctionData("symbol")]));
       const r = await core.multicall(ethers, this.p, flat).catch(() => []);
       let k = 0;
-      for (const x of need) { x.syms = x.depTokens.map(() => { const raw = r[k++]; try { return raw ? S.decodeFunctionResult("symbol", raw)[0] : null; } catch { return null; } }); x.stock = this.chain === "robinhood" && x.syms.some((y) => /rh$/i.test(y ?? "")); }
+      for (const x of need) { x.syms = x.depTokens.map(() => { const raw = r[k++]; try { return raw ? S.decodeFunctionResult("symbol", raw)[0] : null; } catch { return null; } }); }
     }
+    markStock();
     // conjunto vigilado: los de mayores emisiones (y todo lo que ya tenía alerta abierta)
     const ranked = [...this.v.values()].filter((x) => x.Eapi >= this.minE && x.apiTvl >= 500).sort((a, b) => b.Eapi - a.Eapi);
     const watch = new Set(ranked.slice(0, this.watchN).map((x) => x.id));

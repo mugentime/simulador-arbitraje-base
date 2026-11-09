@@ -88,3 +88,19 @@ import { ethers } from "ethers";
   assert.equal(h[0].pct, 3.49); assert.equal(h[1].pct, 1.81);
   console.log("test_sniper cosecha ok");
 }
+
+// Stock Tokens de Robinhood: por assets de la API ("DELLrh") aunque el nombre del vault no lo diga ("USDG-DELL")
+{
+  const s4 = new Sniper({ provider: null, store: null, diag: () => {}, chainKey: "robinhood" });
+  s4.stockAddrs = new Set(["0x0000000000000000000000000000000000000d11"]);
+  s4.v.set("dell", { id: "dell", name: "USDG-DELL", assets: ["USDG", "DELLrh"] });
+  s4.v.set("gld", { id: "gld", name: "GLD-USDG", assets: ["GLD", "USDG"], depTokens: ["0x0000000000000000000000000000000000000D11"] });
+  s4.v.set("ai", { id: "ai", name: "AI-USDG", assets: ["AI", "USDG"] });
+  s4.v.set("x", { id: "x", name: "?" });
+  // mismo cálculo que refreshList
+  const src = (await import("node:fs")).readFileSync(new URL("../server/sniper.mjs", import.meta.url), "utf8");
+  assert.ok(src.includes("const byAsset = (x.assets ?? []).some((a) => /rh$/i.test(String(a)))"));
+  for (const x of s4.v.values()) { const byAsset = (x.assets ?? []).some((a) => /rh$/i.test(String(a))); const byAddr = (x.depTokens ?? []).some((a) => s4.stockAddrs.has(String(a).toLowerCase())); x.stock = byAsset || byAddr ? true : (x.assets?.length || x.depTokens?.length) ? false : undefined; }
+  assert.equal(s4.v.get("dell").stock, true); assert.equal(s4.v.get("gld").stock, true); assert.equal(s4.v.get("ai").stock, false); assert.equal(s4.v.get("x").stock, undefined);
+  console.log("test_sniper stock ok");
+}
