@@ -102,6 +102,11 @@ const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (u
 
 /** Cuánto hace falta en destino (unidades humanas) para llegar al objetivo, con 2 % de margen; 0 si ya alcanza. */
 // recargas de menos de TOPUP_MIN_USD ($3) no se hacen: la comisión fija de Relay las vuelve caras (y el tope de comisión las rechaza)
+/** TOPUP_ONCE="robinhood:35@r1" → { chainKey, usd, tag } (o null). */
+export function parseTopupOnce(v) {
+  const m = /^\s*([\w-]+)\s*:\s*([0-9]*\.?[0-9]+)\s*@\s*([\w.-]+)\s*$/.exec(v ?? "");
+  return m && Number(m[2]) > 0 ? { chainKey: m[1], usd: Number(m[2]), tag: m[3] } : null;
+}
 export function topupNeed(haveUsd, targetUsd, minUsd = Number(process.env.TOPUP_MIN_USD ?? 3)) { const gap = targetUsd - haveUsd; return gap <= 0 || gap < minUsd ? 0 : +(gap * 1.02).toFixed(2); }
 
 export class Topup {
@@ -147,6 +152,17 @@ export class Topup {
         haveUsd = Number(ethers.formatUnits(ERC20.decodeFunctionResult("balanceOf", rawTok)[0], dec)); // estable ≈ $1
       }
       this.s.last = { at: new Date().toISOString(), tokenUsd: haveUsd, nativeUsd: natHaveUsd };
+      // envío único (TOPUP_ONCE="<cadena>:<usd>@<etiqueta>"): manda exactamente <usd> desde el USDC de Base (nunca desde ETH);
+      // espera a que haya USDC suficiente (p. ej. lo que dejan los cierres de EXIT_VAULTS). No cuenta para TOPUP_MAX_PER_DAY.
+      const once = parseTopupOnce(process.env.TOPUP_ONCE);
+      if (once && once.chainKey === this.chainKey && !(this.s.once ??= {})[once.tag]) {
+        const usdcBal = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) }));
+        if (usdcBal >= ethers.parseUnits(once.usd.toFixed(6), 6)) {
+          const n = this.s.sends.length;
+          await this.send({ kind: "único", usd: once.usd, currency: this.native ? NATIVE : this.token }, ctx);
+          if (this.s.sends.length > n) this.s.once[once.tag] = new Date().toISOString();
+        } else await this.diag(`recarga ${this.chainKey}: envío único ${once.tag} de $${once.usd} esperando USDC en Base (hay ${ethers.formatUnits(usdcBal, 6)})`);
+      }
       const today = new Date().toISOString().slice(0, 10);
       const sentToday = this.s.sends.filter((x) => x.at.startsWith(today)).length;
       const jobs = [];

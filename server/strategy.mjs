@@ -262,6 +262,76 @@ export class Strategy {
     return true;
   }
 
+  /**
+   * Cierres únicos (EXIT_VAULTS="<id>,<id>,…@<etiqueta>"): retira cada vault por completo y deja todo en el estable de la
+   * cadena (en la wallet; de ahí lo toma TOPUP_ONCE u otra estrategia). Un vault por llamada; pasos reanudables. true si actuó.
+   */
+  async exitList(ctx) {
+    const m = /^\s*(.+?)\s*@\s*([\w.-]+)\s*$/.exec(process.env.EXIT_VAULTS ?? "");
+    if (!m) return false;
+    const ids = m[1].split(",").map((x) => x.trim()).filter(Boolean), tag = m[2];
+    const st = ((this.s.exits ??= {})[tag] ??= { done: {}, errors: {} });
+    const now = Date.now();
+    for (const id of ids) {
+      if (st.done[id] || st.errors[id]?.final) continue;
+      const er = st.errors[id];
+      if (er?.retryAt && now < er.retryAt) continue;
+      this.run = this.s.runs[`${this.label}-exit-${tag}-${id}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", exitTag: tag };
+      this.vaultId = id; this.keepStable = true;
+      try {
+        await exitClm(this, ctx);
+        this.addClaimed(id, Number(ethers.formatUnits(BigInt(this.run.claimedStable ?? "0"), this.net.stableDec)) * this.stableUsd());
+        this.run.status = "hecho"; this.run.endedAt = Date.now();
+        st.done[id] = { at: new Date().toISOString(), out: this.run.usdcOut ?? "0" }; delete st.errors[id];
+        await this.diag(`estrategia cierre ${tag}: ${id} cerrado · ${ethers.formatUnits(this.run.usdcOut ?? "0", this.net.stableDec)} ${this.net.stableSym} en la wallet`);
+      } catch (e) {
+        const msg = (e.shortMessage || e.message || String(e)).slice(0, 240);
+        const x = (st.errors[id] ??= { n: 0 }); x.n++; x.msg = msg;
+        if (x.n <= 30) { x.retryAt = now + (e.retry ? 60_000 : 600_000); if (x.n === 1 || x.n % 10 === 0) await this.diag(`estrategia cierre ${tag}: ${id} reintenta (${x.n}) · ${msg}`); }
+        else { x.final = true; this.run.status = "error"; this.run.error = msg; await this.diag(`estrategia cierre ${tag}: ${id} se detiene tras 30 intentos · ${msg}`); }
+      } finally { this.vaultId = null; this.keepStable = false; }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Depósitos únicos (DEPOSIT_ONCE="<id o nombre>@usd,…" + DEPOSIT_ONCE_TAG=<etiqueta>): un solo depósito por vault y etiqueta,
+   * con el mismo flujo que el DCA. Sin fondos → reintenta cada hora (p. ej. mientras llega el puente). true si actuó.
+   */
+  async depositOnce(ctx) {
+    const tag = process.env.DEPOSIT_ONCE_TAG, list = parseDcaExtra(process.env.DEPOSIT_ONCE, this.dcaUsdCfg);
+    if (!tag || !list.length) return false;
+    const st = ((this.s.once ??= {})[tag] ??= {});
+    const now = Date.now();
+    for (const e of list) {
+      const key = e.spec.replace(/[^\w.-]+/g, "_");
+      const d = (st[key] ??= { spec: e.spec, usd: e.usd, status: "pendiente" });
+      if (d.status === "hecho" || d.status === "error") continue;
+      if (d.retryAt && now < d.retryAt) continue;
+      if (!d.vaultId) {
+        try { d.vaultId = await resolveVaultSpec(e.spec, this.net.beefy); await this.diag(`estrategia depósito único ${tag}: "${e.spec}" → ${d.vaultId} · $${e.usd}`); }
+        catch (err) { d.retryAt = now + 3600_000; await this.diag(`estrategia depósito único ${tag}: no se encontró "${e.spec}" (${err.message}); reintento en 1 h`); continue; }
+      }
+      this.run = this.s.runs[`${this.label}-once-${tag}-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: e.usd, once: tag };
+      this.vaultId = d.vaultId; this.dcaUsd = e.usd; this.sweepStable = undefined;
+      this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
+      try {
+        await enterClm(this, ctx);
+        this.run.status = "hecho"; this.run.endedAt = Date.now(); d.status = "hecho"; d.at = new Date().toISOString(); d.retryAt = 0;
+        await this.diag(`estrategia depósito único ${tag}: $${e.usd} en ${d.vaultId} hecho · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
+      } catch (err) {
+        const msg = (err.shortMessage || err.message || String(err)).slice(0, 300);
+        if (err.retry && (d.retries = (d.retries ?? 0) + 1) <= 60) { d.retryAt = now + 60_000; if (d.retries === 1 || d.retries % 10 === 0) await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} reintento ${d.retries} en 1 min · ${msg}`); }
+        else if (err.noFunds) { d.retryAt = now + 3600_000; if (!d.noFundsLogged) { d.noFundsLogged = true; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} · ${msg} · reintento cada hora hasta que haya fondos`); } }
+        else if ((d.fails = (d.fails ?? 0) + 1) < 3) { d.retryAt = now + 3600_000; d.retries = 0; this.run.error = msg; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} falló (intento ${d.fails} de 3) · ${msg} · reintento en 1 h`); }
+        else { d.status = "error"; d.error = msg; this.run.status = "error"; this.run.error = msg; await this.diag(`estrategia depósito único ${tag}: ${d.vaultId} falló 3 veces, se abandona · ${msg}`); }
+      } finally { this.vaultId = null; this.dcaUsd = null; }
+      return true;
+    }
+    return false;
+  }
+
   /** Al arrancar: verifica (sin enviar nada) que el vault del DCA principal y los de DCA_EXTRA se puedan usar. */
   async checkVaults() {
     const ids = [];
@@ -439,7 +509,7 @@ export class Strategy {
       this.busy = true; this.busySince = Date.now(); this.stuckLogged = false;
       try {
         if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
-        this.stage = "migración"; const m = await this.migrate(ctx);
+        this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx));
         this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
         this.stage = "dca"; if (!m && !x) await this.dca(ctx);
         this.stage = "listo";
