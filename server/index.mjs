@@ -20,6 +20,7 @@ import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy } from "./strategy.mjs";
 import { Bridger, Topup, topupTargets } from "./bridge.mjs";
+import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
 import { MempoolWatcher } from "./mempool.mjs";
@@ -209,6 +210,7 @@ let lpLending = null;
 let revertLend = null;
 let topups = []; // TOPUP_TARGETS / TOPUP_CHAIN: mantiene fondeadas otras cadenas desde Base (Relay)
 let bridger = null; // BRIDGE_RUN: gas nativo de esta cadena → USDC en Base (Relay)
+let sniper = null; // radar de éxodos de TVL (doc 22); SNIPER=0 lo apaga
 let strategy = null; // estrategia de capital (STRATEGY + STRATEGY_RUN), una ejecución por etiqueta
 let fast = null;
 let events = null;
@@ -321,6 +323,8 @@ async function dcaOnlyLoop(exec, p) {
     if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
     else { bridger.x = exec; bridger.provider = p; }
   }
+  if (!sniper) { sniper = new Sniper({ provider: p, store, diag, chainKey: CHAIN_CFG.key }); await sniper.init(); }
+  else sniper.p = p;
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
   let n = 0, lastTickErr = null;
@@ -329,6 +333,7 @@ async function dcaOnlyLoop(exec, p) {
     const ctx = { ethUsd, dcaOnly: true };
     if (++n % 60 === 0) await exec.refreshBalance().catch(() => {});
     const rs = await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
+    sniper?.onBlock(ctx).catch(() => {}); // en paralelo: el radar no frena el DCA
     for (const x of rs) if (x.status === "rejected") { const m = String(x.reason?.shortMessage || x.reason?.message || x.reason).slice(0, 200); if (m !== lastTickErr) { lastTickErr = m; await diag(`ciclo DCA: error no controlado · ${m}`); } }
     await new Promise((r) => setTimeout(r, tick));
   }
@@ -425,6 +430,9 @@ const server = http.createServer(async (req, res) => {
     const addr = q.get("address") || executor?.p1?.wallet;
     try { res.writeHead(200, headers); return res.end(J(await beefyWallet(addr, { provider: executor?.provider }))); }
     catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
+  }
+  if (req.url.startsWith("/api/sniper")) {
+    res.writeHead(200, headers); return res.end(JSON.stringify(sniper ? sniper.view() : { ready: false }));
   }
   if (req.url.startsWith("/api/beefy-tokens")) {
     const q = new URL(req.url, "http://x").searchParams;
