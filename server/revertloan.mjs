@@ -394,8 +394,10 @@ export class RevertLoan {
     if (li.debt > 0n) { this.s.minHf = this.s.minHf === null ? hf : Math.min(this.s.minHf, hf); this.s.maxHf = this.s.maxHf === null ? hf : Math.max(this.s.maxHf, hf); }
     if (Date.now() - this.lastLine > 30 * 60_000) { this.lastLine = Date.now(); console.log(`${new Date().toISOString()} ${this.line()}`); }
 
+    // 0) posición del contrato sin deuda (p. ej. migración o re-centrado cortados por un reinicio): vuelve a pedir el máximo
+    if (viaManager && li.debt === 0n && !this.s.closed && process.env.RVL_LOAN_CLOSE !== "1") { await this.borrowMax(id, "préstamo"); return; }
     // 1) salud
-    if (li.debt > 0n && (hf < this.cfg.trigger || li.liquidationCost > 0n)) {
+    if (li.debt > 0n &&(hf < this.cfg.trigger || li.liquidationCost > 0n)) {
       const need = repayFor(li.collateralValue, li.debt, this.cfg.target);
       await this.note(`salud ${hf.toFixed(4)} < ${this.cfg.trigger}${li.liquidationCost > 0n ? " (¡liquidable!)" : ""} · ETH $${st.p.toFixed(2)} · repago necesario $${ethers.formatUnits(need, 6)}`);
       if (viaManager && await this.flashDeleverage(id, need, li, "salud baja")) return;
