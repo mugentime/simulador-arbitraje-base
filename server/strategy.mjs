@@ -307,6 +307,7 @@ export class Strategy {
     for (const e of list) {
       const key = e.spec.replace(/[^\w.-]+/g, "_");
       const d = (st[key] ??= { spec: e.spec, usd: e.usd, status: "pendiente" });
+      if (d.fails && !d.extraFix) { d.extraFix = true; d.fails = 0; d.retryAt = 0; } // corridas previas al arreglo de pares sin estable
       if (d.status === "hecho" || d.status === "error") continue;
       if (d.retryAt && now < d.retryAt) continue;
       if (!d.vaultId) {
@@ -314,6 +315,7 @@ export class Strategy {
         catch (err) { d.retryAt = now + 3600_000; await this.diag(`estrategia depósito único ${tag}: no se encontró "${e.spec}" (${err.message}); reintento en 1 h`); continue; }
       }
       this.run = this.s.runs[`${this.label}-once-${tag}-${key}`] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: e.usd, once: tag, extra: true };
+      this.run.extra = true;
       this.vaultId = d.vaultId; this.dcaUsd = e.usd; this.sweepStable = undefined;
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
       try {
