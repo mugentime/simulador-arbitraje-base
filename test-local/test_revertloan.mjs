@@ -1,7 +1,7 @@
 // Pruebas de las funciones puras de server/revertloan.mjs y de la decisión de desapalancar con un vault/pool simulados.
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { deleverageValue, priceFromSqrt, rangeTicks, borrowable, repayFor, health, amountsFor, needsRecenter, rebalanceSwap, RevertLoan, RVL } from "../server/revertloan.mjs";
+import { deleverageValue, priceFromSqrt, rangeTicks, borrowable, repayFor, health, amountsFor, needsRecenter, recenterDue, rebalanceSwap, RevertLoan, RVL } from "../server/revertloan.mjs";
 
 // precio desde sqrtPriceX96 (tick −199721 ≈ $2,121.7 del pool real WETH-USDC 0.3 %)
 const sq = BigInt(Math.floor(Math.sqrt(1.0001 ** -199721) * 2 ** 96));
@@ -95,3 +95,11 @@ assert.equal(needsRecenter(-200800, -200700, -198720), true);
   assert.equal(deleverageValue(40, 31, 20, 1.06), 0); // ya sano (salud 1.55)
 }
 console.log("test_revertloan: ok");
+
+// re-centrado por permanencia fuera de rango
+assert.equal(recenterDue(true, 1, 10_000_000, 60), false);
+assert.equal(recenterDue(false, null, 10_000_000, 60), false);
+assert.equal(recenterDue(false, 1000, 1000 + 59 * 60_000, 60), false);
+assert.equal(recenterDue(false, 1000, 1000 + 60 * 60_000, 60), true);
+assert.equal(needsRecenter(-198850, -200700, -198720, 1), false); // cerca del borde pero dentro: ya no re-centra
+console.log("recenterDue OK");

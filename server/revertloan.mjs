@@ -82,6 +82,11 @@ export function needsRecenter(tick, lower, upper, at = 0.8) {
   const c = (lower + upper) / 2, half = (upper - lower) / 2;
   return Math.abs(tick - c) > at * half;
 }
+/** ¿Ya toca re-centrar? Solo tras `outMin` minutos seguidos fuera de rango (si regresa antes, la pérdida impermanente se revierte sola). */
+export function recenterDue(inRange, outSince, now, outMin) {
+  if (inRange || !outSince) return false;
+  return now - outSince >= outMin * 60_000;
+}
 /** Swap para pasar de (x0, x1) crudos al reparto que pide el rango nuevo al precio actual. Devuelve {sellToken0, amountIn, minOut}. */
 export function rebalanceSwap(x0, x1, sqrtP, newLower, newUpper, slipBps = 60) {
   const P = sqrtP * sqrtP; // token1 crudo por token0 crudo
@@ -111,7 +116,8 @@ export class RevertLoan {
       minEth: ethers.parseEther(process.env.RVL_LOAN_MIN_ETH ?? "0.003"), // piso de gas en un rescate
       slipBps: Number(process.env.RVL_LOAN_SLIP_BPS ?? 100),
       manager: process.env.RVL_LOAN_MANAGER !== "0",
-      recenterAt: Number(process.env.RVL_LOAN_RECENTER_AT ?? 0.8),
+      recenterAt: Number(process.env.RVL_LOAN_RECENTER_AT ?? 1), // <1: re-centra antes del borde; 1: solo fuera de rango
+      recenterOutMin: Number(process.env.RVL_LOAN_RECENTER_OUT_MIN ?? 60), // minutos seguidos fuera de rango antes de re-centrar
       recenterMinHf: Number(process.env.RVL_LOAN_RECENTER_MIN_HF ?? 1.08),
       recenterCooldownMin: Number(process.env.RVL_LOAN_RECENTER_COOLDOWN_MIN ?? 30),
       payoutTo: process.env.RVL_LOAN_PAYOUT_TO || null, // a dónde manda el contrato el USDC prestado (default: esta wallet)
@@ -415,7 +421,11 @@ export class RevertLoan {
     const want = rangeTicks(st.tick, this.cfg.rangePct), wantHalf = (want.upper - want.lower) / 2;
     const curHalf = pos ? (Number(pos.tickUpper) - Number(pos.tickLower)) / 2 : wantHalf;
     const widthChange = Math.abs(curHalf - wantHalf) / wantHalf > 0.25; // cambió RVL_LOAN_RANGE_PCT
-    if (viaManager && pos && li.debt > 0n && (widthChange || needsRecenter(st.tick, Number(pos.tickLower), Number(pos.tickUpper), this.cfg.recenterAt))) {
+    const edge = pos ? needsRecenter(st.tick, Number(pos.tickLower), Number(pos.tickUpper), this.cfg.recenterAt) : false;
+    if (edge) { if (!this.s.outSince) { this.s.outSince = Date.now(); await this.note(`precio fuera del rango [${pos.tickLower}, ${pos.tickUpper}] (ETH $${st.p.toFixed(2)}) · espera ${this.cfg.recenterOutMin} min antes de re-centrar`); } }
+    else if (this.s.outSince) { await this.note(`precio volvió al rango tras ${((Date.now() - this.s.outSince) / 60_000).toFixed(0)} min · sin re-centrar`); this.s.outSince = null; }
+    const due = edge && recenterDue(false, this.s.outSince, Date.now(), this.cfg.recenterOutMin);
+    if (viaManager && pos && li.debt > 0n && (widthChange || due)) {
       const since = Date.now() - Math.max(this.s.lastRecenter ?? 0, this.s.lastRecenterTry ?? 0);
       if (since < this.cfg.recenterCooldownMin * 60_000) return;
       if (hf < this.cfg.recenterMinHf) {
@@ -426,6 +436,7 @@ export class RevertLoan {
       }
       await this.note(widthChange ? `cambio de ancho: ±${this.cfg.rangePct} % (rango actual [${pos.tickLower}, ${pos.tickUpper}]) → re-centra` : `precio ${inRange ? "cerca del borde" : "fuera"} del rango [${pos.tickLower}, ${pos.tickUpper}] (tick ${st.tick}, ETH $${st.p.toFixed(2)}) → re-centra`);
       await this.recenter(id, li, st, pos);
+      this.s.outSince = null;
     }
   }
 
