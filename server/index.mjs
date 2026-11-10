@@ -14,6 +14,7 @@ import { Liquidator } from "./liquidator.mjs";
 import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { RevertLoan } from "./revertloan.mjs";
+import { NeutralLp } from "./neutrallp.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { beefyDashboard, beefyDashLine } from "./beefydash.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
@@ -256,6 +257,7 @@ async function loop() {
       if (!revertLend) { revertLend = new RevertLend({ provider: p, logsProvider: logsProviderFor(p, url), store, diag }); await revertLend.init(); }
       else { revertLend.provider = p; revertLend.logs = logsProviderFor(p, url); }
       await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
+      await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
       if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
         if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
         else { strategy.x = exec; strategy.provider = p; }
@@ -317,6 +319,15 @@ async function nativeUsd() {
   } catch {}
   return nativeUsdCache.v;
 }
+let neutralLp = null;
+async function ensureNeutralLp(exec, p) {
+  if (CHAIN_CFG.key !== "base" || process.env.NLP === "0") return;
+  if (!neutralLp) {
+    if (!process.env.NLP_OPEN && !process.env.NLP_CLOSE_OLD && !(await store.get("nlp"))?.tokenId) return;
+    neutralLp = new NeutralLp({ executor: exec, provider: p, store, diag }); await neutralLp.init(); neutralLp.start();
+    await diag(`lp-neutral: activo · ${neutralLp.s.tokenId ? `vigila #${neutralLp.s.tokenId}` : `apertura ${neutralLp.cfg.tag} ($${neutralLp.cfg.usd})`} · cada ${neutralLp.cfg.everyS} s`);
+  } else { neutralLp.x = exec; neutralLp.provider = p; }
+}
 async function ensureRevertLoan(exec, p) {
   if (CHAIN_CFG.key !== "base" || process.env.RVL_LOAN === "0") return;
   if (!revertLoan) {
@@ -341,6 +352,7 @@ async function dcaOnlyLoop(exec, p) {
   else sniper.p = p;
   if (strategy) strategy.sniper = sniper; // F1–F3: la estrategia ejecuta lo que detecta el radar (SNIPER_TRADE=1)
   await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
+      await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
   let n = 0, lastTickErr = null;
@@ -461,6 +473,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url.startsWith("/api/needs")) {
     res.writeHead(200, headers); return res.end(JSON.stringify(strategy?.fundingNeed?.() ?? { needUsd: 0 }));
+  }
+  if (req.url.startsWith("/api/neutral-lp")) {
+    res.writeHead(200, headers); return res.end(J(neutralLp ? neutralLp.view() : { ready: false }));
   }
   if (req.url.startsWith("/api/revert-loan")) {
     res.writeHead(200, headers); return res.end(J(revertLoan ? revertLoan.view() : { ready: false }));
