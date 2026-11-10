@@ -17,6 +17,26 @@ export const BASE = {
   VAULT: "0x36AEAe0E411a1E28372e0d66f02E57744EbE7599", // Revert Lend V3Vault (Uniswap v3), activo USDC
   FEE: 500,
 };
+/** Gas pagado (en nativo, número) por las txs de una corrida; las txs viejas sin `fee` cuentan 0. */
+/**
+ * Salida de una posición de cosecha (pura; actualiza p.vaultPct, p.lowSince y p.betterSince). Devuelve el motivo o null.
+ * vp = rendimiento del vault / TVL en %/día (misma medida que la entrada; no incluye precio), rate = cambio de valor de nuestra
+ * posición por día (fracción; solo respaldo si el vault no tiene medición), best = mejor candidato libre de otro token.
+ * La salida por pérdida (≥ 10 %) se decide antes y no espera la permanencia mínima.
+ */
+export function harvestExitWhy(p, { now, age, vp, rate = null, best = null }, env = process.env) {
+  const H = 3600_000, minHold = Number(env.SNIPER_HARVEST_MIN_HOLD_H ?? 24) * H, exitPct = Number(env.SNIPER_HARVEST_EXIT_PCT ?? 0.5);
+  p.vaultPct = vp;
+  const low = vp != null ? vp < exitPct : rate !== null && rate * 100 < exitPct;
+  if (low) p.lowSince ??= now; else p.lowSince = null;
+  if (age >= minHold && p.lowSince && now - p.lowSince >= 2 * H) return vp != null ? `rendimiento del vault ${vp} %/día < ${exitPct} % por 2 h` : `rendimiento ${(rate * 100).toFixed(2)} %/día < ${exitPct} % (vault sin medición)`;
+  // rotación: otro vault (de otro token) paga ≥ 2× el nuestro durante 12 h, y solo tras la permanencia mínima
+  const mine = vp ?? 0;
+  if (best && mine > 0 && best.pct >= 2 * mine) p.betterSince ??= now; else p.betterSince = null;
+  if (age >= minHold && p.betterSince && now - p.betterSince >= 12 * H) return `rotación: ${best.name} paga ${best.pct} %/día vs ${mine.toFixed(2)} %`;
+  return null;
+}
+export const gasNative = (txs) => Number(ethers.formatEther((txs ?? []).reduce((a, t) => a + BigInt(t.fee ?? "0"), 0n)));
 const I = new ethers.Interface([
   "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)",
   "function unwrapWETH9(uint256 amountMinimum,address recipient) payable",
@@ -93,6 +113,10 @@ export class Strategy {
     // (p. ej. USDG en Robinhood) en lugar de ir a otro vault. Los DCA_EXTRA no se tocan.
     this.pauseMain = process.env.DCA_MAIN_PAUSE === "1";
     this.parkToken = process.env.PARK_TOKEN || null;
+    // CAZADOR DE APY ELIMINADO (Jose 2026-11-10: "no está generando resultados"; TENDIES −$7.7, UP-WETH −$8.2). Es el modo auto SIN
+    // vault fijo (Robinhood): ya no deposita, rota, sale ni reinvierte. El modo auto CON AUTO_PIN (DCA de ZEC en BSC) sigue igual.
+    // Los DCA_EXTRA y el sniper/cosecha del mismo worker no se tocan. AUTO_HUNTER=1 lo reactivaría.
+    this.hunterOff = process.env.STRATEGY_VAULT_ID === "auto" && !process.env.AUTO_PIN && process.env.AUTO_HUNTER !== "1";
   }
 
   /** DCA principal en pausa: salidas por reglas (cada hora), cobro de ganancias del demo y estacionamiento del sobrante. */
@@ -195,7 +219,7 @@ export class Strategy {
     await this.diag(`estrategia ${this.kind}: ${step} enviada ${r.hash}`);
     const rc = await this.provider.waitForTransaction(r.hash, 1, 180_000);
     if (!rc || rc.status !== 1) throw new Error(`${step}: ${r.hash} ${rc ? "revertida" : "sin recibo"}`);
-    this.run.txs.push({ step, hash: r.hash, block: rc.blockNumber, gasUsed: String(rc.gasUsed) }); await this.save();
+    this.run.txs.push({ step, hash: r.hash, block: rc.blockNumber, gasUsed: String(rc.gasUsed), fee: String(rc.fee ?? rc.gasUsed * (rc.gasPrice ?? 0n)) }); await this.save();
     return rc;
   }
 
@@ -451,14 +475,13 @@ export class Strategy {
       else if (p.kind === "disparo" && age >= 7 * 24 * H) why = "7 días";
       else if (p.kind === "semilla" && p.outSince && now - p.outSince >= 24 * H) why = "24 h fuera de la lista de candidatos";
       else if (p.kind === "cosecha") {
-        if (age >= 6 * H && rate !== null && rate < 0.005) why = `rendimiento ${(rate * 100).toFixed(2)} %/día < 0.5 %`;
-        else {
-          // rotación: otro vault paga ≥ 2× lo nuestro (medido) durante 12 h
-          const mine = sn.harvestCandidates().find((c) => c.id === p.id)?.pct ?? (rate != null ? rate * 100 : 0);
-          const best = sn.harvestCandidates().find((c) => !open().some((q) => q.id === c.id));
-          if (best && mine > 0 && best.pct >= 2 * mine) p.betterSince ??= now; else p.betterSince = null;
-          if (p.betterSince && now - p.betterSince >= 12 * H) why = `rotación: ${best.name} paga ${best.pct} %/día vs ${mine.toFixed(2)} %`;
-        }
+        // Menos vueltas = menos gas y swaps (Jose 2026-11-10). Antes salía con el cambio de valor de NUESTRA posición en 6 h, que
+        // incluye el precio del token: BONER-WETH salió con "−10 %/día" y volvió a entrar 3 min después porque el vault seguía
+        // pagando 2.9 %/día (4 vueltas en 9 h). Ahora la salida usa la misma medida que la entrada (rendimiento del vault / TVL,
+        // sin precio), con histéresis (entra ≥ 1.5, sale < SNIPER_HARVEST_EXIT_PCT durante 2 h) y una permanencia mínima.
+        const vp = sn.harvestCandidates(0).find((c) => c.id === p.id)?.pct ?? null;
+        const best = sn.harvestCandidates().find((c) => !open().some((q) => q.id === c.id || (c.token && q.token === c.token)));
+        why = harvestExitWhy(p, { now, age, vp, rate, best });
       }
       if (!why) continue;
       this.run = this.s.runs[`${this.label}-snipe-exit-${key}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", extra: true };
@@ -467,12 +490,14 @@ export class Strategy {
       try {
         await exitClm(this, ctx);
         const out = fmt(this.run.usdcOut) + fmt(this.run.claimedStable);
-        Object.assign(p, { status: "cerrada", closedAt: new Date().toISOString(), why, out, resultPct: +((out / basis - 1) * 100).toFixed(2) });
+        // gas de la vuelta completa (entrada + salida), en nativo; en cadenas donde el estable es WETH se descuenta del resultado
+        const gasOut = gasNative(this.run.txs), gas = Number(p.gasIn ?? 0) + gasOut, net = this.net.wrapNative ? out - gas : out;
+        Object.assign(p, { status: "cerrada", closedAt: new Date().toISOString(), why, out, gasNative: +gas.toPrecision(4), resultPct: +((out / basis - 1) * 100).toFixed(2), netPct: +((net / basis - 1) * 100).toFixed(2) });
         this.run.status = "hecho";
-        const okExit = out > basis;
+        const okExit = net > basis;
         if (p.kind === "disparo") okExit ? st.wins++ : st.losses++;
-        if (p.kind === "cosecha") okExit ? (st.hWins = (st.hWins ?? 0) + 1) : (st.hLosses = (st.hLosses ?? 0) + 1);
-        await this.diag(`sniper ${p.kind} cerrado · ${p.id} · ${why} · invertido ${basis.toPrecision(5)} → salió ${out.toPrecision(5)} ${this.net.stableSym} (${p.resultPct > 0 ? "+" : ""}${p.resultPct} %) · disparos exitosos ${st.wins}, fallidos ${st.losses}`);
+        if (p.kind === "cosecha") { okExit ? (st.hWins = (st.hWins ?? 0) + 1) : (st.hLosses = (st.hLosses ?? 0) + 1); (st.hClosed ??= {})[p.id] = now; }
+        await this.diag(`sniper ${p.kind} cerrado · ${p.id} · ${why} · invertido ${basis.toPrecision(5)} → salió ${out.toPrecision(5)} ${this.net.stableSym} (${p.resultPct > 0 ? "+" : ""}${p.resultPct} %) · gas ${gas.toPrecision(3)} nativo${this.net.wrapNative ? ` · neto de gas ${p.netPct > 0 ? "+" : ""}${p.netPct} %` : ""} · ${Math.round((now - Date.parse(p.at)) / 36e5)} h · disparos exitosos ${st.wins}, fallidos ${st.losses}`);
         if (p.kind === "cosecha" && okExit && st.hWins % 5 === 0) {
           const hb = Number(process.env.SNIPER_HARVEST_USD ?? 20), hm = Number(process.env.SNIPER_HARVEST_USD_MAX ?? hb), cur = Math.min(hm, hb * 2 ** (st.hLevel ?? 0));
           if (cur < hm) { st.hLevel = (st.hLevel ?? 0) + 1; await this.diag(`sniper cosecha: ${st.hWins} salidas con ganancia · el monto sube de $${cur} a $${Math.min(hm, hb * 2 ** st.hLevel)}`); }
@@ -516,7 +541,7 @@ export class Strategy {
         this.run.status = "hecho"; st.pending = null;
         if (st.need?.kind === kind) st.need = null;
         await this.save(); // que la demanda de fondos se borre ya (si no, un reinicio la deja viva y Base vuelve a puentear)
-        st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), ...extra };
+        st.pos[key] = { kind, id, usd, at: new Date().toISOString(), basis: this.run.usdcIn ?? "0", vshares: this.run.mooShares ?? null, status: "abierta", txs: this.run.txs.map((t) => t.hash), gasIn: gasNative(this.run.txs), ...extra };
         await this.diag(`sniper ${kind} abierto · $${usd} en ${id}${extra.E ? ` · emisiones ~$${Math.round(extra.E)}/día, TVL ~$${Math.round(extra.T ?? 0)}` : ""} · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
         return "ok";
       } catch (e) {
@@ -554,6 +579,8 @@ export class Strategy {
       for (const c of sn.harvestCandidates()) {
         if (open().some((p) => p.kind === "cosecha" && (p.id === c.id || (c.token && p.token === c.token)))) continue; // uno por token volátil
         if (st.hSkip?.[c.id] && now - st.hSkip[c.id] < 12 * H) continue;
+        // no volver a entrar al mismo vault justo después de salir (cada vuelta paga gas y swaps de ida y vuelta)
+        if (st.hClosed?.[c.id] && now - st.hClosed[c.id] < Number(process.env.SNIPER_HARVEST_REENTRY_H ?? 24) * H) continue;
         const r = await enter("cosecha", c.id, hUsd, { E: c.perDay, T: c.tvl, pct: c.pct, token: c.token });
         if (r === "sinFondos") st.hRetryAt = now + 10 * 60_000;
         else if (r !== "ok") (st.hSkip ??= {})[c.id] = now;
@@ -654,6 +681,10 @@ export class Strategy {
       }
       if (total > 0n && this.redeployOnExit) { d.redeploy = String(BigInt(d.redeploy ?? "0") + total); d.redeployTag = now; }
       await this.diag(`estrategia ${this.kind}: tokens sueltos vendidos (${lsTag}) · +${ethers.formatUnits(total, this.net.stableDec)} ${this.net.stableSym}${this.redeployOnExit ? " al capital por reinvertir" : ""} · ${parts.join(" | ") || "nada que vender"}`);
+      return;
+    }
+    if (this.hunterOff) {
+      if (!d.hunterOffAt) { d.hunterOffAt = new Date(now).toISOString(); await this.diag(`estrategia auto: cazador de APY ELIMINADO · sin depósitos, rotaciones, salidas ni reinversiones · posiciones que el cazador tenía abiertas: ${Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id).join(", ") || "ninguna"} · DCA_EXTRA y cosecha siguen`); }
       return;
     }
     if (this.pauseMain) return this.pausedMain(ctx, d, now);
