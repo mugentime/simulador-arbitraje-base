@@ -17,6 +17,7 @@ export const SLIP_ROUTERS = {
 const C = new ethers.Interface([
   "function wants() view returns (address token0, address token1)",
   "function strategy() view returns (address)",
+  "function isCalm() view returns (bool)",
   "function pool() view returns (address)",
   "function factory() view returns (address)",
   "function tickSpacing() view returns (int24)",
@@ -477,9 +478,17 @@ export async function enterClm(s, ctx) {
   await s.diag(`estrategia ${s.kind}: depósito hecho · ${r.vaultId} · ${r.ethIn} nativo → ${ethers.formatUnits(r.usdcIn, D)} ${N.stableSym} → CLM ${r.clmShares} → vault ${r.mooShares} · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`);
 }
 
+/** ¿El CLM acepta movimientos ahora? Las estrategias CLM de Beefy rechazan withdraw/deposit con NotCalm() cuando el precio
+ *  del pool se aleja de su TWAP (caídas o subidas bruscas). null = no se pudo leer. */
+async function clmCalm(s, clm) {
+  try { const [st] = await call(s, clm, "strategy"); const [ok] = await call(s, st, "isCalm"); return Boolean(ok); } catch { return null; }
+}
+
 export async function exitClm(s, ctx) {
   const r = s.run;
   await resolve(s);
+  // sin calma no se puede retirar del CLM: no sacar del reward pool (ahí sigue cobrando recompensas) y reintentar después
+  if (r.clmOut === undefined && (await clmCalm(s, r.clm)) === false) throw retry("CLM sin calma (NotCalm: precio lejos del TWAP tras un movimiento brusco) · la salida espera; la posición sigue en el reward pool");
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
@@ -498,6 +507,15 @@ export async function exitClm(s, ctx) {
     const sh = r.partial ? BigInt(r.clmOut) : await bal(s, r.clm); // parcial: solo el CLM que salió de esta posición
     const bU0 = await bal(s, s.net.stable), bX0 = await bal(s, r.x);
     if (r.noStable) r.b1Before = String(await bal(s, r.t1));
+    if (sh > 0n && (await clmCalm(s, r.clm)) === false) {
+      // ya se sacó del reward pool pero el CLM no está en calma: volver a depositar el CLM suelto para no perder recompensas
+      if (!r.partial) {
+        await approve(s, r.clm, r.vault, sh, "approve CLM→vault (re-stake por NotCalm)");
+        await s.send(r.gov ? "stake reward pool Beefy (re-stake por NotCalm)" : "deposit vault Beefy (re-stake por NotCalm)", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [sh]) : C.encodeFunctionData("deposit(uint256)", [sh]) });
+        delete r.clmOut; await s.save();
+      }
+      throw retry("CLM sin calma (NotCalm) · CLM suelto devuelto al reward pool; la salida se reintenta cuando haya calma");
+    }
     if (sh > 0n) {
       const [m0, m1] = await call(s, r.clm, "previewWithdraw", [sh]);
       try { await s.sim({ to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) }); }
