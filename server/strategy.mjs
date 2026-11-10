@@ -515,6 +515,22 @@ export class Strategy {
       return true;
     }
 
+    // Vaults donde la wallet ya tiene otra posición (DCA principal, AUTO_PIN, DCA_EXTRA o cualquier depósito previo): la cosecha y
+    // los disparos NO entran ahí (Jose 2026-11-10). Entrar y salir del mismo vault mezcla las participaciones con las del DCA y el
+    // panel de Beefy atribuye los retiros a los depósitos viejos (el rendimiento acumulado de AI-USDG "desapareció"). Se revisa
+    // on-chain y se recuerda 1 h por vault para no consultar en cada bloque.
+    const ownedElsewhere = async (id) => {
+      const fixed = new Set([process.env.AUTO_PIN, process.env.STRATEGY_VAULT_ID !== "auto" ? process.env.STRATEGY_VAULT_ID : null].filter(Boolean));
+      for (const e of parseDcaExtra(process.env.DCA_EXTRA, this.dcaUsdCfg)) { try { fixed.add(await resolveVaultSpec(e.spec, this.net.beefy)); } catch {} }
+      if (fixed.has(id)) return "vault del DCA";
+      const c = (st.owned ??= {})[id];
+      if (c && now - c.at < H) return c.why;
+      let why = null;
+      try { const v = await vaultValue(this, id); const mine = open().filter((q) => q.id === id).reduce((a, q) => a + BigInt(q.vshares ?? "0"), 0n); if (v.vshares > mine) why = "la wallet ya tiene posición en ese vault"; } catch {}
+      st.owned[id] = { at: now, why };
+      return why;
+    };
+
     // reserva para la siguiente entrada del sniper (orden de Jose 2026-11-09: los 20 USDG sueltos van en la siguiente llamada)
     const rm = /^\s*(0x[0-9a-fA-F]{40})\s*:\s*(\d+)\s*:\s*([0-9.]+)\s*@\s*([\w.-]+)\s*$/.exec(process.env.SNIPER_RESERVE ?? "");
     if (rm && !(st.reserveTags ??= {})[rm[4]]) { st.reserveTags[rm[4]] = true; st.reserve = { token: rm[1].toLowerCase(), amount: rm[2], usd: Number(rm[3]) }; await this.diag(`sniper: reserva para la siguiente entrada · ${rm[2]} de ${rm[1]} (~$${rm[3]})`); }
@@ -565,6 +581,7 @@ export class Strategy {
       else if (open().filter((p) => p.kind === "disparo").length >= shotsMax) skip = `ya hay ${shotsMax} disparos abiertos`;
       else if (open().some((p) => p.kind === "disparo" && p.id === rq.id)) skip = "ya hay un disparo en ese vault";
       else if (usedUsd + shotUsd > budget) skip = `tope de capital $${budget}`;
+      else { const w = await ownedElsewhere(rq.id); if (w) skip = w; }
       if (skip) { st.handled[rq.key] = { at: now, skip }; await this.diag(`sniper: éxodo en ${rq.id} sin disparo · ${skip}`); return true; }
       const r = await enter("disparo", rq.id, shotUsd, { E: rq.E, T: rq.T });
       if (r === "ok" || r === "error" || (rq.tries = (rq.tries ?? 0) + 1) >= 5) st.handled[rq.key] = { at: now, r };
@@ -581,6 +598,7 @@ export class Strategy {
         if (st.hSkip?.[c.id] && now - st.hSkip[c.id] < 12 * H) continue;
         // no volver a entrar al mismo vault justo después de salir (cada vuelta paga gas y swaps de ida y vuelta)
         if (st.hClosed?.[c.id] && now - st.hClosed[c.id] < Number(process.env.SNIPER_HARVEST_REENTRY_H ?? 24) * H) continue;
+        if (await ownedElsewhere(c.id)) continue;
         const r = await enter("cosecha", c.id, hUsd, { E: c.perDay, T: c.tvl, pct: c.pct, token: c.token });
         if (r === "sinFondos") st.hRetryAt = now + 10 * 60_000;
         else if (r !== "ok") (st.hSkip ??= {})[c.id] = now;
