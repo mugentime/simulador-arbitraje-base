@@ -54,24 +54,39 @@ export class Bridger {
       const bal = await this.provider.getBalance(me);
       const fee = await this.provider.getFeeData();
       const gp = fee.maxFeePerGas ?? fee.gasPrice ?? 0n;
-      const amount = bridgeAmount(bal, this.keepUsd, ctx.ethUsd, gp * 400_000n);
-      const usd = Number(ethers.formatEther(amount)) * ctx.ethUsd;
-      if (usd < this.minUsd) { r.status = "omitido"; r.reason = `solo $${usd.toFixed(2)} disponibles (saldo ${ethers.formatEther(bal)} ${core.CHAIN.native})`; this.done = true; await this.diag(`bridge: ${r.reason}; nada que puentear`); return; }
-      const body = { user: me, recipient: me, originChainId: core.CHAIN.id, destinationChainId: BASE_ID, originCurrency: NATIVE, destinationCurrency: BASE_USDC, amount: amount.toString(), tradeType: "EXACT_INPUT" };
+      // BRIDGE_TOKEN=<dirección de un estable de esta cadena>: puentea TODO ese token (no el nativo) a USDC en Base
+      // (Jose 2026-11-10: concentrar el capital de BSC en Base). Relay puede pedir approve + depósito: se envían en orden.
+      const tok = process.env.BRIDGE_TOKEN ? ethers.getAddress(process.env.BRIDGE_TOKEN) : null;
+      let amount, usd, dec = 18, sym = core.CHAIN.native;
+      if (tok) {
+        const T = new ethers.Contract(tok, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"], this.provider);
+        dec = Number(await T.decimals()); sym = await T.symbol().catch(() => "token");
+        amount = await T.balanceOf(me); usd = Number(ethers.formatUnits(amount, dec));
+      } else {
+        amount = bridgeAmount(bal, this.keepUsd, ctx.ethUsd, gp * 400_000n);
+        usd = Number(ethers.formatEther(amount)) * ctx.ethUsd;
+      }
+      if (usd < this.minUsd) { r.status = "omitido"; r.reason = `solo $${usd.toFixed(2)} disponibles (saldo ${tok ? ethers.formatUnits(amount, dec) + " " + sym : ethers.formatEther(bal) + " " + core.CHAIN.native})`; this.done = true; await this.diag(`bridge: ${r.reason}; nada que puentear`); return; }
+      const body = { user: me, recipient: me, originChainId: core.CHAIN.id, destinationChainId: BASE_ID, originCurrency: tok ?? NATIVE, destinationCurrency: BASE_USDC, amount: amount.toString(), tradeType: "EXACT_INPUT" };
       const res = await fetch(`${RELAY}/quote/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
       const q = await res.json().catch(() => null);
       if (!res.ok) throw new Error(`Relay ${res.status}: ${(q?.message ?? JSON.stringify(q ?? {})).slice(0, 160)}`);
       const p = parseQuote(q);
-      if (p.txs.length !== 1 || p.txs[0].chainId !== core.CHAIN.id) throw new Error(`cotización de Relay inesperada (${p.txs.length} tx)`);
+      const okCount = tok ? p.txs.length >= 1 && p.txs.length <= 2 : p.txs.length === 1;
+      if (!okCount || p.txs.some((t) => t.chainId !== core.CHAIN.id)) throw new Error(`cotización de Relay inesperada (${p.txs.length} tx)`);
       const feePct = Number.isFinite(p.inUsd) && Number.isFinite(p.outUsd) && p.inUsd > 0 ? (1 - p.outUsd / p.inUsd) * 100 : null;
       if (feePct !== null && feePct > this.maxFeePct) throw new Error(`comisión ${feePct.toFixed(1)} % > ${this.maxFeePct} %`);
-      const tx = { from: me, to: p.txs[0].to, data: p.txs[0].data, value: p.txs[0].value };
-      await this.provider.call(tx);
-      const gasLimit = (await this.provider.estimateGas(tx)) * 13n / 10n;
-      if (tx.value + gasLimit * gp > bal) throw new Error("no alcanza para valor + gas");
-      const sent = await this.x.withSender((w) => w.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, gasLimit }));
-      Object.assign(r, { hash: sent.hash, requestId: p.requestId, amount: ethers.formatEther(amount), inUsd: p.inUsd, outUsd: p.outUsd, usdcOut: p.out ? ethers.formatUnits(p.out, 6) : null, feePct, sentAt: Date.now() });
-      await this.diag(`bridge: ${ethers.formatEther(amount)} ${core.CHAIN.native} ($${p.inUsd?.toFixed?.(2) ?? "?"}) → ~${r.usdcOut ?? "?"} USDC en Base vía Relay (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · tx ${sent.hash} · reserva $${this.keepUsd} para gas`);
+      let sent = null;
+      for (const t of p.txs) { // en orden (approve y luego depósito); cada una se simula justo antes de enviarse
+        const tx = { from: me, to: t.to, data: t.data, value: t.value };
+        await this.provider.call(tx);
+        const gasLimit = (await this.provider.estimateGas(tx)) * 13n / 10n;
+        if (tx.value + gasLimit * gp > (await this.provider.getBalance(me))) throw new Error("no alcanza para valor + gas");
+        sent = await this.x.withSender((w) => w.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, gasLimit }));
+        if (t !== p.txs[p.txs.length - 1]) { const rc = await this.provider.waitForTransaction(sent.hash, 1, 120_000); if (!rc || rc.status !== 1) throw new Error(`paso ${t.step} ${sent.hash} no confirmó`); await this.diag(`bridge: paso ${t.step} confirmado · tx ${sent.hash}`); }
+      }
+      Object.assign(r, { hash: sent.hash, requestId: p.requestId, amount: ethers.formatUnits(amount, dec), inUsd: p.inUsd, outUsd: p.outUsd, usdcOut: p.out ? ethers.formatUnits(p.out, 6) : null, feePct, sentAt: Date.now() });
+      await this.diag(`bridge: ${ethers.formatUnits(amount, dec)} ${sym} ($${p.inUsd?.toFixed?.(2) ?? "?"}) → ~${r.usdcOut ?? "?"} USDC en Base vía Relay (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · tx ${sent.hash} · reserva $${this.keepUsd} para gas`);
       await this.save();
     } catch (e) {
       const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
