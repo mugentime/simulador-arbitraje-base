@@ -488,7 +488,15 @@ export async function exitClm(s, ctx) {
   const r = s.run;
   await resolve(s);
   // sin calma no se puede retirar del CLM: no sacar del reward pool (ahí sigue cobrando recompensas) y reintentar después
-  if (r.clmOut === undefined && (await clmCalm(s, r.clm)) === false) throw retry("CLM sin calma (NotCalm: precio lejos del TWAP tras un movimiento brusco) · la salida espera; la posición sigue en el reward pool");
+  if (r.clmOut === undefined && (await clmCalm(s, r.clm)) === false) {
+    // si quedó CLM suelto de un intento anterior, devolverlo al reward pool mientras se espera
+    const loose = await bal(s, r.clm);
+    if (loose > 0n) {
+      await approve(s, r.clm, r.vault, loose, "approve CLM→vault (re-stake por NotCalm)");
+      await s.send(r.gov ? "stake reward pool Beefy (re-stake por NotCalm)" : "deposit vault Beefy (re-stake por NotCalm)", { to: r.vault, data: r.gov ? C.encodeFunctionData("stake", [loose]) : C.encodeFunctionData("deposit(uint256)", [loose]) });
+    }
+    throw retry(`CLM sin calma (NotCalm: precio lejos del TWAP tras un movimiento brusco) · la salida espera; la posición sigue en el reward pool${loose > 0n ? ` (re-stakeadas ${loose} participaciones que estaban sueltas)` : ""}`);
+  }
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
