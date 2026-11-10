@@ -407,7 +407,10 @@ export class RevertLoan {
       return;
     }
     // 2) rango
-    if (viaManager && pos && li.debt > 0n && needsRecenter(st.tick, Number(pos.tickLower), Number(pos.tickUpper), this.cfg.recenterAt)) {
+    const want = rangeTicks(st.tick, this.cfg.rangePct), wantHalf = (want.upper - want.lower) / 2;
+    const curHalf = pos ? (Number(pos.tickUpper) - Number(pos.tickLower)) / 2 : wantHalf;
+    const widthChange = Math.abs(curHalf - wantHalf) / wantHalf > 0.25; // cambió RVL_LOAN_RANGE_PCT
+    if (viaManager && pos && li.debt > 0n && (widthChange || needsRecenter(st.tick, Number(pos.tickLower), Number(pos.tickUpper), this.cfg.recenterAt))) {
       const since = Date.now() - Math.max(this.s.lastRecenter ?? 0, this.s.lastRecenterTry ?? 0);
       if (since < this.cfg.recenterCooldownMin * 60_000) return;
       if (hf < this.cfg.recenterMinHf) {
@@ -417,7 +420,7 @@ export class RevertLoan {
         if (!(await this.flashDeleverage(id, need, li, "antes de re-centrar"))) this.s.lastRecenterTry = Date.now();
         return;
       }
-      await this.note(`precio ${inRange ? "cerca del borde" : "fuera"} del rango [${pos.tickLower}, ${pos.tickUpper}] (tick ${st.tick}, ETH $${st.p.toFixed(2)}) → re-centra`);
+      await this.note(widthChange ? `cambio de ancho: ±${this.cfg.rangePct} % (rango actual [${pos.tickLower}, ${pos.tickUpper}]) → re-centra` : `precio ${inRange ? "cerca del borde" : "fuera"} del rango [${pos.tickLower}, ${pos.tickUpper}] (tick ${st.tick}, ETH $${st.p.toFixed(2)}) → re-centra`);
       await this.recenter(id, li, st, pos);
     }
   }
