@@ -67,6 +67,8 @@ export function repayFor(collateralValue, debt, target) {
   const want = collateralValue * 1_000_000n / BigInt(Math.round(target * 1e6));
   return debt > want ? debt - want : 0n;
 }
+/** Valor a retirar (en unidades del activo) para que la salud quede en `target` repagando k·X: X = (target·D − C)/(k·target − cf). */
+export function deleverageValue(V, C, D, target, k = 0.97) { const cf = C / V; const den = k * target - cf; return den > 0 ? Math.max(0, (target * D - C) / den) : V; }
 export const health = (collateralValue, debt) => (debt > 0n ? Number(collateralValue) / Number(debt) : Infinity);
 const sqrtAt = (tick) => Math.sqrt(1.0001 ** tick);
 /** Cantidades crudas (token0, token1) de una liquidez L en [a, b] al precio sqrtP (todo en unidades crudas, como Uniswap). */
@@ -245,16 +247,19 @@ export class RevertLoan {
     return amt;
   }
 
-  /** Desapalanca con flashloan: repaga `need` y retira la liquidez equivalente (+2 %, +25 % por intento si la simulación falla). */
-  async flashDeleverage(id, need, li, why) {
+  /** Desapalanca con flashloan hasta la salud `target`. Retira valor X y repaga k·X (k < 1 cubre swap y diferencias de oráculo):
+   *  salud final = cf·(V − X) / (D − k·X) ≥ target  ⇒  X = (target·D − C) / (k·target − cf). El vault exige ≥ 1/0.95 al final. */
+  async flashDeleverage(id, target, li, why) {
     const pos = await this.c(RVL.NPM).positions(id);
-    const L = pos.liquidity;
-    for (const bump of [1.02, 1.08, 1.2, 1.4]) {
-      let frac = Number(need) / Number(li.fullValue) * bump; if (frac > 1) frac = 1;
-      const liq = BigInt(Math.floor(Number(L) * frac));
-      const tx = this.mgr("deleverage", [{ tokenId: id, liquidity: liq, minUsdcOut: 0n, deadline: BigInt(Math.floor(Date.now() / 1000) + 600) }, need]);
+    const L = pos.liquidity, V = Number(li.fullValue), C = Number(li.collateralValue), D = Number(li.debt), cf = C / V;
+    const T = Math.max(target, 1 / RVL.BORROW_BUFFER + 0.01);
+    for (const k of [0.97, 0.94, 0.9]) {
+      let X = deleverageValue(V, C, D, T, k); if (X <= 0) return true;
+      const frac = Math.min(1, X / V);
+      const liq = BigInt(Math.floor(Number(L) * frac)), flash = BigInt(Math.floor(k * X));
+      const tx = this.mgr("deleverage", [{ tokenId: id, liquidity: liq, minUsdcOut: 0n, deadline: BigInt(Math.floor(Date.now() / 1000) + 600) }, flash]);
       try { await this.sim(tx); } catch { continue; }
-      await this.send(`${why}: desapalanca con flashloan · repago $${ethers.formatUnits(need, 6)} · retira ${(frac * 100).toFixed(2)} % de la liquidez`, tx);
+      await this.send(`${why}: desapalanca con flashloan · repago $${ethers.formatUnits(flash, 6)}+ · retira ${(frac * 100).toFixed(2)} % de la liquidez (salud ${(C / D).toFixed(4)} → ~${T.toFixed(3)})`, tx);
       this.s.actions++;
       return true;
     }
@@ -401,7 +406,7 @@ export class RevertLoan {
     if (li.debt > 0n &&(hf < this.cfg.trigger || li.liquidationCost > 0n)) {
       const need = repayFor(li.collateralValue, li.debt, this.cfg.target);
       await this.note(`salud ${hf.toFixed(4)} < ${this.cfg.trigger}${li.liquidationCost > 0n ? " (¡liquidable!)" : ""} · ETH $${st.p.toFixed(2)} · repago necesario $${ethers.formatUnits(need, 6)}`);
-      if (viaManager && await this.flashDeleverage(id, need, li, "salud baja")) return;
+      if (viaManager && await this.flashDeleverage(id, this.cfg.target, li, "salud baja")) return;
       if (viaManager) await this.note("flashloan no simuló; respaldo con la wallet");
       await this.walletRepay(id, need, st.p);
       return;
@@ -415,9 +420,8 @@ export class RevertLoan {
       if (since < this.cfg.recenterCooldownMin * 60_000) return;
       if (hf < this.cfg.recenterMinHf) {
         // margen antes de re-centrar (la posición nueva pierde un poco por el swap)
-        const need = repayFor(li.collateralValue, li.debt, this.cfg.recenterMinHf + 0.02);
         await this.note(`re-centrado: primero desapalanca (salud ${hf.toFixed(4)} < ${this.cfg.recenterMinHf})`);
-        if (!(await this.flashDeleverage(id, need, li, "antes de re-centrar"))) this.s.lastRecenterTry = Date.now();
+        if (!(await this.flashDeleverage(id, this.cfg.recenterMinHf + 0.02, li, "antes de re-centrar"))) { this.s.lastRecenterTry = Date.now(); await this.note("re-centrado: el desapalancamiento no simuló; se reintenta tras el enfriamiento"); }
         return;
       }
       await this.note(widthChange ? `cambio de ancho: ±${this.cfg.rangePct} % (rango actual [${pos.tickLower}, ${pos.tickUpper}]) → re-centra` : `precio ${inRange ? "cerca del borde" : "fuera"} del rango [${pos.tickLower}, ${pos.tickUpper}] (tick ${st.tick}, ETH $${st.p.toFixed(2)}) → re-centra`);

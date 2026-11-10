@@ -1,7 +1,7 @@
 // Pruebas de las funciones puras de server/revertloan.mjs y de la decisión de desapalancar con un vault/pool simulados.
 import assert from "node:assert/strict";
 import { ethers } from "ethers";
-import { priceFromSqrt, rangeTicks, borrowable, repayFor, health, amountsFor, needsRecenter, rebalanceSwap, RevertLoan, RVL } from "../server/revertloan.mjs";
+import { deleverageValue, priceFromSqrt, rangeTicks, borrowable, repayFor, health, amountsFor, needsRecenter, rebalanceSwap, RevertLoan, RVL } from "../server/revertloan.mjs";
 
 // precio desde sqrtPriceX96 (tick −199721 ≈ $2,121.7 del pool real WETH-USDC 0.3 %)
 const sq = BigInt(Math.floor(Math.sqrt(1.0001 ** -199721) * 2 ** 96));
@@ -87,5 +87,11 @@ assert.equal(needsRecenter(-200800, -200700, -198720), true);
   const r = rangeTicks(-198000, 10), a = amountsFor(1e15, s, r.lower, r.upper);
   const sw2 = rebalanceSwap(a.a0, a.a1, s, r.lower, r.upper);
   assert.ok(Number(sw2.amountIn) / (a.a1 + a.a0 * P) < 0.01, "sin swap si ya está balanceada");
+}
+// desapalancar por debajo del tope (caso real 2026-11-10 13:35 UTC, salud 1.0476): la salud final llega al objetivo
+{
+  const V = 28.231787, C = 21.879634, D = 20.884846;
+  for (const T of [1.06, 1.08]) { const X = deleverageValue(V, C, D, T, 0.97); const hf = (C / V) * (V - X) / (D - 0.97 * X); assert.ok(Math.abs(hf - T) < 1e-6, `salud ${hf}`); assert.ok(hf >= 1 / 0.95); }
+  assert.equal(deleverageValue(V, 30, 20, 1.06), 0); // ya sano
 }
 console.log("test_revertloan: ok");
