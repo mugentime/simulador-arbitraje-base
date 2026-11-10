@@ -92,6 +92,6 @@ assert.equal(needsRecenter(-200800, -200700, -198720), true);
 {
   const V = 28.231787, C = 21.879634, D = 20.884846;
   for (const T of [1.06, 1.08]) { const X = deleverageValue(V, C, D, T, 0.97); const hf = (C / V) * (V - X) / (D - 0.97 * X); assert.ok(Math.abs(hf - T) < 1e-6, `salud ${hf}`); assert.ok(hf >= 1 / 0.95); }
-  assert.equal(deleverageValue(V, 30, 20, 1.06), 0); // ya sano
+  assert.equal(deleverageValue(40, 31, 20, 1.06), 0); // ya sano (salud 1.55)
 }
 console.log("test_revertloan: ok");
