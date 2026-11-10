@@ -501,7 +501,7 @@ export async function exitClm(s, ctx) {
     if (sh > 0n) {
       const [m0, m1] = await call(s, r.clm, "previewWithdraw", [sh]);
       try { await s.sim({ to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) }); }
-      catch (e) { throw retry(`withdraw del CLM no pasa la simulación (${(e.shortMessage || e.message).slice(0, 120)})`); }
+      catch (e) { const sel = String(e.data ?? e.info?.error?.data ?? e.error?.data ?? "").slice(0, 10); throw retry(`withdraw del CLM no pasa la simulación (${(e.shortMessage || e.message).slice(0, 120)}${sel ? ` · selector ${sel}` : ""} · ${sh} participaciones, mínimos ${m0 * 99n / 100n}/${m1 * 99n / 100n})`); }
       await s.send("withdraw CLM", { to: r.clm, data: C.encodeFunctionData("withdraw(uint256,uint256,uint256)", [sh, m0 * 99n / 100n, m1 * 99n / 100n]) });
     }
     if (r.noStable) {
