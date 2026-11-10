@@ -5,7 +5,7 @@
 //   Salida  (STRATEGY=revert-usdc-exit): vault.redeem(todas las participaciones) → swap USDC→WETH → unwrap a ETH.
 // Cada transacción se simula con eth_call (y estimateGas) contra el estado actual antes de enviarse; si la simulación falla, se detiene.
 import { ethers } from "ethers";
-import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap, vaultValue, stakeLoose } from "./beefyclm.mjs";
+import { enterClm, exitClm, netOf, harvestProfit, claimForCompound, sellVaultTokens, checkVault, routeSwap, vaultValue, stakeLoose, looseTokens } from "./beefyclm.mjs";
 import { scanHighApy, pickTarget, exitCheck, exitThreshold, rotateCheck, RULES, watchSummary, parseRedeployAdd } from "./highapy.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import * as core from "../src/core.js";
@@ -604,6 +604,31 @@ export class Strategy {
     return false;
   }
 
+  /**
+   * Línea horaria "tokens sueltos <cadena>": valor de los tokens de los pares por los que pasaron las estrategias y que quedaron en
+   * la wallet fuera de los vaults (sobrantes que el CLM no aceptó, restos de salidas, CLM sin stakear). Solo lectura. Sirve para que
+   * el PnL por cadena (valor = vaults + libre + sueltos) no cuente como pérdida dinero que sigue en la wallet en otro token.
+   */
+  async looseReport(ctx) {
+    const ids = new Set();
+    for (const d of Object.values(this.s.dca ?? {})) {
+      for (const id of Object.keys(d.holdings ?? {})) ids.add(id);
+      for (const id of Object.keys(d.failed ?? {})) ids.add(id);
+      for (const x of d.deposits ?? []) if (x?.vaultId) ids.add(x.vaultId);
+      if (d.vaultId && d.vaultId !== "auto") ids.add(d.vaultId);
+    }
+    for (const p of Object.values(this.s.snipe?.pos ?? {})) if (p?.id) ids.add(p.id);
+    for (const e of parseDcaExtra(process.env.DCA_EXTRA, this.dcaUsdCfg)) { try { ids.add(await resolveVaultSpec(e.spec, this.net.beefy)); } catch {} }
+    for (const id of (process.env.LOOSE_EXTRA_IDS ?? "").split(",").map((x) => x.trim()).filter(Boolean)) ids.add(id);
+    if (!ids.size) return;
+    const rows = await looseTokens(this, [...ids]);
+    const D = this.net.stableDec, px = this.net.wrapNative ? (ctx?.ethUsd || 0) : 1;
+    const usd = (v) => Number(ethers.formatUnits(v, D)) * px;
+    const total = rows.reduce((a, r) => a + usd(r.value), 0);
+    this.s.loose = { at: new Date().toISOString(), usd: +total.toFixed(2), rows: rows.map((r) => ({ token: r.token, sym: r.sym, amount: String(r.amount), usd: +usd(r.value).toFixed(2) })) };
+    await this.diag(`tokens sueltos ${this.label}: $${total.toFixed(2)} fuera de los vaults (${ids.size} vaults revisados)${rows.length ? " · " + rows.filter((r) => usd(r.value) >= 0.01 || r.value === 0n).map((r) => `${r.sym} ${r.value === 0n ? "(sin ruta de precio)" : "$" + usd(r.value).toFixed(2)}`).join(" | ") : ""}`);
+  }
+
   /** Al arrancar: verifica (sin enviar nada) que el vault del DCA principal y los de DCA_EXTRA se puedan usar. */
   async checkVaults() {
     const ids = [];
@@ -799,6 +824,7 @@ export class Strategy {
         this.stage = "migración"; const m = (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (await this.stakeLooseOnce()) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
         this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
         this.stage = "dca"; if (!m && !x) await this.dca(ctx);
+        this.stage = "sueltos"; if (!this.looseAt || Date.now() - this.looseAt >= 3600_000) { this.looseAt = Date.now(); await this.looseReport(ctx).catch(async (e) => this.diag(`tokens sueltos ${this.label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`)); }
         this.stage = "listo";
       } finally { this.busy = false; await this.save().catch(() => {}); }
       return;

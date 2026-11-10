@@ -606,6 +606,45 @@ export async function sellVaultTokens(s, id, { dustStable = 0n } = {}) {
   } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; }
 }
 
+/**
+ * Tokens sueltos en la wallet (fuera de los vaults) de los pares de `ids`: lo que el CLM no aceptó, sobrantes de salidas, etc.
+ * Devuelve [{token, sym, amount, value}] con `value` en estable crudo (0 si no hay ruta). CLM suelto (participaciones sin
+ * stakear) se valúa por su previewWithdraw. Solo lectura.
+ */
+export async function looseTokens(s, ids) {
+  const seen = new Map(), clms = new Map(), N = s.net;
+  for (const id of ids) {
+    const prev = s.run, prevId = s.vaultId;
+    s.run = { txs: [], extra: true }; s.vaultId = id; s.allowInactive = true; s.quietResolve = true;
+    try {
+      await resolve(s);
+      const r = s.run;
+      for (const t of [r.t0, r.t1, r.x].filter(Boolean)) if (lc(t) !== lc(N.stable) && !seen.has(lc(t))) seen.set(lc(t), t);
+      if (r.clm && !clms.has(lc(r.clm))) clms.set(lc(r.clm), { id, r: { ...r } });
+    } catch { /* vault que ya no resuelve: se omite */ } finally { s.run = prev; s.vaultId = prevId; s.allowInactive = false; s.quietResolve = false; }
+  }
+  const SYM = new ethers.Interface(["function symbol() view returns (string)"]);
+  const out = [];
+  for (const t of seen.values()) {
+    const amount = await bal(s, t).catch(() => 0n);
+    if (amount === 0n) continue;
+    const sym = await call(s, t, "symbol", [], SYM).then((x) => x[0]).catch(() => t.slice(0, 8));
+    out.push({ token: t, sym, amount, value: await tokenValue(s, t, amount).catch(() => 0n) });
+  }
+  for (const [clm, { id, r }] of clms) {
+    const sh = await bal(s, clm).catch(() => 0n);
+    if (sh === 0n) continue;
+    let value = 0n;
+    try {
+      const [m0, m1] = await call(s, clm, "previewWithdraw", [sh]);
+      const t0 = r.t0 ?? (r.usdcIs0 ? N.stable : r.x), t1 = r.t1 ?? (r.usdcIs0 ? r.x : N.stable);
+      value = (await tokenValue(s, t0, m0)) + (await tokenValue(s, t1, m1));
+    } catch {}
+    out.push({ token: clm, sym: `CLM ${id}`, amount: sh, value });
+  }
+  return out;
+}
+
 /** Valor de la posición de la wallet en un vault (participaciones del vault + CLM suelto), en estable crudo, y los tokens del par. */
 export async function vaultValue(s, id) {
   const prev = s.run, prevId = s.vaultId;
