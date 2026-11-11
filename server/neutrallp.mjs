@@ -30,6 +30,7 @@ export const NLP = {
   FEE: 500, SPACING: 10,
   COMET_LIQ_CF: 0.85, REVERT_CF: 0.775,
   OLD_MANAGER: "0xC4bD7851E5Dffe0c222f0943Bd7ec0C50625AF98",
+  RPCS: ["https://base.llamarpc.com", "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://base.drpc.org"],
 };
 
 const I = new ethers.Interface([
@@ -116,8 +117,22 @@ export class NeutralLp {
   async note(m) { this.s.events.unshift({ t: Date.now(), m }); this.s.events.length = Math.min(this.s.events.length, 80); await this.diag(`lp-neutral: ${m}`); }
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => this.tick().catch((e) => this.note(`error ${(e.shortMessage || e.message || String(e)).slice(0, 180)}`).catch(() => {})), this.cfg.everyS * 1000);
-    setTimeout(() => this.tick().catch((e) => this.note(`error ${(e.shortMessage || e.message || String(e)).slice(0, 180)}`).catch(() => {})), 8_000);
+    const run = () => this.tick().then(() => { this.errs = 0; }).catch((e) => this.onError(e));
+    this.timer = setInterval(run, this.cfg.everyS * 1000);
+    setTimeout(run, 8_000);
+  }
+  /** Errores de RPC (410, sin respuesta, timeout): tras 2 seguidos cambia a otro RPC público de Base (2026-11-11: 1 h ciego por un RPC caído). */
+  async onError(e) {
+    const msg = (e.shortMessage || e.message || String(e)).slice(0, 180);
+    this.errs = (this.errs ?? 0) + 1;
+    if (this.errs >= 2 && /410|missing response|timeout|ECONN|network|503|502|429|rate/i.test(msg)) {
+      this.rpcIdx = ((this.rpcIdx ?? -1) + 1) % NLP.RPCS.length;
+      this.provider = new ethers.JsonRpcProvider(NLP.RPCS[this.rpcIdx], 8453, { staticNetwork: true });
+      this.errs = 0;
+      await this.note(`RPC con fallas (${msg}) → cambia a ${NLP.RPCS[this.rpcIdx]}`).catch(() => {});
+      return;
+    }
+    await this.note(`error ${msg}`).catch(() => {});
   }
   c(addr) { return new ethers.Contract(addr, I, this.provider); }
   mgr(fn, args) { return { to: this.s.manager, data: M.encodeFunctionData(fn, args) }; }
