@@ -73,3 +73,39 @@ export function resultSplit(ledger, { now, feesOpen = 0, openPrice = 0, hedge = 
   const costs = total - vol - feesOpen - closedFees - hedge;
   return { now, start: ledger.start.usd, deposits, put, total, bots: feesOpen + closedFees + hedge + costs, vol, feesOpen, closedFees, hedge, costs, openPrice, freePrice, closedPrice };
 }
+
+/**
+ * Una lectura que falla no es un saldo en cero (puro, probado). Guarda en `last` el último dato bueno de cada cadena y, cuando una
+ * cadena no responde, la rellena con ese dato marcado `stale` (hora del dato). Modifica `wallet` (posiciones de Beefy; necesita
+ * `readChains`) y `balances` (saldos libres) y devuelve la lista de lo rellenado: [{ kind, chain, usd, t }].
+ */
+export function carryForward(last, wallet, balances, now = Date.now()) {
+  last.inv ??= {}; last.free ??= {};
+  const stale = [];
+  if (wallet && Array.isArray(wallet.positions) && Array.isArray(wallet.readChains)) {
+    const read = new Set(wallet.readChains);
+    for (const c of read) last.inv[c] = { t: now, positions: wallet.positions.filter((p) => p.chain === c) };
+    for (const [c, g] of Object.entries(last.inv)) {
+      if (read.has(c) || !g.positions?.length) continue;
+      wallet.positions.push(...g.positions.map((p) => ({ ...p, stale: g.t })));
+      stale.push({ kind: "vaults", chain: c, usd: +g.positions.reduce((a, p) => a + (p.valueUsd ?? 0), 0).toFixed(2), t: g.t });
+    }
+    wallet.positions.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0));
+    wallet.totalUsd = +wallet.positions.reduce((a, p) => a + (p.valueUsd ?? 0), 0).toFixed(2);
+  }
+  if (balances) {
+    const cur = balances.error || !Array.isArray(balances.chains) ? [] : balances.chains;
+    const good = cur.filter((c) => !c.partial);
+    for (const c of good) last.free[c.chain] = { t: now, row: c };
+    const read = new Set(good.map((c) => c.chain));
+    const chains = cur.filter((c) => !c.partial || !last.free[c.chain]); // lectura parcial: vale solo si no hay un dato bueno anterior
+    for (const [c, g] of Object.entries(last.free)) {
+      if (read.has(c)) continue;
+      chains.push({ ...g.row, stale: g.t });
+      if (g.row.usd >= 0.01) stale.push({ kind: "libre", chain: c, usd: g.row.usd, t: g.t });
+    }
+    balances.chains = chains.sort((a, b) => b.usd - a.usd);
+    balances.totalUsd = +chains.reduce((a, c) => a + (c.usd ?? 0), 0).toFixed(2);
+  }
+  return stale;
+}

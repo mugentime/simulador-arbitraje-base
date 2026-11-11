@@ -324,6 +324,9 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const L = S.pf?.result, el = $("result"); if (!L || !el) return;
     if (typeof bd === "undefined" || !bd) { el.innerHTML = `<div class="res flat"><h2>¿Cuánto he ganado o perdido?</h2><div class="mut">cargando las cuentas de Beefy…</div></div>`; return; }
     const inv = S.pf.wallet?.totalUsd ?? 0, free = S.pf.balances?.totalUsd ?? 0, nlp = S.nlp?.last?.equity ?? 0, now = inv + free + nlp;
+    // cadenas sin lectura, rellenadas por el servidor con su último dato bueno (panel y espejo de Beefy)
+    const miss = S.pf.missing ?? [];
+    const stale = [...(S.pf.stale ?? []), ...(bd.stale ?? []).filter((x) => !(S.pf.stale ?? []).some((y) => y.kind === x.kind && y.chain === x.chain))];
     const deps = L.deposits.reduce((a, d) => a + d.usd, 0), put = L.start.usd + deps, total = now - put;
     const feesOpen = bd.rows.reduce((a, r) => a + (fin(r.yieldUsd) ? r.yieldUsd : 0), 0);
     const openPrice = bd.rows.reduce((a, r) => a + (fin(r.pnlUsd) ? r.pnlUsd - (r.yieldUsd ?? 0) : 0), 0);
@@ -340,20 +343,20 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const d0 = new Date(L.start.at).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
     el.innerHTML = `<div class="res ${cls}">
       <h2>¿Cuánto he ganado o perdido? · desde el ${d0}</h2>
-      <div class="big">${sg(total)} <span style="font-size:18px;font-weight:600">${put > 0 ? `(${total >= 0 ? "+" : "−"}${Math.abs(total / put * 100).toFixed(1)} %)` : ""}</span></div>
+      ${miss.length ? `<div class="big" style="color:var(--mut)">— <span style="font-size:18px;font-weight:600">sin poder calcular</span></div><div class="alert bad" style="margin-top:10px"><b>No se pudo leer: ${miss.map(esc).join(", ")}.</b> Falta dinero por contar, así que el resultado y su desglose no se muestran como cifra válida (con lo leído daría ${sg(total)}, que NO es real). Se corrige solo en la siguiente lectura.</div>` : `<div class="big">${sg(total)} <span style="font-size:18px;font-weight:600">${put > 0 ? `(${total >= 0 ? "+" : "−"}${Math.abs(total / put * 100).toFixed(1)} %)` : ""}</span></div>`}
       <div class="eq"><span class="chip c1">Vale hoy ${usd(now)}</span><span>−</span><span class="chip c6">Tenías ${usd(L.start.usd)}</span><span>−</span><span class="chip c5">Depositaste ${usd(deps)} <small>${L.deposits.map((d) => `${new Date(d.at).toLocaleDateString("es-MX", { day: "numeric", month: "short" })} ${usd(d.usd, 0)}`).join(" · ")}</small></span></div>
-      <div class="two">
+      <div class="two" style="${miss.length ? "display:none" : ""}">
         <div class="side bot"><h3><span>🤖 Por los bots</span><b style="color:${col(bots)}">${sg(bots)}</b></h3><p>Lo que cobraron en comisiones menos lo que costó operar.</p>
           ${ln("Comisiones de los vaults abiertos", feesOpen, "m", "Tu parte de cada cosecha + recompensas, según Beefy")}
           ${ln("Comisiones de vaults ya cerrados", closedFees, "e", "Fijo: estimado al 11 de noviembre")}
           ${S.nlp?.last ? ln("lp-neutral (posición cubierta)", hedge, "m", "Capital de hoy − capital inicial") : ""}
-          ${ln("Costo de operar: gas, intercambios, puente", costs, "d", "Lo que falta para cuadrar el total; también absorbe el resultado de los vaults que se cierren desde hoy")}</div>
+          ${ln("Resto sin medir: gas, intercambios, puente, vaults cerrados desde hoy", costs, "d", "No es una medición: es lo que falta para cuadrar el total")}</div>
         <div class="side vol"><h3><span>📈 Por la volatilidad</span><b style="color:${col(vol)}">${sg(vol)}</b></h3><p>Lo que subieron o bajaron de precio tus activos. No depende de los bots.</p>
           ${ln("ETH y tokens libres en las wallets", freePrice, "a", "Cantidad × cambio de precio, sumado cada 5 minutos")}
           ${ln("Tokens dentro de los vaults abiertos", openPrice, "m", "Resultado de cada vault según Beefy − sus comisiones")}
           ${ln("Precio en vaults ya cerrados", closedPrice, "e", "Fijo: estimado al 11 de noviembre")}</div>
       </div>
-      ${(S.pf.balances?.errors ?? []).length || S.pf.balances?.error ? `<div class="alert warn" style="margin-top:10px">Lectura incompleta de saldos (${esc((S.pf.balances.errors ?? [S.pf.balances.error]).join(" · ").slice(0, 160))}): el total puede verse más bajo de lo real hasta la siguiente lectura.</div>` : ""}
+      ${stale.length ? `<div class="alert warn" style="margin-top:10px"><b>Lectura incompleta ahora.</b> Estas cadenas no respondieron y se cuentan con su último dato bueno, no en cero: ${stale.map((x) => `${esc(x.chain)} ${x.kind === "libre" ? "libre" : "vaults"} ${usd(x.usd)} (${ago(new Date(x.t).toISOString())})`).join(" · ")}. El resultado puede variar un poco cuando vuelvan a leerse.</div>` : ""}
       ${(() => { const g = S.pf.guard; if (!g) return ""; const bad = /^ALERTA/.test(g.level), c = bad ? "bad" : g.level === "AVISO" ? "warn" : "info";
         return `<div class="alert ${c}" style="margin-top:10px"><b>🛡️ Vigía AI-USDG: ${bad ? "ALERTA" : g.level}</b>${g.alerts.length ? " · " + g.alerts.map(esc).join(" · ") : ""}${g.warns.length ? " · " + g.warns.map(esc).join(" · ") : ""}
           · precio ${g.px ? "$" + g.px.price.toPrecision(4) + ` (24 h ${sgnP(g.px.ch24)}, contra el máximo de 24 h ${sgnP(g.m.dropFromHigh)})` : "sin dato"}${g.px ? ` · volumen 24 h ${usdK(g.px.vol24)} · liquidez del pool ${usdK(g.px.liq)}` : ""}${fin(g.m.ratePct) ? ` · ritmo real ${pct(g.m.ratePct, 2)}/día` : ""}

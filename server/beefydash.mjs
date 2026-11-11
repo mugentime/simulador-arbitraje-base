@@ -185,7 +185,25 @@ export async function beefyDashboard(address, { provider = null } = {}) {
   const sum = (k) => +shown.reduce((s, r) => s + (Number.isFinite(r[k]) ? r[k] : 0), 0).toFixed(2);
   return { address: w.address, at: new Date().toISOString(),
     summary: { depositedUsd: sum("nowUsd"), vaults: shown.length, yieldUsd: sum("yieldUsd"), dailyUsd: sum("dailyUsd"), monthlyUsd: +(sum("dailyUsd") * 30).toFixed(2), atDepositUsd: sum("atDepositUsd"), pnlUsd: sum("pnlUsd") },
-    rows: shown, diag: { orphan, noHist }, timeline: { clm: Array.isArray(clmTl) ? clmTl.length : 0, databarn: Array.isArray(dbTl) ? dbTl.length : 0 }, errors };
+    rows: shown, diag: { orphan, noHist }, timeline: { clm: Array.isArray(clmTl) ? clmTl.length : 0, databarn: Array.isArray(dbTl) ? dbTl.length : 0 }, errors, readChains: w.readChains ?? null };
+}
+/** Una cadena sin lectura no es una posición cerrada (puro, probado): rellena sus filas con el último dato bueno, marcadas `stale`. */
+export function carryDash(last, d, now = Date.now()) {
+  if (!d || !Array.isArray(d.rows) || !Array.isArray(d.readChains)) return [];
+  const read = new Set(d.readChains), stale = [];
+  for (const c of read) last[c] = { t: now, rows: d.rows.filter((r) => r.chain === c) };
+  for (const [c, g] of Object.entries(last)) {
+    if (read.has(c) || !g.rows?.length) continue;
+    d.rows.push(...g.rows.map((r) => ({ ...r, stale: g.t })));
+    stale.push({ kind: "vaults", chain: c, usd: +g.rows.reduce((a, r) => a + (r.nowUsd ?? 0), 0).toFixed(2), t: g.t });
+  }
+  if (stale.length) {
+    d.rows.sort((a, b) => b.nowUsd - a.nowUsd);
+    const sum = (k) => +d.rows.reduce((s, r) => s + (Number.isFinite(r[k]) ? r[k] : 0), 0).toFixed(2);
+    d.summary = { depositedUsd: sum("nowUsd"), vaults: d.rows.length, yieldUsd: sum("yieldUsd"), dailyUsd: sum("dailyUsd"), monthlyUsd: +(sum("dailyUsd") * 30).toFixed(2), atDepositUsd: sum("atDepositUsd"), pnlUsd: sum("pnlUsd") };
+  }
+  d.stale = stale;
+  return stale;
 }
 
 export function beefyDashLine(d) {

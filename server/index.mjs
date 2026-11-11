@@ -16,13 +16,13 @@ import { RevertLend } from "./revertlend.mjs";
 import { RevertLoan } from "./revertloan.mjs";
 import { NeutralLp } from "./neutrallp.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
-import { beefyDashboard, beefyDashLine } from "./beefydash.mjs";
+import { beefyDashboard, beefyDashLine, carryDash } from "./beefydash.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
 import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy, parseDcaExtra } from "./strategy.mjs";
-import { seedLedger, accrueFree, addDeposits } from "./resultledger.mjs";
+import { seedLedger, accrueFree, addDeposits, carryForward } from "./resultledger.mjs";
 import { runGuard } from "./guard.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
@@ -468,7 +468,7 @@ const server = http.createServer(async (req, res) => {
     const addr = (q.get("address") || (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",")[0]).toLowerCase();
     try {
       const c = beefyDashCache.get(addr);
-      const d = c && Date.now() - c.at < 120_000 && !q.has("fresh") ? c.d : await beefyDashboard(addr, { provider: executor?.provider });
+      const d = c && Date.now() - c.at < 120_000 && !q.has("fresh") ? c.d : await dashNow(addr);
       if (!c || c.d !== d) beefyDashCache.set(addr, { at: Date.now(), d });
       res.writeHead(200, headers); return res.end(J(d));
     } catch (e) { res.writeHead(502, headers); return res.end(JSON.stringify({ error: e.message })); }
@@ -558,6 +558,18 @@ if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
 let lastAudit = null, lastGuard = null;
 const beefyDashCache = new Map();
+// espejo de Beefy con relleno: una cadena que no responde conserva sus filas del último dato bueno (no es una posición cerrada)
+const staleTxt = (st) => st.map((x) => `${x.chain} ${x.kind === "libre" ? "libre" : "vaults"} $${x.usd.toFixed(2)} (dato de ${new Date(x.t).toISOString().slice(11, 16)} UTC)`).join(", ");
+async function dashNow(addr) {
+  const d = await beefyDashboard(addr, { provider: executor?.provider });
+  try {
+    const all = (await store.get("beefyDashLastGood").catch(() => null)) ?? {}, last = (all[addr] ??= {});
+    const st = carryDash(last, d);
+    if (st.length) d.errors.push(`sin lectura ahora, se usa el último dato bueno: ${staleTxt(st)}`);
+    await store.set("beefyDashLastGood", all).catch(() => {});
+  } catch { /* el relleno nunca tumba el espejo */ }
+  return d;
+}
 // vigía del pool principal (GUARD_POOL=cadena:pool:vault:nombre), solo en Base: evalúa cada 10 min con el precio del pool
 // (DexScreener) y la última lectura de la posición (Beefy, horaria). Escribe la línea "vigía …" cada hora y siempre que haya
 // alerta o cambie de nivel; la tarea programada la lee y avisa al teléfono; worker-robinhood la lee en /api/guard y actúa.
@@ -583,7 +595,7 @@ async function logBeefyWallets() {
         try { const L = await getLedger(); const px = pf.data?.wallet?.prices ?? {}; const n = addDeposits(L, lastAudit.deposits, (c) => (c === "bsc" ? px.BNB : ["base", "arbitrum", "optimism", "robinhood", "ethereum"].includes(c) ? px.ETH : null)); if (n) { await store.set("resultLedger", L); console.log(`${new Date().toISOString()} resultado: ${n} depósito(s) externo(s) nuevo(s) · total ${L.deposits.length} · $${L.deposits.reduce((x, d) => x + d.usd, 0).toFixed(2)}`); } } catch { /* */ } console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
-      try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`);
+      try { const d = await dashNow(a.toLowerCase()); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`);
         await guardTick(true); }
       catch (e) { console.log(`${new Date().toISOString()} beefy dashboard ${a}: error ${e.message}`); }
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
@@ -606,8 +618,20 @@ async function refreshPortfolio() {
   if (!a) throw new Error("sin wallet configurada");
   const [wallet, balances] = await Promise.all([beefyWallet(a, { provider: executor?.provider }), walletBalances(a, { provider: executor?.provider }).catch((e) => ({ error: e.message }))]);
   const L = await getLedger();
+  // una cadena que no responde no vale cero: se rellena con su último dato bueno y el panel lo avisa
+  let stale = [], missing = [];
+  try {
+    const last = (pf.lastGood ??= (await store.get("portfolioLastGood").catch(() => null)) ?? {});
+    stale = carryForward(last, wallet, balances);
+    // cadenas que fallaron y de las que no hay dato anterior: ahí el total sí queda incompleto
+    const balFail = balances?.error ? ["todas"] : [...new Set((balances?.errors ?? []).map((e) => String(e).split(/[ :]/)[0]))].filter((c) => !(balances.chains ?? []).some((x) => x.chain === c));
+    missing = [...(wallet.failedChains ?? []).filter((c) => !last.inv?.[c]).map((c) => `${c} (vaults)`), ...balFail.filter((c) => c === "todas" ? !(balances.chains ?? []).length : true).map((c) => `${c} (libre)`)];
+    const key = stale.map((x) => x.kind + x.chain).join() + "|" + missing.join();
+    if (key !== pf.staleKey) { pf.staleKey = key; console.log(`${new Date().toISOString()} panel: ${stale.length ? `sin lectura ahora, se usa el último dato bueno · ${staleTxt(stale)}` : "lectura completa de todas las cadenas"}${missing.length ? ` · SIN DATO (ni anterior) de: ${missing.join(", ")}` : ""}`); }
+    if (Date.now() - (pf.lastGoodSaved ?? 0) >= 4.5 * 60_000) { pf.lastGoodSaved = Date.now(); await store.set("portfolioLastGood", last).catch(() => {}); }
+  } catch { /* el relleno nunca tumba el panel */ }
   try { accrueFree(L, balances); } catch { /* el libro nunca tumba el panel */ }
-  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice }, guard: lastGuard }; pf.at = Date.now();
+  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, stale, missing, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice }, guard: lastGuard }; pf.at = Date.now();
   if (pf.at - pf.lastSaved >= 4.5 * 60_000) {
     pf.lastSaved = pf.at;
     const ser = (await store.get("portfolioSeries")) ?? [];

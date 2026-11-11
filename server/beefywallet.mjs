@@ -115,7 +115,7 @@ export async function beefyWallet(address, { provider = null } = {}) {
   const net = netDepositsByVault(history.entries);
   const chainsInHistory = [...new Set(history.entries.map((e) => e.chain).filter(Boolean))];
 
-  const positions = []; const errors = []; const onchainPx = {};
+  const positions = []; const errors = []; const onchainPx = {}; const readChains = [], failedChains = []; // cadenas que sí respondieron (las demás no son saldo cero)
   const chains = [...new Set([...chainsInHistory, "base", "monad"])];
   for (const chain of chains) {
     const list = byChain[chain] ?? [];
@@ -129,7 +129,8 @@ export async function beefyWallet(address, { provider = null } = {}) {
         break;
       } catch (e) { errors.push(`${chain}${url ? " " + new URL(url).host : ""}: ${(e.shortMessage || e.message).slice(0, 60)}`); p = null; }
     }
-    if (!bal) { if (!rpcsFor(chain).length && !(chain === core.CHAIN?.beefy)) errors.push(`${chain}: sin RPC configurado`); continue; }
+    if (!bal) { failedChains.push(chain); if (!rpcsFor(chain).length && !(chain === core.CHAIN?.beefy)) errors.push(`${chain}: sin RPC configurado`); continue; }
+    readChains.push(chain);
     const held = list.map((v, i) => ({ v, shares: bal[i] ? BigInt(bal[i]) : 0n })).filter((x) => x.shares > 0n);
     const std = held.filter((x) => x.v.type === "standard");
     const pp = std.length ? await core.multicall(ethers, p, std.map((x) => [x.v.earnContractAddress, iface.encodeFunctionData("getPricePerFullShare")])) : [];
@@ -181,7 +182,7 @@ export async function beefyWallet(address, { provider = null } = {}) {
     pricesBeefy: { cbBTC: px("cbBTC"), ZEC: px("ZEC") }, pricesSource: Object.fromEntries(Object.entries(onchainPx).map(([k, o]) => [k, `pool ${o.chain} ${o.id}`])),
     recent: history.entries.filter((e) => e.datetime && Date.now() - new Date(e.datetime).getTime() < 72 * 3600_000).map((e) => ({ at: e.datetime, chain: e.chain, id: e.product_key?.split(":").pop() ?? e.vault_id ?? e.display_name, name: e.display_name ?? null, tx: e.transaction_hash ?? e.tx_hash ?? e.transactionHash ?? null, usd: Number(e.usd_diff ?? e.usdDiff ?? NaN), shares: e.share_diff ?? e.shareDiff ?? null, action: e.action ?? e.type ?? null })).sort((a, b) => String(a.at).localeCompare(String(b.at))),
     history: { source: history.source, entries: history.entries.length, chains: chainsInHistory, error: history.error, sampleKeys: history.entries[0] ? Object.keys(history.entries[0]).slice(0, 20) : null },
-    errors };
+    errors, readChains, failedChains };
 }
 
 export function beefyWalletLine(r) {
@@ -266,17 +267,20 @@ export async function walletBalances(address, { provider = null } = {}) {
       const p = c.key === core.CHAIN?.key && provider ? provider : new ethers.JsonRpcProvider(c.rpcs[0], undefined, { staticNetwork: true });
       const nat = Number(ethers.formatEther(await p.getBalance(address)));
       const rows = [{ sym: c.native, amount: nat, usd: nat * (tokenUsd(prices, c.native) ?? 0) }];
+      let partial = false;
       for (const t of c.tokens) {
+        // un token que no responde no es saldo cero: se reintenta una vez y, si vuelve a fallar, la cadena queda como lectura parcial
+        const call = { to: t.address, data: ERC20B.encodeFunctionData("balanceOf", [address]) };
         try {
-          const raw = ERC20B.decodeFunctionResult("balanceOf", await p.call({ to: t.address, data: ERC20B.encodeFunctionData("balanceOf", [address]) }))[0];
+          const raw = ERC20B.decodeFunctionResult("balanceOf", await p.call(call).catch(() => p.call(call)))[0];
           const a = Number(raw) / 10 ** t.decimals;
           if (a > 0) rows.push({ sym: t.sym, amount: a, usd: a * (tokenUsd(prices, t.sym) ?? 0) });
-        } catch {}
+        } catch (e) { partial = true; out.errors.push(`${c.key} ${t.sym}: ${(e.shortMessage || e.message).slice(0, 60)}`); }
       }
       try { rows.push(...await extraTokenRows(p, c.key, c.beefy ?? c.key, address, prices, new Set(c.tokens.map((t) => String(t.address).toLowerCase())))); }
-      catch (e) { out.errors.push(`${c.key} (tokens extra): ${(e.shortMessage || e.message).slice(0, 60)}`); }
+      catch (e) { partial = true; out.errors.push(`${c.key} (tokens extra): ${(e.shortMessage || e.message).slice(0, 60)}`); }
       const usd = rows.reduce((x, r) => x + r.usd, 0);
-      out.chains.push({ chain: c.key, usd: +usd.toFixed(2), rows: rows.filter((r) => r.usd >= 0.01).map((r) => ({ ...r, amount: +r.amount.toPrecision(6), usd: +r.usd.toFixed(2) })) });
+      out.chains.push({ chain: c.key, usd: +usd.toFixed(2), ...(partial ? { partial: true } : {}), rows: rows.filter((r) => r.usd >= 0.01).map((r) => ({ ...r, amount: +r.amount.toPrecision(6), usd: +r.usd.toFixed(2) })) });
       out.totalUsd += usd;
     } catch (e) { out.errors.push(`${c.key}: ${(e.shortMessage || e.message).slice(0, 80)}`); }
   }));
