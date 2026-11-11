@@ -100,4 +100,19 @@ process.env.MIGRATE = "uniswap-cow-bsc-zec-btcb-rp>uniswap-cow-bsc-zec-btcb-rp@t
 ok(await s.migrate({ ethUsd: 600 }) && s.s.migrations.t1.step === "entrada" && B(RP) === 0n && B(S) > 28n * 10n ** 18n, `migración: salida a USDT (${logs.at(-1)?.slice(0, 120)})`);
 ok(await s.migrate({ ethUsd: 600 }) && s.s.migrations.t1.step === "hecha" && B(RP) > 0n && B(RP) < sh0, "migración: entrada al destino (menos participaciones por las comisiones de swap)");
 ok(!(await s.migrate({ ethUsd: 600 })), "migración: no se repite");
+// vigía: cobro parcial (25 %) dejando el resultado en token1 (el "dólar" del par) y luego salida total al mismo token
+{
+  const rp0 = B(RP), b1 = B(BTCB), s0 = B(S), z0 = B(ZEC);
+  s.run = s.s.runs.take = { kind: "beefy-clm-exit", startedAt: 5, txs: [], status: "pendiente" }; s.vaultId = "uniswap-cow-bsc-zec-btcb-rp"; s.keepStable = true; s.exitTo = BTCB; s.exitFrac = 0.25;
+  await exitClm(s, { ethUsd: 600 });
+  ok(B(RP) === rp0 - rp0 * 250000n / 1000000n, "cobro: sale el 25 % de las participaciones");
+  ok(B(BTCB) > b1 && B(S) === s0 && B(ZEC) === z0, "cobro: todo queda en token1, sin tocar el estable ni dejar token0 suelto");
+  ok(lc(s.run.outToken) === lc(BTCB) && BigInt(s.run.outKept) === B(BTCB) - b1 && s.run.partial, `cobro: registra lo que quedó en token1 (${logs.at(-1)?.slice(0, 90)})`);
+  const got = Number(B(BTCB) - b1) / 1e18 * 75000;
+  ok(got > 7.1 && got < 7.3, `cobro: ≈ 25 % de $29 = $${got.toFixed(2)}`);
+  s.exitFrac = null; s.run = s.s.runs.out = { kind: "beefy-clm-exit", startedAt: 6, txs: [], status: "pendiente" };
+  await exitClm(s, { ethUsd: 600 });
+  ok(B(RP) === 0n && B(S) === s0 && B(ZEC) === z0, "salida total del vigía: sin participaciones, todo en token1");
+  s.exitTo = null; s.keepStable = false;
+}
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);

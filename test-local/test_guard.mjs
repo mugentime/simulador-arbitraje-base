@@ -26,5 +26,32 @@ const mk = (rows) => rows.map(([h, price, y = null, now = 200, liq = 30000, vol 
   assert.equal(r.level, "OK"); assert.match(r.line, /^vigía AI-USDG: OK · precio \$0\.03208/);
   const r2 = await runGuard({ store, row, name: "AI-USDG", chain: "robinhood", pool: "0xdcd2", fetchJson: async () => { throw new Error("HTTP 429"); } });
   assert.match(r2.line, /sin dato \(HTTP 429\)/); assert.equal(mem.guard.hist.length, 2);
+  // confirmación: la causa debe repetirse en dos evaluaciones seguidas
+  const low = async () => ({ pairs: [{ priceUsd: "0.0250", volume: { h24: 4e5 }, liquidity: { usd: 3e4 }, priceChange: { h24: -22 } }] });
+  const a1 = await runGuard({ store, row, name: "AI-USDG", chain: "robinhood", pool: "0xdcd2", fetchJson: low });
+  assert.equal(a1.level, "ALERTA NUEVA"); assert.deepEqual(a1.keys, ["precio"]); assert.deepEqual(a1.confirmed, []);
+  const a2 = await runGuard({ store, row, name: "AI-USDG", chain: "robinhood", pool: "0xdcd2", fetchJson: low });
+  assert.deepEqual(a2.confirmed, ["precio"]);
 }
 console.log("vigía ok");
+
+// decisión del vigía automático (salida / cobro diario)
+{
+  const { guardDecision } = await (async () => { process.env.STRATEGY = "beefy-clm-dca"; return import("../server/strategy.mjs"); })();
+  const D = 24 * 3600_000, row = (now, dep = 203.49) => ({ nowUsd: now, atDepositUsd: dep, yieldUsd: 3 });
+  // alerta de precio → salida total; la de rendimiento sola no saca
+  assert.equal(guardDecision({}, { keys: ["precio"], confirmed: ["precio"], alerts: ["precio −16 %"], row: row(180) }, [], t0).kind, "exit");
+  assert.equal(guardDecision({}, { keys: ["precio"], confirmed: [], alerts: ["precio −16 %"], row: row(203) }, [], t0), null, "sin confirmar no sale");
+  assert.equal(guardDecision({}, { keys: ["rendimiento"], confirmed: ["rendimiento"], alerts: ["ritmo bajo"], row: row(203) }, [], t0), null);
+  // cobro: la base se fija el primer día; no cobra antes de 24 h ni si la ganancia es menor al mínimo
+  const G = {};
+  assert.equal(guardDecision(G, { keys: [], row: row(218.29) }, [], t0), null); assert.equal(G.basis.usd, 203.49);
+  assert.equal(guardDecision(G, { keys: [], row: row(225) }, [], t0 + 23 * 3600_000), null);
+  const t = guardDecision(G, { keys: [], row: row(228.29, 190) }, [{ at: new Date(t0 + 3600_000).toISOString(), usd: 10 }, { at: new Date(t0 - 3600_000).toISOString(), usd: 10 }], t0 + D);
+  assert.equal(t.kind, "take"); assert.ok(Math.abs(t.basis - 213.49) < 1e-9 && Math.abs(t.gain - 14.8) < 1e-9 && Math.abs(t.frac - 14.8 / 228.29) < 1e-9);
+  G.lastTakeAt = t0 + D;
+  assert.equal(guardDecision(G, { keys: [], row: row(230) }, [], t0 + D + 3600_000), null, "una vez al día");
+  assert.equal(guardDecision(G, { keys: [], row: row(205) }, [], t0 + 2 * D), null, "ganancia menor al mínimo");
+  assert.equal(guardDecision(G, { keys: [], row: row(500) }, [], t0 + 2 * D).frac, 0.5, "tope 50 %");
+  console.log("vigía automático ok");
+}

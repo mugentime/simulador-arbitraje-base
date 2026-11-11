@@ -53,10 +53,14 @@ export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAU
   const s = { t: now, price: px?.price ?? null, vol24: px?.vol24 ?? null, liq: px?.liq ?? null, yieldUsd: row?.yieldUsd ?? null, nowUsd: row?.nowUsd ?? null, atDep: row?.atDepositUsd ?? null };
   st.hist.push(s); st.hist = st.hist.filter((x) => now - x.t <= 14 * 24 * H);
   const ev = guardEval(st.hist, th), level = guardLevel(st.state, ev, now, th);
+  // una causa cuenta como confirmada cuando aparece en dos evaluaciones seguidas (evita actuar por una lectura mala de precio)
+  const streak = {}; for (const a of ev.alerts) streak[a.k] = (st.state.streak?.[a.k] ?? 0) + 1;
+  st.state.streak = streak;
+  const confirmed = Object.entries(streak).filter(([, n]) => n >= 2).map(([k]) => k);
   await store.set("guard", st).catch(() => {});
   const f = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "—"), k = (v) => (Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "—");
   const line = `vigía ${name}: ${level}${ev.alerts.length ? " · " + ev.alerts.map((a) => a.t).join(" | ") : ""}${ev.warns.length ? " · avisos: " + ev.warns.join(" | ") : ""}` +
     ` · precio ${px ? "$" + px.price.toPrecision(4) : "sin dato" + (err ? ` (${err})` : "")}${px ? ` (24 h ${f(px.ch24)} %, vs máximo 24 h ${f(ev.m.dropFromHigh)} %)` : ""} · volumen 24 h ${k(px?.vol24)} · liquidez ${k(px?.liq)}` +
     ` · posición ${row ? `$${f(row.nowUsd, 2)} (metido $${f(row.atDepositUsd, 2)}, comisiones $${f(row.yieldUsd, 2)})` : "sin dato"} · ritmo real ${f(ev.m.ratePct, 2)} %/día · reglas: precio −${th.dropPct} % en 24 h, −${th.fastDropPct} % en 1 h, ritmo < ${th.minRatePct} %/día, posición −${th.lossPct} %`;
-  return { at: new Date(now).toISOString(), level, alerts: ev.alerts.map((a) => a.t), warns: ev.warns, m: ev.m, px, row: row ? { nowUsd: row.nowUsd, atDepositUsd: row.atDepositUsd, yieldUsd: row.yieldUsd } : null, line };
+  return { at: new Date(now).toISOString(), level, keys: ev.alerts.map((a) => a.k), confirmed, alerts: ev.alerts.map((a) => a.t), warns: ev.warns, m: ev.m, px, row: row ? { nowUsd: row.nowUsd, atDepositUsd: row.atDepositUsd, yieldUsd: row.yieldUsd } : null, line };
 }

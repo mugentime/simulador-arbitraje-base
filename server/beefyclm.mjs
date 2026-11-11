@@ -500,7 +500,9 @@ export async function exitClm(s, ctx) {
   if (r.clmOut === undefined) {
     const before = await bal(s, r.clm);
     const held = await bal(s, r.vault);
-    const part = s.exitShares != null && s.exitShares > 0n && s.exitShares < held ? s.exitShares : null; // salida parcial (sniper)
+    // salida parcial: participaciones exactas (sniper) o una fracción de lo que hay (cobro de ganancias del vigía)
+    const fracPart = s.exitFrac > 0 && s.exitFrac < 1 ? held * BigInt(Math.round(s.exitFrac * 1e6)) / 1_000_000n : null;
+    const part = s.exitShares != null && s.exitShares > 0n && s.exitShares < held ? s.exitShares : fracPart && fracPart > 0n && fracPart < held ? fracPart : null;
     if (r.gov && held > 0n && r.claimedStable === undefined) {
       // las recompensas cobradas al salir son rendimiento de la estrategia: se registran (valuadas en el estable)
       const got = await claimRewards(s, "getReward antes de salir").catch(() => []);
@@ -533,9 +535,23 @@ export async function exitClm(s, ctx) {
     if (r.noStable) {
       const b1 = await bal(s, r.t1);
       const g0 = (await bal(s, r.t0)) - bX0, g1 = b1 - (r.b1Before ? BigInt(r.b1Before) : 0n);
+      // s.exitTo = uno de los dos tokens del par (p. ej. el dólar USDG): se vende solo el otro y el resultado queda en ese token.
+      // Si no hay ruta hacia él, ese token se vende al estable de la cadena como siempre (mejor salir en ETH que no salir).
+      const lcx = (a) => String(a).toLowerCase(), to = s.exitTo && [lcx(r.t0), lcx(r.t1)].includes(lcx(s.exitTo)) ? lcx(s.exitTo) : null;
+      if (to) {
+        const other = to === lcx(r.t0) ? r.t1 : r.t0, gOther = to === lcx(r.t0) ? g1 : g0, gKeep = to === lcx(r.t0) ? g0 : g1;
+        let got = 0n, fellBack = false;
+        if (gOther > 0n) {
+          try { got = await routeSwap(s, other, s.exitTo, gOther, "swap del otro token→dólar"); }
+          catch (e) { if (e.retry) throw e; fellBack = true; await s.diag(`estrategia beefy-clm-exit: sin ruta directa al dólar (${(e.shortMessage || e.message).slice(0, 100)}) · se vende a ${s.net.stableSym}`); await routeSwap(s, other, s.net.stable, gOther, `swap del otro token→${s.net.stableSym}`); }
+        }
+        r.outToken = s.exitTo; r.outKept = String(gKeep + got); r.outFallback = fellBack ? String((await bal(s, s.net.stable)) - bU0) : null;
+        r.usdcOut = String(gKeep + got > 0n ? gKeep + got : (await bal(s, s.net.stable)) - bU0); r.xSold = String(gOther); await s.save();
+      } else {
       if (g0 > 0n) await routeSwap(s, r.t0, s.net.stable, g0, `swap token0→${s.net.stableSym}`);
       if (g1 > 0n) await routeSwap(s, r.t1, s.net.stable, g1, `swap token1→${s.net.stableSym}`);
       r.usdcOut = String((await bal(s, s.net.stable)) - bU0); r.xSold = String(g0); await s.save();
+      }
     } else {
     const xGot = r.partial ? (await bal(s, r.x)) - bX0 : await bal(s, r.x); // todo el X de la wallet (parcial: solo lo retirado)
     const uFromX = xGot > 0n ? (r.dex === "otro" ? await routeSwap(s, r.x, s.net.stable, xGot, `swap X→${s.net.stableSym}`) : await slipSwap(s, r.x, s.net.stable, xGot, xGot / 100n, `swap X→${s.net.stableSym}`)) : 0n;
@@ -544,6 +560,7 @@ export async function exitClm(s, ctx) {
   }
   const amt = BigInt(r.usdcOut);
   if (amt <= 0n) throw new Error("no salió USDC del CLM");
+  if (r.outToken) { await s.diag(`estrategia beefy-clm-exit: ${r.partial ? "retiro parcial" : "cerrada"} · ${amt} (crudo) del token ${r.outToken} quedan en la wallet${r.outFallback ? ` + ${ethers.formatUnits(r.outFallback, s.net.stableDec)} ${s.net.stableSym}` : ""} · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   if (s.net.nativeFee === null || s.keepStable) { await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, s.net.stableDec)} ${s.net.stableSym} quedan en la wallet · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   await approve(s, BASE.USDC, BASE.ROUTER, amt, "approve USDC→router");
   const p = { tokenIn: BASE.USDC, tokenOut: BASE.WETH, fee: BASE.FEE, recipient: BASE.ROUTER, amountIn: amt, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n };

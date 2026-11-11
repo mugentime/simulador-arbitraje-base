@@ -430,7 +430,7 @@ const server = http.createServer(async (req, res) => {
     const dca = st?.dca ? Object.fromEntries(Object.entries(st.dca).map(([k, d]) => [k, { ...d, deposits: (d.deposits ?? []).map((x) => ({ ...x, vault: x.vault ?? (x.txs ?? []).map((hh) => vaultOfTx[hh]).find(Boolean) ?? null })) }])) : null;
     const cfg = { extras: parseDcaExtra(process.env.DCA_EXTRA).map((e) => e.spec), mainPaused: !!strategy?.pauseMain, hunterOff: !!strategy?.hunterOff, mainVault: process.env.STRATEGY_VAULT_ID === "auto" ? (process.env.AUTO_PIN || null) : (process.env.STRATEGY_VAULT_ID || null), exitVaults: process.env.EXIT_VAULTS || null };
     const once = Object.values(st?.once ?? {}).flatMap((t) => Object.values(t ?? {})).filter((x) => x?.status === "hecho" && x.vaultId).map((x) => ({ at: x.at, usd: x.usd, vault: x.vaultId, txs: x.txs ?? [], once: true }));
-    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, cfg, once, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, cfg, once, guardAuto: st?.guardAuto ? { on: process.env.GUARD_AUTO !== "0", paused: !!st.guardAuto.paused, pending: st.guardAuto.pending ? { kind: st.guardAuto.pending.kind, tries: st.guardAuto.pending.tries ?? 0, at: st.guardAuto.pending.at } : null, basis: st.guardAuto.basis ?? null, lastTakeAt: st.guardAuto.lastTakeAt ?? null, takes: (st.guardAuto.takes ?? []).slice(-10), exits: st.guardAuto.exits ?? [], last: st.guardAuto.last ?? null } : null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
       cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
   }
   if (req.url.startsWith("/api/withdraw-audit")) {
@@ -461,6 +461,7 @@ const server = http.createServer(async (req, res) => {
     const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
     return res.end(fs.readFileSync(new URL("./positions.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`));
   }
+  if (req.url.startsWith("/api/guard")) { res.writeHead(200, headers); return res.end(J(lastGuard ?? { ready: false })); }
   if (req.url.startsWith("/api/beefy-dashboard")) {
     // espejo del dashboard de Beefy; caché de 2 min por dirección
     const q = new URL(req.url, "http://x").searchParams;
@@ -557,6 +558,21 @@ if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
 let lastAudit = null, lastGuard = null;
 const beefyDashCache = new Map();
+// vigía del pool principal (GUARD_POOL=cadena:pool:vault:nombre), solo en Base: evalúa cada 10 min con el precio del pool
+// (DexScreener) y la última lectura de la posición (Beefy, horaria). Escribe la línea "vigía …" cada hora y siempre que haya
+// alerta o cambie de nivel; la tarea programada la lee y avisa al teléfono; worker-robinhood la lee en /api/guard y actúa.
+const GUARD_CFG = (process.env.GUARD_POOL ?? "robinhood:0xdcd2043fFB830072A10C692b38E1EB0A2ce45F8F:aero-cow-robinhood-ai-usdg-vault:AI-USDG").split(":");
+async function guardTick(log) {
+  if (CHAIN_CFG.key !== "base" || !GUARD_CFG[1]) return;
+  try {
+    const [gc, gp, gv, gn] = GUARD_CFG, prev = lastGuard?.level;
+    const d = [...beefyDashCache.values()].sort((a, b) => b.at - a.at)[0]?.d;
+    const g = await runGuard({ store, row: d?.rows?.find((x) => x.id === gv) ?? null, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) });
+    lastGuard = { ...g, vault: gv };
+    if (log || g.level !== "OK" && g.level !== "AVISO" || g.level !== prev) console.log(`${new Date().toISOString()} ${g.line}`);
+  } catch (e) { console.log(`${new Date().toISOString()} vigía: error ${String(e.message).slice(0, 120)}`); }
+}
+if (CHAIN_CFG.key === "base") setInterval(() => guardTick(false), 10 * 60_000);
 async function logBeefyWallets() {
   if (CHAIN_CFG.key !== "base") return;
   const list = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -568,8 +584,7 @@ async function logBeefyWallets() {
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
       try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`);
-        // vigía del pool principal (GUARD_POOL=cadena:pool:vault:nombre): una línea por hora; la tarea programada avisa al teléfono
-        try { const [gc, gp, gv, gn] = (process.env.GUARD_POOL ?? "robinhood:0xdcd2043fFB830072A10C692b38E1EB0A2ce45F8F:aero-cow-robinhood-ai-usdg-vault:AI-USDG").split(":"); if (gp) { lastGuard = await runGuard({ store, row: d.rows.find((x) => x.id === gv) ?? null, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) }); console.log(`${new Date().toISOString()} ${lastGuard.line}`); } } catch (e) { console.log(`${new Date().toISOString()} vigía: error ${String(e.message).slice(0, 120)}`); } }
+        await guardTick(true); }
       catch (e) { console.log(`${new Date().toISOString()} beefy dashboard ${a}: error ${e.message}`); }
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
       const h = (await store.get("beefyWalletHist")) ?? [];
