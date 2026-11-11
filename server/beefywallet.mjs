@@ -204,11 +204,60 @@ export function tokenUsd(prices, sym) {
   const p = Number(prices?.[sym] ?? prices?.[sym.replace(/^W/, "")] ?? prices?.[`W${sym}`] ?? alt.map((k) => prices?.[k]).find((v) => v != null) ?? NaN);
   return Number.isFinite(p) ? p : null;
 }
+// Tokens fuera de la configuración: todos los que Beefy conoce en cada cadena (WMON, VVV, tokens de acciones de Robinhood…),
+// leídos por lotes con Multicall3 y valuados con los precios de Beefy; más lo estacionado en Venus (vUSDT en BSC).
+// El barrido completo se repite cada 10 min por cadena; si falla, la cadena queda como estaba (solo nativo + configuración).
+const MC3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const MC3I = new ethers.Interface(["function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[])"]);
+const VENUS = { bsc: [{ sym: "vUSDT (Venus)", address: "0xfD5840Cd36d94D7229439859C0112a4185BC0255", underDec: 18, usd: 1 }] };
+const VTOK = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function exchangeRateStored() view returns (uint256)"]);
+const extraCache = new Map(); // `${cadena}|${wallet}` → { at, rows }
+export function candidateTokens(tokensOfChain, skip = new Set()) {
+  const seen = new Set(), out = [];
+  for (const t of Object.values(tokensOfChain ?? {})) {
+    const a = String(t?.address ?? "").toLowerCase(), sym = String(t?.symbol ?? "");
+    if (!/^0x[0-9a-f]{40}$/.test(a) || seen.has(a) || skip.has(a)) continue;
+    if (/^(moo|cow|rcow|bcow|bifi-)/i.test(sym) || !Number.isFinite(Number(t.decimals))) continue; // recibos de vaults: ya están en posiciones
+    seen.add(a); out.push({ sym, address: a, decimals: Number(t.decimals), oracleId: t.oracleId ?? sym });
+  }
+  return out;
+}
+async function extraTokenRows(p, chainKey, beefyKey, address, prices, skip) {
+  const ck = `${chainKey}|${address}`, c = extraCache.get(ck);
+  if (c && Date.now() - c.at < 600_000) return c.rows;
+  const rows = [];
+  const tokensApi = await getJson(`${API}/tokens`, 30_000).catch(() => ({}));
+  const cands = candidateTokens(tokensApi?.[beefyKey], skip);
+  for (let i = 0; i < cands.length; i += 150) {
+    const part = cands.slice(i, i + 150);
+    const calls = part.map((t) => ({ target: t.address, allowFailure: true, callData: ERC20B.encodeFunctionData("balanceOf", [address]) }));
+    const [res] = MC3I.decodeFunctionResult("aggregate3", await p.call({ to: MC3, data: MC3I.encodeFunctionData("aggregate3", [calls]) }));
+    res.forEach((r, j) => {
+      if (!r.success || r.returnData.length < 66) return;
+      const raw = BigInt(r.returnData); if (raw === 0n) return;
+      const t = part[j], a = Number(raw) / 10 ** t.decimals, px = Number(prices?.[t.oracleId] ?? NaN);
+      const usd = a * (Number.isFinite(px) ? px : tokenUsd(prices, t.sym) ?? 0);
+      if (usd >= 0.01 && usd < 1e7) rows.push({ sym: t.sym, amount: a, usd });
+    });
+  }
+  for (const v of VENUS[chainKey] ?? []) {
+    try {
+      const bal = VTOK.decodeFunctionResult("balanceOf", await p.call({ to: v.address, data: VTOK.encodeFunctionData("balanceOf", [address]) }))[0];
+      if (bal === 0n) continue;
+      const rate = VTOK.decodeFunctionResult("exchangeRateStored", await p.call({ to: v.address, data: VTOK.encodeFunctionData("exchangeRateStored") }))[0];
+      const under = Number(bal * rate / 10n ** 18n) / 10 ** v.underDec;
+      if (under * v.usd >= 0.01) rows.push({ sym: v.sym, amount: under, usd: under * v.usd });
+    } catch {}
+  }
+  extraCache.set(ck, { at: Date.now(), rows });
+  return rows;
+}
+
 export async function walletBalances(address, { provider = null } = {}) {
   address = ethers.getAddress(address);
   const prices = await getJson(`${API}/prices`).catch(() => ({}));
   const chains = [
-    ...Object.values(CHAINS).map((c) => ({ key: c.key, native: c.native, rpcs: c.rpcs, tokens: Object.values(c.tokens ?? {}).map((t) => ({ sym: t.label, address: t.address, decimals: t.decimals })) })),
+    ...Object.values(CHAINS).map((c) => ({ key: c.key, beefy: c.beefy ?? c.key, native: c.native, rpcs: c.rpcs, tokens: Object.values(c.tokens ?? {}).map((t) => ({ sym: t.label, address: t.address, decimals: t.decimals })) })),
     ...Object.entries(NATIVE_EXTRA).map(([key, v]) => ({ key, native: v.sym, rpcs: v.rpcs, tokens: [] })),
   ];
   const out = { at: new Date().toISOString(), address, totalUsd: 0, chains: [], errors: [] };
@@ -224,6 +273,8 @@ export async function walletBalances(address, { provider = null } = {}) {
           if (a > 0) rows.push({ sym: t.sym, amount: a, usd: a * (tokenUsd(prices, t.sym) ?? 0) });
         } catch {}
       }
+      try { rows.push(...await extraTokenRows(p, c.key, c.beefy ?? c.key, address, prices, new Set(c.tokens.map((t) => String(t.address).toLowerCase())))); }
+      catch (e) { out.errors.push(`${c.key} (tokens extra): ${(e.shortMessage || e.message).slice(0, 60)}`); }
       const usd = rows.reduce((x, r) => x + r.usd, 0);
       out.chains.push({ chain: c.key, usd: +usd.toFixed(2), rows: rows.filter((r) => r.usd >= 0.01).map((r) => ({ ...r, amount: +r.amount.toPrecision(6), usd: +r.usd.toFixed(2) })) });
       out.totalUsd += usd;
