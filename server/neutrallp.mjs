@@ -155,7 +155,13 @@ export class NeutralLp {
     try {
       if (this.cfg.closeOld && !this.s.runs[`old:${this.cfg.closeOld}`]?.done) await this.closeOld(this.cfg.closeOld);
       await this.ensureManager();
-      if (this.cfg.close && this.s.tokenId && !this.s.runs[`close:${this.cfg.close}`]?.done) { await this.closeAll(this.cfg.close); return; }
+      if (this.cfg.close && this.s.tokenId && !this.s.runs[`close:${this.cfg.close}`]?.done) { await this.closeAll(this.cfg.close); if (!this.s.closed) return; }
+      // re-apertura con otro apalancamiento: posición cerrada + etiqueta de apertura nueva → abre de nuevo en la misma vuelta
+      if (this.s.closed && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done) {
+        this.s.baseUsd ??= this.s.entry?.usd ?? this.cfg.usd;
+        this.s.history = [...(this.s.history ?? []), { t: Date.now(), from: this.s.tokenId, to: null, why: "cierre para reabrir" }].slice(-50);
+        this.s.tokenId = null; this.s.closed = false; this.s.outSince = null; this.s.minRevert = undefined; this.s.minComet = undefined; this.s.last = null;
+      }
       if (this.cfg.tag && !this.s.runs[this.cfg.tag]?.done && !this.s.tokenId) await this.open(this.cfg.tag);
       if (this.s.tokenId && !this.s.closed) await this.monitor();
     } finally { this.busy = false; await this.save().catch(() => {}); }
@@ -218,7 +224,9 @@ export class NeutralLp {
   async open(tag) {
     const run = (this.s.runs[tag] ??= { tries: 0 });
     if (!this.s.manager || run.tries >= 3) return;
-    const C = this.cfg.usd, have = Number(await this.c(NLP.USDC).balanceOf(this.me)) / 1e6;
+    const have = Number(await this.c(NLP.USDC).balanceOf(this.me)) / 1e6;
+    // tras un cierre puede faltar algo de centavos: abre con lo que hay si es ≥ 97 % de lo pedido
+    const C = have >= this.cfg.usd ? this.cfg.usd : have >= this.cfg.usd * 0.97 ? Math.floor(have * 100) / 100 : this.cfg.usd;
     if (have < C) { if (!run.waitNoted) { run.waitNoted = true; await this.note(`apertura ${tag}: esperando fondeo · USDC en wallet $${have.toFixed(2)} de $${C}`); } return; }
     run.tries++;
     try {
@@ -235,7 +243,7 @@ export class NeutralLp {
       await this.note(`apertura ${tag}: $${C} propios · LP $${V.toFixed(2)} (WETH ${(w0 * 100).toFixed(0)} % / cbBTC) rango ticks [${lower}, ${upper}] ±${this.cfg.rangePct} % · Compound: colateral $${A.toFixed(2)}, deuda ${ethers.formatEther(borrowWeth)} WETH · Revert: deuda $${F.toFixed(2)}`);
       await this.send(`apertura ${tag}: flash $${F.toFixed(2)} → Compound → WETH → cbBTC → LP → Revert → préstamo`, this.mgr("open", [{ usdcIn, borrowWeth, sellWeth, minBtcOut, tickLower: lower, tickUpper: upper, deadline: this.dl() }, flash]));
       this.s.tokenId = (await new ethers.Contract(this.s.manager, ART.abi, this.provider).tokenId()).toString();
-      run.done = true; this.s.openedAt = Date.now(); this.s.entry = { usd: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
+      run.done = true; this.s.openedAt = Date.now(); this.s.entry = { usd: this.s.baseUsd ?? C, put: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
       const r = await this.read();
       await this.note(`abierta #${this.s.tokenId} · LP $${r.rValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · Compound colateral $${r.cColl.toFixed(2)} deuda ${r.cDebt.toFixed(6)} WETH salud ${r.h.comet.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
     } catch (e) { await this.note(`apertura ${tag} falló (${run.tries}/3) · ${(e.shortMessage || e.message).slice(0, 200)}`); }
