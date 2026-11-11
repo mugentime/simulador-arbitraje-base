@@ -22,6 +22,7 @@ import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy, parseDcaExtra } from "./strategy.mjs";
+import { seedLedger, accrueFree, addDeposits } from "./resultledger.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
@@ -561,7 +562,8 @@ async function logBeefyWallets() {
   for (const a of list) {
     try {
       try { console.log(`${new Date().toISOString()} ${walletBalancesLine(await walletBalances(a, { provider: executor?.provider }))}`); } catch (e) { console.log(`${new Date().toISOString()} saldos wallet ${a}: error ${e.message}`); }
-      try { lastAudit = await auditWallet(a, { whitelist: whitelist(), provider: executor?.provider }); console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
+      try { lastAudit = await auditWallet(a, { whitelist: whitelist(), provider: executor?.provider });
+        try { const L = await getLedger(); const px = pf.data?.wallet?.prices ?? {}; const n = addDeposits(L, lastAudit.deposits, (c) => (c === "bsc" ? px.BNB : ["base", "arbitrum", "optimism", "robinhood", "ethereum"].includes(c) ? px.ETH : null)); if (n) { await store.set("resultLedger", L); console.log(`${new Date().toISOString()} resultado: ${n} depósito(s) externo(s) nuevo(s) · total ${L.deposits.length} · $${L.deposits.reduce((x, d) => x + d.usd, 0).toFixed(2)}`); } } catch { /* */ } console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
       try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`); }
@@ -578,17 +580,23 @@ async function logBeefyWallets() {
 // sin visitas, una cada PORTFOLIO_EVERY_MIN, 5 min) y serie de 5 min de 7 días para las gráficas: /api/portfolio
 const PORTFOLIO_TTL = Math.max(20, Number(process.env.PORTFOLIO_TTL_S ?? 60)) * 1000;
 const pf = { data: null, at: 0, busy: null, lastSaved: 0 };
+// libro del resultado real (punto de partida, depósitos externos, efecto de precio de lo libre): /api/portfolio → result
+let ledger = null;
+async function getLedger() { return ledger ??= ((await store.get("resultLedger").catch(() => null)) ?? seedLedger()); }
 async function refreshPortfolio() {
   const a = (process.env.BEEFY_WALLETS || executor?.p1?.wallet || executor?.wallet?.address || "").split(",").map((x) => x.trim()).filter(Boolean)[0];
   if (!a) throw new Error("sin wallet configurada");
   const [wallet, balances] = await Promise.all([beefyWallet(a, { provider: executor?.provider }), walletBalances(a, { provider: executor?.provider }).catch((e) => ({ error: e.message }))]);
-  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000 }; pf.at = Date.now();
+  const L = await getLedger();
+  try { accrueFree(L, balances); } catch { /* el libro nunca tumba el panel */ }
+  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice } }; pf.at = Date.now();
   if (pf.at - pf.lastSaved >= 4.5 * 60_000) {
     pf.lastSaved = pf.at;
     const ser = (await store.get("portfolioSeries")) ?? [];
     ser.push({ t: pf.at, total: wallet.totalUsd, free: balances?.totalUsd ?? null, pos: Object.fromEntries(wallet.positions.map((q) => [q.id, q.valueUsd !== null ? +q.valueUsd.toFixed(4) : null])), apy: Object.fromEntries(wallet.positions.map((q) => [q.id, q.apyPct])) });
     while (ser.length > 12 * 24 * 7) ser.shift();
     await store.set("portfolioSeries", ser);
+    await store.set("resultLedger", L).catch(() => {});
   }
   return pf.data;
 }

@@ -72,6 +72,31 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 @media (max-width: 640px) { .kpi b { font-size: 19px; } .grid { grid-template-columns: 1fr; } .hide-s { display: none; } td.name { white-space: normal; min-width: 150px; } td, th { padding: 7px 5px; } .tag { font-size: 10px; } }
 
 /* análisis: códigos de color (paleta de estado fija + par divergente azul/rojo) */
+:root { --bot: #7c3aed; --vol: #d97706; --c1: #2563eb; --c2: #12805c; --c3: #7c3aed; --c4: #d97706; --c5: #db2777; --c6: #0891b2; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bot: #bc8cff; --vol: #e3b341; --c1: #58a6ff; --c2: #3fb950; --c3: #bc8cff; --c4: #e3b341; --c5: #f778ba; --c6: #39c5cf; } }
+:root[data-theme="dark"] { --bot: #bc8cff; --vol: #e3b341; --c1: #58a6ff; --c2: #3fb950; --c3: #bc8cff; --c4: #e3b341; --c5: #f778ba; --c6: #39c5cf; }
+.res { border-radius: 16px; padding: 18px; margin-bottom: 12px; border: 2px solid var(--rc); background: linear-gradient(135deg, color-mix(in srgb, var(--rc) 14%, var(--card)), var(--card) 60%); }
+.res.up { --rc: var(--ok); } .res.down { --rc: var(--bad); } .res.flat { --rc: var(--acc); }
+.res h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--mut); }
+.res .big { font-size: 44px; font-weight: 750; letter-spacing: -.02em; color: var(--rc); line-height: 1.1; margin: 4px 0; }
+.res .eq { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; margin: 8px 0 14px; }
+.res .chip { border-radius: 999px; padding: 4px 11px; font-weight: 600; background: var(--soft); white-space: nowrap; } .res .chip small { font-weight: 400; color: var(--mut); }
+.res .chip.c1 { background: color-mix(in srgb, var(--c1) 15%, var(--card)); color: var(--c1); } .res .chip.c6 { background: color-mix(in srgb, var(--c6) 15%, var(--card)); color: var(--c6); } .res .chip.c5 { background: color-mix(in srgb, var(--c5) 15%, var(--card)); color: var(--c5); }
+.res .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.res .side { border-radius: 12px; padding: 14px; border: 1px solid color-mix(in srgb, var(--sc) 35%, transparent); border-left: 6px solid var(--sc); background: color-mix(in srgb, var(--sc) 8%, var(--card)); }
+.res .side.bot { --sc: var(--bot); } .res .side.vol { --sc: var(--vol); }
+.res .side h3 { margin: 0; font-size: 14px; color: var(--sc); display: flex; justify-content: space-between; align-items: baseline; gap: 8px; } .res .side h3 b { font-size: 26px; font-weight: 750; }
+.res .side p { margin: 2px 0 10px; color: var(--mut); font-size: 12px; }
+.res .ln { display: grid; grid-template-columns: minmax(0, 1fr) 110px 74px; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px dashed color-mix(in srgb, var(--sc) 30%, transparent); font-size: 13px; }
+.res .ln .q { font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: 6px; font-weight: 600; white-space: nowrap; }
+.res .q.m { background: var(--okbg); color: var(--ok); } .res .q.a { background: var(--accbg); color: var(--acc); } .res .q.e { background: var(--soft); color: var(--mut); } .res .q.d { background: var(--warnbg); color: var(--warn); }
+.res .dv2 { position: relative; height: 12px; background: var(--soft); border-radius: 6px; } .res .dv2 i { position: absolute; top: 0; bottom: 0; border-radius: 6px; } .res .dv2 u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--mut); }
+.res .ln b { text-align: right; }
+.res .foot { margin-top: 12px; font-size: 12px; color: var(--mut); }
+@media (max-width: 760px) { .res .two { grid-template-columns: 1fr; } .res .big { font-size: 34px; } .res .ln { grid-template-columns: minmax(0, 1fr) 70px; } .res .dv2 { display: none; } }
+.kpis .kpi:nth-child(4n+1), .hero > div:nth-child(4n+1) { border-top: 3px solid var(--c1); } .kpis .kpi:nth-child(4n+2), .hero > div:nth-child(4n+2) { border-top: 3px solid var(--c2); }
+.kpis .kpi:nth-child(4n+3), .hero > div:nth-child(4n+3) { border-top: 3px solid var(--c3); } .kpis .kpi:nth-child(4n+4), .hero > div:nth-child(4n+4) { border-top: 3px solid var(--c4); }
+.tag.ch-base { background: color-mix(in srgb, var(--c1) 15%, transparent); color: var(--c1); } .tag.ch-robinhood { background: color-mix(in srgb, var(--c2) 15%, transparent); color: var(--c2); } .tag.ch-bsc { background: color-mix(in srgb, var(--c4) 15%, transparent); color: var(--c4); } .tag.ch-monad { background: color-mix(in srgb, var(--c3) 15%, transparent); color: var(--c3); }
 :root { --pos: #2a78d6; --neg: #e34948; --st-good: #0ca30c; --st-warn: #fab219; --st-serious: #ec835a; --st-crit: #d03b3b; --st-neutral: #898781; --grid: #e1e0d9; --fee: #1baf7a; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pos: #3987e5; --neg: #e66767; --grid: #2c2c2a; --fee: #199e70; } }
 :root[data-theme="dark"] { --pos: #3987e5; --neg: #e66767; --grid: #2c2c2a; --fee: #199e70; }
@@ -125,6 +150,8 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     <button id="refresh" title="Actualizar ahora">↻</button>
     <button id="theme" title="Tema claro / oscuro">◐</button>
   </header>
+
+  <section id="result"></section>
 
   <div class="card" id="bdCard" style="border:2px solid var(--acc)">
     <h2>Beefy · tu dashboard <span class="mut" style="font-weight:400;font-size:12px">mismas columnas y mismas cuentas que app.beefy.com/dashboard</span>
@@ -280,8 +307,45 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 
   // ------------------------------------------------------------------ render
   function render(changed) {
-    renderLive(); renderKpis(); renderAlerts(); renderAnalysis(); renderWorks(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
+    renderLive(); renderResult(); renderKpis(); renderAlerts(); renderAnalysis(); renderWorks(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
     $("errs").innerHTML = (S.reportErrs ?? []).length ? `<span class="err">Sin reporte de: ${S.reportErrs.map(esc).join(" · ")}</span>` : "";
+  }
+  // ---- resultado real: total, y de dónde viene (bots contra volatilidad). Mismas cuentas que server/resultledger.mjs (resultSplit)
+  function renderResult() {
+    const L = S.pf?.result, el = $("result"); if (!L || !el) return;
+    if (typeof bd === "undefined" || !bd) { el.innerHTML = `<div class="res flat"><h2>¿Cuánto he ganado o perdido?</h2><div class="mut">cargando las cuentas de Beefy…</div></div>`; return; }
+    const inv = S.pf.wallet?.totalUsd ?? 0, free = S.pf.balances?.totalUsd ?? 0, nlp = S.nlp?.last?.equity ?? 0, now = inv + free + nlp;
+    const deps = L.deposits.reduce((a, d) => a + d.usd, 0), put = L.start.usd + deps, total = now - put;
+    const feesOpen = bd.rows.reduce((a, r) => a + (fin(r.yieldUsd) ? r.yieldUsd : 0), 0);
+    const openPrice = bd.rows.reduce((a, r) => a + (fin(r.pnlUsd) ? r.pnlUsd - (r.yieldUsd ?? 0) : 0), 0);
+    const hedge = S.nlp?.last && S.nlp?.entry?.usd ? S.nlp.last.equity - S.nlp.entry.usd : 0;
+    const freePrice = L.seed.freePrice + (L.freePrice ?? 0), closedPrice = L.seed.closedPrice, closedFees = L.seed.closedFees;
+    const vol = openPrice + freePrice + closedPrice, costs = total - vol - feesOpen - closedFees - hedge, bots = feesOpen + closedFees + hedge + costs;
+    const sg = (v, d = 2) => `${v >= 0 ? "+" : "−"}$${Math.abs(v).toLocaleString("es-MX", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+    const col = (v) => (Math.abs(v) < 0.005 ? "var(--mut)" : v > 0 ? "var(--ok)" : "var(--bad)");
+    const mx = Math.max(1, ...[feesOpen, closedFees, hedge, costs, openPrice, freePrice, closedPrice].map(Math.abs));
+    const Q = { m: ["m", "medido"], a: ["a", "acumulado"], e: ["e", "estimado"], d: ["d", "por diferencia"] };
+    const ln = (name, v, q, hint = "") => `<div class="ln" title="${esc(hint)}"><span>${name}<span class="q ${Q[q][0]}">${Q[q][1]}</span></span>
+      <div class="dv2"><u></u><i style="${v >= 0 ? "left:50%" : `right:50%`};width:${(Math.abs(v) / mx * 50).toFixed(1)}%;background:${col(v)}"></i></div><b style="color:${col(v)}">${sg(v)}</b></div>`;
+    const cls = Math.abs(total) < Math.max(1, put * 0.002) ? "flat" : total > 0 ? "up" : "down";
+    const d0 = new Date(L.start.at).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+    el.innerHTML = `<div class="res ${cls}">
+      <h2>¿Cuánto he ganado o perdido? · desde el ${d0}</h2>
+      <div class="big">${sg(total)} <span style="font-size:18px;font-weight:600">${put > 0 ? `(${total >= 0 ? "+" : "−"}${Math.abs(total / put * 100).toFixed(1)} %)` : ""}</span></div>
+      <div class="eq"><span class="chip c1">Vale hoy ${usd(now)}</span><span>−</span><span class="chip c6">Tenías ${usd(L.start.usd)}</span><span>−</span><span class="chip c5">Depositaste ${usd(deps)} <small>${L.deposits.map((d) => `${new Date(d.at).toLocaleDateString("es-MX", { day: "numeric", month: "short" })} ${usd(d.usd, 0)}`).join(" · ")}</small></span></div>
+      <div class="two">
+        <div class="side bot"><h3><span>🤖 Por los bots</span><b style="color:${col(bots)}">${sg(bots)}</b></h3><p>Lo que cobraron en comisiones menos lo que costó operar.</p>
+          ${ln("Comisiones de los vaults abiertos", feesOpen, "m", "Tu parte de cada cosecha + recompensas, según Beefy")}
+          ${ln("Comisiones de vaults ya cerrados", closedFees, "e", "Fijo: estimado al 11 de noviembre")}
+          ${S.nlp?.last ? ln("lp-neutral (posición cubierta)", hedge, "m", "Capital de hoy − capital inicial") : ""}
+          ${ln("Costo de operar: gas, intercambios, puente", costs, "d", "Lo que falta para cuadrar el total; también absorbe el resultado de los vaults que se cierren desde hoy")}</div>
+        <div class="side vol"><h3><span>📈 Por la volatilidad</span><b style="color:${col(vol)}">${sg(vol)}</b></h3><p>Lo que subieron o bajaron de precio tus activos. No depende de los bots.</p>
+          ${ln("ETH y tokens libres en las wallets", freePrice, "a", "Cantidad × cambio de precio, sumado cada 5 minutos")}
+          ${ln("Tokens dentro de los vaults abiertos", openPrice, "m", "Resultado de cada vault según Beefy − sus comisiones")}
+          ${ln("Precio en vaults ya cerrados", closedPrice, "e", "Fijo: estimado al 11 de noviembre")}</div>
+      </div>
+      ${(S.pf.balances?.errors ?? []).length || S.pf.balances?.error ? `<div class="alert warn" style="margin-top:10px">Lectura incompleta de saldos (${esc((S.pf.balances.errors ?? [S.pf.balances.error]).join(" · ").slice(0, 160))}): el total puede verse más bajo de lo real hasta la siguiente lectura.</div>` : ""}
+      <div class="foot">Vale hoy = ${usd(inv)} en Beefy${nlp ? ` + ${usd(nlp)} en lp-neutral` : ""} + ${usd(free)} libres. Bots + volatilidad = resultado total. Los depósitos nuevos de ETH desde otra cuenta se suman solos (revisión cada hora).</div></div>`;
   }
   function renderLive() {
     const p = S.pf; const dot = $("dot");
@@ -473,7 +537,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
             ${fin(promDay) ? `El APY publicado promete <b>${usd(promDay)}/día</b>${fin(realDay) && promDay > 0 ? `: va al <b>${pct(realDay / promDay * 100, 0)}</b> de lo prometido` : ""}.` : ""}</div>`;
       }).join("");
       const pn = r.pnl;
-      return `<div class="card"><h2>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${rules ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${rules && r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
+      return `<div class="card"><h2>${esc(s.role)} <span class="tag ch-${esc(r.chain)}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${rules ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${rules && r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
         <div class="kv">
           <div><span>Depósito diario</span><b>${usd(r.strategy.dcaUsd, 0)}</b></div>
           <div><span>Depósitos del bot</span><b>${usd(total, 0)}</b><div class="mut" style="font-size:11px">${deps.length} depósitos${nOnce ? ` (${nOnce} único${nOnce > 1 ? "s" : ""})` : ""}${s.closed.length ? `, pasó por ${s.closed.length + s.ids.length} vaults` : ""}</div></div>
@@ -720,7 +784,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const rows = bd.rows.map((r, i) => {
       const open = bdOpen.has(r.id);
       const pnl = r.pnlUsd === null ? '<span class="mut">sin historial</span>' : `${sgnU(r.pnlUsd)}<span class="sub2">${sgnP(r.pnlPct, 2)}</span>`;
-      let tr = `<tr class="r" data-id="${esc(r.id)}"><td class="name"><b>${esc(r.name)}</b> <span class="tag">${esc(CH[r.chain] ?? r.chain)}</span>${r.status !== "active" ? ` <span class="tag warn">${esc(r.status)}</span>` : ""}<span class="sub2">${esc(r.platform ?? "")}${r.type === "gov" ? " · reward pool" : r.kind === "clm" ? " · CLM" : ""}</span></td>` +
+      let tr = `<tr class="r" data-id="${esc(r.id)}"><td class="name"><b>${esc(r.name)}</b> <span class="tag ch-${esc(r.chain)}">${esc(CH[r.chain] ?? r.chain)}</span>${r.status !== "active" ? ` <span class="tag warn">${esc(r.status)}</span>` : ""}<span class="sub2">${esc(r.platform ?? "")}${r.type === "gov" ? " · reward pool" : r.kind === "clm" ? " · CLM" : ""}</span></td>` +
         `<td class="n hm">${r.atDepositUsd === null ? "—" : usd(r.atDepositUsd)}</td><td class="n">${usd(r.nowUsd)}</td><td class="n hm">${r.yieldUsd === null ? "—" : usd(r.yieldUsd)}</td><td class="n">${pnl}</td><td class="n">${bApy(r.apyPct)}</td><td class="n hm">${usd(r.dailyUsd)}</td></tr>`;
       if (open) {
         const y = r.yield ?? {};
