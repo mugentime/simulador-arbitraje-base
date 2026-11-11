@@ -200,7 +200,8 @@ const NATIVE_EXTRA = { monad: { sym: "MON", rpcs: EXTRA_RPCS.monad }, ethereum: 
 const STABLES = new Set(["USDC", "USDT", "USDG", "DAI", "USDC.e", "USDbC", "FDUSD", "USD1"]);
 export function tokenUsd(prices, sym) {
   if (STABLES.has(sym)) return 1;
-  const p = Number(prices?.[sym] ?? prices?.[sym.replace(/^W/, "")] ?? NaN);
+  const alt = sym === "POL" || sym === "WPOL" ? ["WPOL", "MATIC", "WMATIC"] : []; // Beefy publica el nativo de Polygon con otros nombres
+  const p = Number(prices?.[sym] ?? prices?.[sym.replace(/^W/, "")] ?? prices?.[`W${sym}`] ?? alt.map((k) => prices?.[k]).find((v) => v != null) ?? NaN);
   return Number.isFinite(p) ? p : null;
 }
 export async function walletBalances(address, { provider = null } = {}) {
