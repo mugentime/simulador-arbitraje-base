@@ -52,7 +52,10 @@ export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAU
   catch (e) { err = String(e.message ?? e).slice(0, 60); }
   const s = { t: now, price: px?.price ?? null, vol24: px?.vol24 ?? null, liq: px?.liq ?? null, yieldUsd: row?.yieldUsd ?? null, nowUsd: row?.nowUsd ?? null, atDep: row?.atDepositUsd ?? null };
   st.hist.push(s); st.hist = st.hist.filter((x) => now - x.t <= 14 * 24 * H);
-  const ev = guardEval(st.hist, th), level = guardLevel(st.state, ev, now, th);
+  const ev = guardEval(st.hist, th);
+  // sin posición en el vault (p. ej. la defensa automática ya sacó todo) no hay nada que defender: se sigue midiendo, sin alertas
+  if (!row) { ev.alerts = []; ev.warns = []; }
+  const level = row ? guardLevel(st.state, ev, now, th) : (st.state.keys = [], "SIN POSICIÓN");
   // una causa cuenta como confirmada cuando aparece en dos evaluaciones seguidas (evita actuar por una lectura mala de precio)
   const streak = {}; for (const a of ev.alerts) streak[a.k] = (st.state.streak?.[a.k] ?? 0) + 1;
   st.state.streak = streak;

@@ -55,3 +55,12 @@ console.log("vigía ok");
   assert.equal(guardDecision(G, { keys: [], row: row(500) }, [], t0 + 2 * D).frac, 0.5, "tope 50 %");
   console.log("vigía automático ok");
 }
+// sin posición: mide pero no alerta
+{
+  const mem = {}; const store = { get: async (k) => mem[k], set: async (k, v) => { mem[k] = v; } };
+  const hi = async () => ({ pairs: [{ priceUsd: "0.036", volume: { h24: 4e5 }, liquidity: { usd: 3e4 }, priceChange: { h24: 5 } }] }), lo = async () => ({ pairs: [{ priceUsd: "0.029", volume: { h24: 4e5 }, liquidity: { usd: 3e4 }, priceChange: { h24: -19 } }] });
+  await runGuard({ store, row: null, name: "AI-USDG", chain: "robinhood", pool: "0x", fetchJson: hi });
+  const r = await runGuard({ store, row: null, name: "AI-USDG", chain: "robinhood", pool: "0x", fetchJson: lo });
+  assert.equal(r.level, "SIN POSICIÓN"); assert.deepEqual(r.keys, []); assert.deepEqual(r.confirmed, []); assert.match(r.line, /^vigía AI-USDG: SIN POSICIÓN · precio/);
+  console.log("vigía sin posición ok");
+}
