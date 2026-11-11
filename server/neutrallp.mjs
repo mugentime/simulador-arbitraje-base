@@ -30,7 +30,7 @@ export const NLP = {
   FEE: 500, SPACING: 10,
   COMET_LIQ_CF: 0.85, REVERT_CF: 0.775,
   OLD_MANAGER: "0xC4bD7851E5Dffe0c222f0943Bd7ec0C50625AF98",
-  RPCS: ["https://base.llamarpc.com", "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://base.drpc.org"],
+  RPCS: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://1rpc.io/base", "https://base.drpc.org", "https://base.llamarpc.com"],
 };
 
 const I = new ethers.Interface([
