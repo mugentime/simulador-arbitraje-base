@@ -115,8 +115,28 @@ export class NeutralLp {
   }
   async save() { this.s.updatedAt = Date.now(); await this.store.set("nlp", this.s); }
   async note(m) { this.s.events.unshift({ t: Date.now(), m }); this.s.events.length = Math.min(this.s.events.length, 80); await this.diag(`lp-neutral: ${m}`); }
+  /** RPC privados (Alchemy, NodeReal) de Base: se prueban y, si responden, van primero en la lista. Nunca se registra la URL. */
+  async probePrivate() {
+    const cands = [["alchemy", process.env.ALCHEMY_KEY && `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`], ["nodereal", process.env.NODEREAL_KEY && `https://base-mainnet.nodereal.io/v1/${process.env.NODEREAL_KEY}`]];
+    const out = [], ok = [];
+    for (const [name, url] of cands) {
+      if (!url) { out.push(`${name}: sin clave`); continue; }
+      try {
+        const t0 = Date.now();
+        const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }), signal: AbortSignal.timeout(8000) });
+        const j = await res.json().catch(() => ({}));
+        if (j.result) { ok.push(url); out.push(`${name}: OK (${Date.now() - t0} ms, bloque ${parseInt(j.result, 16)})`); }
+        else out.push(`${name}: NO responde · HTTP ${res.status} · ${String(j.error?.message ?? "sin detalle").slice(0, 90)}`);
+      } catch (e) { out.push(`${name}: NO responde · ${String(e.name || "error")}`); }
+    }
+    this.rpcs = [...ok, ...NLP.RPCS];
+    if (ok.length) { this.provider = new ethers.JsonRpcProvider(ok[0], 8453, { staticNetwork: true }); this.rpcIdx = 0; }
+    await this.diag(`lp-neutral: RPC privados en Base · ${out.join(" | ")} · en uso: ${ok.length ? "privado" : "públicos"} (${this.rpcs.length} en la lista)`);
+  }
   start() {
     if (this.timer) return;
+    this.probePrivate().catch(() => {});
+    setInterval(() => this.probePrivate().catch(() => {}), 6 * 3600_000).unref?.();
     const run = () => this.tick().then(() => { this.errs = 0; }).catch((e) => this.onError(e));
     this.timer = setInterval(run, this.cfg.everyS * 1000);
     setTimeout(run, 8_000);
@@ -126,10 +146,11 @@ export class NeutralLp {
     const msg = (e.shortMessage || e.message || String(e)).slice(0, 180);
     this.errs = (this.errs ?? 0) + 1;
     if (this.errs >= 2 && /410|missing response|timeout|ECONN|network|503|502|429|rate/i.test(msg)) {
-      this.rpcIdx = ((this.rpcIdx ?? -1) + 1) % NLP.RPCS.length;
-      this.provider = new ethers.JsonRpcProvider(NLP.RPCS[this.rpcIdx], 8453, { staticNetwork: true });
+      const L = this.rpcs ?? NLP.RPCS;
+      this.rpcIdx = ((this.rpcIdx ?? -1) + 1) % L.length;
+      this.provider = new ethers.JsonRpcProvider(L[this.rpcIdx], 8453, { staticNetwork: true });
       this.errs = 0;
-      await this.note(`RPC con fallas (${msg}) → cambia a ${NLP.RPCS[this.rpcIdx]}`).catch(() => {});
+      await this.note(`RPC con fallas → cambia a ${new URL(L[this.rpcIdx]).host}`).catch(() => {});
       return;
     }
     await this.note(`error ${msg}`).catch(() => {});
