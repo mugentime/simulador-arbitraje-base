@@ -421,7 +421,7 @@ const server = http.createServer(async (req, res) => {
     const auto = process.env.STRATEGY_VAULT_ID === "auto" && strategy ? { rules: RULES(), dynamic: strategy.dynamic, compound: strategy.compound,
       candidates: (sc?.eligible ?? []).slice(0, 8).map((x) => ({ id: x.id, apyPct: x.apyPct, tvl: x.tvl })), scannedAt: sc?.at ?? null,
       byId: sc ? Object.fromEntries(Object.entries(sc.byId ?? {}).filter(([id]) => Object.values(st?.dca ?? {}).some((d) => d?.holdings?.[id])).map(([id, v]) => [id, { apyPct: v.apyPct, tvl: v.tvl }])) : {} } : null;
-    const runs = Object.entries(st?.runs ?? {}).map(([label, r]) => ({ label, kind: r.kind, status: r.status, startedAt: r.startedAt, error: r.error ?? null, vault: r.vaultId ?? r.id ?? null,
+    const runs = Object.entries(st?.runs ?? {}).map(([label, r]) => ({ label, kind: r.kind, status: r.status, startedAt: r.startedAt, endedAt: r.endedAt ?? null, error: r.status === "hecho" ? null : (r.error ?? null), vault: r.vaultId ?? r.id ?? null,
       usdcIn: r.usdcIn ?? null, usdcOut: r.usdcOut ?? null, txs: (r.txs ?? []).map((t) => (typeof t === "string" ? { hash: t } : { step: t.step ?? t.name ?? null, hash: t.hash ?? null })) })).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 30);
     // configuración vigente (para que el panel no muestre DCA viejos) y depósitos únicos; cada depósito con su vault
     const vaultOfTx = {}; for (const r of Object.values(st?.runs ?? {})) for (const t of r.txs ?? []) { const hh = typeof t === "string" ? t : t?.hash; if (hh && (r.vaultId ?? r.id)) vaultOfTx[hh] = r.vaultId ?? r.id; }
