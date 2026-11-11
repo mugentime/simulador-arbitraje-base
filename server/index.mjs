@@ -21,7 +21,7 @@ import { dcaCostReport } from "./dcacost.mjs";
 import { RULES } from "./highapy.mjs";
 import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
-import { Strategy } from "./strategy.mjs";
+import { Strategy, parseDcaExtra } from "./strategy.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
@@ -423,7 +423,12 @@ const server = http.createServer(async (req, res) => {
       byId: sc ? Object.fromEntries(Object.entries(sc.byId ?? {}).filter(([id]) => Object.values(st?.dca ?? {}).some((d) => d?.holdings?.[id])).map(([id, v]) => [id, { apyPct: v.apyPct, tvl: v.tvl }])) : {} } : null;
     const runs = Object.entries(st?.runs ?? {}).map(([label, r]) => ({ label, kind: r.kind, status: r.status, startedAt: r.startedAt, error: r.error ?? null, vault: r.vaultId ?? r.id ?? null,
       usdcIn: r.usdcIn ?? null, usdcOut: r.usdcOut ?? null, txs: (r.txs ?? []).map((t) => (typeof t === "string" ? { hash: t } : { step: t.step ?? t.name ?? null, hash: t.hash ?? null })) })).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 30);
-    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca: st?.dca ?? null, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
+    // configuración vigente (para que el panel no muestre DCA viejos) y depósitos únicos; cada depósito con su vault
+    const vaultOfTx = {}; for (const r of Object.values(st?.runs ?? {})) for (const t of r.txs ?? []) { const hh = typeof t === "string" ? t : t?.hash; if (hh && (r.vaultId ?? r.id)) vaultOfTx[hh] = r.vaultId ?? r.id; }
+    const dca = st?.dca ? Object.fromEntries(Object.entries(st.dca).map(([k, d]) => [k, { ...d, deposits: (d.deposits ?? []).map((x) => ({ ...x, vault: x.vault ?? (x.txs ?? []).map((hh) => vaultOfTx[hh]).find(Boolean) ?? null })) }])) : null;
+    const cfg = { extras: parseDcaExtra(process.env.DCA_EXTRA).map((e) => e.spec), mainPaused: !!strategy?.pauseMain, hunterOff: !!strategy?.hunterOff, mainVault: process.env.STRATEGY_VAULT_ID === "auto" ? (process.env.AUTO_PIN || null) : (process.env.STRATEGY_VAULT_ID || null), exitVaults: process.env.EXIT_VAULTS || null };
+    const once = Object.values(st?.once ?? {}).flatMap((t) => Object.values(t ?? {})).filter((x) => x?.status === "hecho" && x.vaultId).map((x) => ({ at: x.at, usd: x.usd, vault: x.vaultId, txs: x.txs ?? [], once: true }));
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, cfg, once, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
       cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
   }
   if (req.url.startsWith("/api/withdraw-audit")) {

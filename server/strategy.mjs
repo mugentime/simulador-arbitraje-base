@@ -265,7 +265,16 @@ export class Strategy {
         if (this.redeployOnExit && this.run.usdcOut) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.usdcOut)); d.redeployTag = now; d.target = this.pauseMain ? null : pickTarget(elig.filter((x) => x.id !== id), null); }
         await this.diag(`estrategia auto: salida de ${id} (${c.why}) · ${this.run.usdcOut ? ethers.formatUnits(this.run.usdcOut, this.net.stableDec) : "?"} ${this.net.stableSym} de vuelta${this.redeployOnExit ? (this.pauseMain ? ` · DCA en pausa: se estaciona en ${this.parkToken ?? this.net.stableSym}` : ` · se reinvierte en ${d.target ?? "(ninguno elegible; queda en la wallet)"}`) : ""}`);
       }
-      catch (e) { this.run.status = "error"; this.run.error = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.diag(`estrategia auto: salida de ${id} falló · ${this.run.error}`); }
+      catch (e) {
+        this.run.status = "error"; this.run.error = (e.shortMessage || e.message || String(e)).slice(0, 200);
+        // la posición ya se había retirado por otra vía (cierre/concentración): sin participaciones y sin txs → se marca cerrada
+        // en vez de reintentar cada hora para siempre
+        if (/no salió .* del CLM/.test(this.run.error) && !(this.run.txs ?? []).length) {
+          h.closed = new Date(now).toISOString(); h.exitWhy = `${c.why} · ya estaba retirada`; if (d.target === id) d.target = null;
+          delete this.s.runs[label];
+          await this.diag(`estrategia auto: ${id} ya no tiene participaciones · se marca cerrada (sin txs)`);
+        } else await this.diag(`estrategia auto: salida de ${id} falló · ${this.run.error}`);
+      }
       return true;
     }
     // destino (en pausa no se elige ninguno: no entra capital nuevo a ningún vault)
@@ -389,7 +398,7 @@ export class Strategy {
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
       try {
         await enterClm(this, ctx);
-        this.run.status = "hecho"; this.run.endedAt = Date.now(); d.status = "hecho"; d.at = new Date().toISOString(); d.retryAt = 0;
+        this.run.status = "hecho"; this.run.endedAt = Date.now(); d.status = "hecho"; d.at = new Date().toISOString(); d.txs = this.run.txs.map((t) => t.hash); d.retryAt = 0;
         await this.diag(`estrategia depósito único ${tag}: $${e.usd} en ${d.vaultId} hecho · txs ${this.run.txs.map((t) => t.hash).join(", ")}`);
       } catch (err) {
         const msg = (err.shortMessage || err.message || String(err)).slice(0, 300);
@@ -686,7 +695,7 @@ export class Strategy {
         await enterClm(this, ctx);
         this.run.status = "hecho"; this.run.endedAt = Date.now();
         d.n++; d.lastAt = now; d.totalUsd = +(d.totalUsd + e.usd).toFixed(2); d.retryAt = 0; d.retries = 0; d.fails = 0;
-        d.deposits.push({ at: new Date(now).toISOString(), usd: e.usd, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
+        d.deposits.push({ at: new Date(now).toISOString(), usd: e.usd, vault: d.vaultId, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
         await this.diag(`estrategia beefy-clm-dca (extra): depósito ${d.n} de $${e.usd} en ${d.vaultId} · acumulado $${d.totalUsd} · siguiente ${new Date(now + this.dcaEveryMs).toISOString()}`);
       } catch (err) {
         const msg = (err.shortMessage || err.message || String(err)).slice(0, 300);
@@ -697,7 +706,7 @@ export class Strategy {
           this.run.status = "pendiente"; this.run.error = msg; d.retryAt = now + 3600_000; d.retries = 0;
           await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló (intento ${d.fails} de 3) · ${msg} · reintento en 1 h`);
         }
-        else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.n++; d.fails = 0; d.errors = (d.errors ?? 0) + 1; d.retryAt = 0; d.retries = 0; await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló 3 veces · ${msg} · se intenta de nuevo en el siguiente periodo`); }
+        else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.lastFailAt = now; d.n++; d.fails = 0; d.errors = (d.errors ?? 0) + 1; d.retryAt = 0; d.retries = 0; await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló 3 veces · ${msg} · se intenta de nuevo en el siguiente periodo`); }
       } finally { this.vaultId = null; this.dcaUsd = null; }
       return true;
     }
@@ -815,7 +824,7 @@ export class Strategy {
       this.run.status = "hecho"; this.run.endedAt = Date.now();
       // lo que el CLM no aceptó ni en la segunda pasada queda apartado y se reinvierte en la siguiente vuelta
       if (this.redeployOnExit && BigInt(this.run.cleanup?.leftStable ?? "0") > 0n) { d.redeploy = String(BigInt(d.redeploy ?? "0") + BigInt(this.run.cleanup.leftStable)); d.redeployTag = now; }
-      d.n++; d.lastAt = now; d.totalUsd += this.dcaUsdCfg; d.deposits.push({ at: new Date(now).toISOString(), usd: this.dcaUsdCfg, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
+      d.n++; d.lastAt = now; d.fails = 0; d.totalUsd += this.dcaUsdCfg; d.deposits.push({ at: new Date(now).toISOString(), usd: this.dcaUsdCfg, vault: this.run.vaultId ?? this.vaultId ?? null, txs: this.run.txs.map((t) => t.hash) }); if (d.deposits.length > 60) d.deposits.shift();
       d.nextAt = new Date(now + this.dcaEveryMs).toISOString(); this.retryAt = 0;
       if (this.vaultId) { const h = ((d.holdings ??= {})[this.vaultId] ??= { since: new Date(now).toISOString(), entryApyPct: this.lastScan?.byId?.[this.vaultId]?.apyPct ?? null, entryTvl: this.lastScan?.byId?.[this.vaultId]?.tvl ?? null, usd: 0 }); h.usd += this.dcaUsdCfg; h.basis = String(BigInt(h.basis ?? "0") + BigInt(this.run.usdcIn ?? "0")); h.tokens ??= [this.run.t0 ?? this.run.x, this.run.t1].filter(Boolean); }
       await this.diag(`estrategia beefy-clm-dca: depósito ${d.n} de $${this.dcaUsdCfg} en ${this.run.vaultId} · acumulado $${d.totalUsd} · siguiente ${d.nextAt}`);
@@ -823,7 +832,12 @@ export class Strategy {
       const msg = (e.shortMessage || e.message || String(e)).slice(0, 300);
       if (e.retry && (this.run.retries = (this.run.retries ?? 0) + 1) <= 60) { this.retryAt = now + 60_000; this.run.lastRetry = msg; if (this.run.retries === 1 || this.run.retries % 10 === 0) await this.diag(`estrategia beefy-clm-dca: reintento ${this.run.retries} en 1 min · ${msg}`); }
       else if (e.noFunds) { this.retryAt = now + 3600_000; if (d.lastNoFunds !== label) { d.lastNoFunds = label; await this.diag(`estrategia beefy-clm-dca: ${msg} · reintento cada hora hasta que haya fondos`); } }
-      else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.n++; d.errors = (d.errors ?? 0) + 1; this.retryAt = 0; await this.diag(`estrategia beefy-clm-dca: depósito ${label} falló · ${msg} · se intenta de nuevo en el siguiente periodo`); }
+      else if ((d.fails = (d.fails ?? 0) + 1) < 3) {
+        // error (p. ej. RPC sin respuesta): hasta 3 intentos por periodo, uno por hora; la misma corrida retoma los pasos ya hechos
+        this.run.status = "pendiente"; this.run.error = msg; this.retryAt = now + 3600_000;
+        await this.diag(`estrategia beefy-clm-dca: depósito ${label} falló (intento ${d.fails} de 3) · ${msg} · reintento en 1 h`);
+      }
+      else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.lastFailAt = now; d.n++; d.fails = 0; d.errors = (d.errors ?? 0) + 1; this.retryAt = 0; await this.diag(`estrategia beefy-clm-dca: depósito ${label} falló 3 veces · ${msg} · se intenta de nuevo en el siguiente periodo`); }
     }
   }
 

@@ -231,29 +231,41 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       render(prevAt && prevAt !== p.at);
     } catch (e) { S.err = e.message; renderLive(); }
   }
+  const LIVE = ["base", "bsc", "robinhood"]; // workers que siguen corriendo; los demás (Polygon, Arbitrum, Optimism) ya no existen
   async function loadReports() {
     const errs = [];
-    const rs = await Promise.all(Object.entries(ORIG).map(([k, o]) => get(`${o}/api/dca-report`, 30000).then((r) => ({ ...r, chain: r.chain || k })).catch((e) => { errs.push(`${CH[k] ?? k}: ${e.message}`); return null; })));
+    const rs = await Promise.all(Object.entries(ORIG).map(([k, o]) => get(`${o}/api/dca-report`, 30000).then((r) => ({ ...r, chain: r.chain || k })).catch((e) => { if (LIVE.includes(k)) errs.push(`${CH[k] ?? k}: ${e.message}`); return null; })));
     S.reports = rs.filter(Boolean); S.reportErrs = errs;
+    try { const n = await get(`${BASE}/api/neutral-lp`, 30000); S.nlp = n?.ready ? n : null; } catch { /* sin lp-neutral */ }
     render(false);
   }
 
   // estrategias del bot: una por DCA de cada worker
+  const posVal = (id) => S.pf?.wallet?.positions?.find((x) => x.id === id)?.valueUsd ?? 0;
   function strategies() {
     const out = [];
     for (const r of S.reports) {
       if (!r.strategy || !r.dca) continue;
+      const cfg = r.cfg ?? null;
       for (const [label, d] of Object.entries(r.dca)) {
         const auto = r.auto;
-        const role = d.extra ? "Depósito diario extra" : auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "DCA fijo";
-        const cls = d.extra ? "bot" : auto?.dynamic ? "demo" : auto ? "main" : "bot";
         const open = Object.entries(d.holdings ?? {}).filter(([, h]) => !h.closed).map(([id]) => id);
-        const ids = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...(d.target ? [d.target] : []), ...open, ...(!auto && r.strategy.vaultId && r.strategy.vaultId !== "auto" ? [r.strategy.vaultId] : [])])];
-        out.push({ r, label, d, role, cls, ids, closed: Object.entries(d.holdings ?? {}).filter(([, h]) => h.closed) });
+        const ids0 = d.extra ? [d.vaultId].filter(Boolean) : [...new Set([...(d.target ? [d.target] : []), ...open, ...(!auto && r.strategy.vaultId && r.strategy.vaultId !== "auto" ? [r.strategy.vaultId] : [])])];
+        // solo lo que sigue corriendo: un extra que ya no está en DCA_EXTRA, el principal en pausa o con el cazador apagado,
+        // o cualquier DCA sin dinero en sus vaults y sin depósitos en 48 h, no se muestra
+        const ids = ids0.filter((id) => posVal(id) > 0.5 || id === d.vaultId || (!d.extra && !auto && id === r.strategy.vaultId));
+        const deps = [...(d.deposits ?? []), ...(r.once ?? []).filter((x) => ids.includes(x.vault))].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+        const lastDep = deps.length ? Date.parse(deps.at(-1).at) : 0;
+        const hasValue = ids.some((id) => posVal(id) > 0.5);
+        const off = cfg && (d.extra ? !cfg.extras.includes(d.spec) : (cfg.mainPaused || (auto && cfg.hunterOff)));
+        if (off || (!hasValue && Date.now() - lastDep > 48 * 3600000)) continue;
+        const role = d.extra ? "Depósito diario extra" : auto?.dynamic ? "Demo dinámico" : auto ? "Principal" : "DCA diario";
+        const cls = d.extra ? "bot" : auto?.dynamic ? "demo" : auto ? "main" : "bot";
+        out.push({ r, label, d, role, cls, ids, deps, lastDep, closed: Object.entries(d.holdings ?? {}).filter(([, h]) => h.closed) });
       }
     }
-    const ord = { "Principal": 0, "Ancla comparativa": 1, "Demo dinámico": 2 };
-    return out.sort((a, b) => ord[a.role] - ord[b.role]);
+    const ord = { "Principal": 0, "DCA diario": 0, "Ancla comparativa": 1, "Depósito diario extra": 1, "Demo dinámico": 2 };
+    return out.sort((a, b) => (ord[a.role] ?? 3) - (ord[b.role] ?? 3));
   }
   const managerOf = () => { const m = {}; for (const s of strategies()) for (const id of s.ids) m[id] = s; return m; };
 
@@ -282,7 +294,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   function renderKpis() {
     const p = S.pf; if (!p) return;
     const w = p.wallet, bal = p.balances, pos = w?.positions ?? [];
-    const inv = w?.totalUsd ?? 0, free = bal?.totalUsd ?? 0;
+    const inv = w?.totalUsd ?? 0, free = bal?.totalUsd ?? 0, nlp = S.nlp?.last?.equity ?? 0;
     const pending = pos.reduce((a, x) => a + (x.pendingUsd ?? 0), 0);
     const daily = pos.reduce((a, x) => a + dailyOf(x), 0);
     const bad = pos.filter((x) => fin(x.apyPct) && !apyOk(x.apyPct));
@@ -291,7 +303,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const strat = S.reports.map((r) => r.pnl).filter(Boolean);
     const ap = strat.reduce((a, x) => a + (x.aportado ?? 0), 0), pnl = strat.reduce((a, x) => a + (x.pnl ?? 0), 0), fees = strat.reduce((a, x) => a + (x.comisiones ?? 0), 0);
     const k = [
-      ["Patrimonio total", usd(inv + free), `${usd(inv)} invertido · ${usd(free)} libre`],
+      ["Patrimonio total", usd(inv + free + nlp), `${usd(inv)} en Beefy${nlp ? ` · ${usd(nlp)} en lp-neutral` : ""} · ${usd(free)} libre`],
       ["En posiciones", usd(inv), d24 !== null ? `${sgnU(d24)} en 24 h${s24?.total ? " (" + sgnP(d24 / s24.total * 100) + ")" : ""}` : `${pos.length} posiciones`],
       ["Proyección con APY publicado", usd(daily, 3) + "<small> /día</small>", `si los APY de hoy se mantuvieran (no garantizado), todas las posiciones · por cobrar ${usd(pending, 3)}`],
       ["APY publicado de la cartera", pct(effApy, effApy < 100 ? 1 : 0), bad.length ? `<span class="warn">sin ${bad.map((x) => esc(short(x.id))).join(", ")} (APY irreal)</span>` : "promedio ponderado de lo que publica Beefy hoy"],
@@ -414,8 +426,13 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     const L = strategies(); const w = S.pf?.wallet;
     if (!L.length) { $("strats").innerHTML = ""; return; }
     $("strats").innerHTML = L.map((s) => {
-      const { r, d } = s; const rules = r.auto?.rules; const cost = r.cost ?? {};
-      const nextAt = d.target || !r.auto ? (d.lastAt ? new Date(d.lastAt + (r.strategy.everyH ?? 24) * 3600000).toISOString() : null) : null;
+      const { r, d, deps } = s; const rules = (r.auto && !d.extra) ? r.auto.rules : null; const cost = r.cost ?? {};
+      const everyMs = (r.strategy.everyH ?? 24) * 3600000;
+      const nextAt = (d.extra || !r.auto || d.target) && d.lastAt ? new Date(d.lastAt + everyMs).toISOString() : null;
+      const nextLabel = `${s.label}#${(d.n ?? 0) + 1}`;
+      const waitingFunds = d.lastNoFunds === nextLabel;
+      const failRun = (r.runs ?? []).filter((x) => x.label?.startsWith(`${s.label}#`) && x.error && (x.startedAt ?? 0) > s.lastDep).sort((a, b) => b.startedAt - a.startedAt)[0];
+      const total = deps.reduce((a, x) => a + (x.usd ?? 0), 0), nOnce = deps.filter((x) => x.once).length;
       const parts = s.ids.map((id) => {
         const p = w?.positions?.find((x) => x.id === id), h = d.holdings?.[id] ?? {}, c = cost[id];
         const apy = p?.apyPct ?? r.auto?.byId?.[id]?.apyPct ?? null;
@@ -425,23 +442,22 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
         return `<div style="margin-top:10px"><b><a href="https://app.beefy.com/vault/${esc(id)}" target="_blank" rel="noopener">${esc(p?.name ?? short(id))}</a></b> ${watch}</div>
           <div class="kv" style="margin-top:6px">
             <div><span>Vale hoy en este vault</span><b>${usd(p?.valueUsd ?? c?.value)}</b></div>
-            ${c ? `<div><span>Metido a este vault</span><b>${usd(c.invested)}</b></div><div><span>Rendimiento</span><b>${sgnU(c.rend ?? c.fees, 3)}</b></div><div><span>Volatilidad</span><b>${volTxt(c.vol ?? (c.pnl - (c.fees ?? 0)))}</b></div>` : `<div><span>Rendimiento</span><b class="mut" style="font-weight:400">en la sección 1</b></div>`}
+            ${c ? `<div><span>Metido a este vault</span><b>${usd(c.invested)}</b></div><div><span>Comisiones</span><b>${sgnU(c.rend ?? c.fees, 3)}</b></div><div><span>Precio</span><b>${volTxt(c.vol ?? (c.pnl - (c.fees ?? 0)))}</b></div>` : `<div><span>Metido a este vault</span><b>${usd(deps.filter((x) => x.vault === id).reduce((a, x) => a + (x.usd ?? 0), 0))}</b><div class="mut" style="font-size:11px">depósitos registrados</div></div>`}
             <div><span>APY</span><b>${apyTxt(apy)}</b>${thr ? `<div class="mut" style="font-size:11px">sale bajo ${pct(thr)}</div>` : ""}</div>
           </div>`;
       }).join("");
       const pn = r.pnl;
-      return `<div class="card"><h2>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${r.auto ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
+      return `<div class="card"><h2>${esc(s.role)} <span class="tag ${s.cls}">${CH[r.chain] ?? r.chain}</span> <span class="tag">${rules ? (r.auto.dynamic ? "auto · dinámico" : `auto ≥ ${rules.minApyPct} %`) : "fijo"}</span>${rules && r.auto?.compound ? ' <span class="tag">reinvierte</span>' : ""}</h2>
         <div class="kv">
           <div><span>Depósito diario</span><b>${usd(r.strategy.dcaUsd, 0)}</b></div>
-          <div><span>Aportado en total</span><b>${usd(d.totalUsd, 0)}</b><div class="mut" style="font-size:11px">${d.n ?? 0} depósitos${s.closed.length ? `, pasó por ${s.closed.length + s.ids.length} vaults` : ""}</div></div>
-          <div><span>Último</span><b>${d.lastAt ? ago(d.lastAt) : "—"}</b></div>
-          <div><span>Siguiente</span><b>${nextAt ? inT(nextAt) : r.auto ? '<span class="warn">en pausa</span>' : "—"}</b></div>
-          ${pn ? `<div><span>Comisiones est.</span><b>${sgnU(pn.comisiones)}</b></div><div><span>Precio / rango</span><b>${sgnU(pn.precio)}</b></div>` : ""}
+          <div><span>Aportado en total</span><b>${usd(total, 0)}</b><div class="mut" style="font-size:11px">${deps.length} depósitos${nOnce ? ` (${nOnce} único${nOnce > 1 ? "s" : ""})` : ""}${s.closed.length ? `, pasó por ${s.closed.length + s.ids.length} vaults` : ""}</div></div>
+          <div><span>Último depósito</span><b>${s.lastDep ? ago(s.lastDep) : "—"}</b>${failRun ? `<div class="bad" style="font-size:11px" title="${esc(failRun.error)}">intento fallido ${ago(failRun.startedAt)}: ${esc(failRun.error.slice(0, 50))}</div>` : ""}</div>
+          <div><span>Siguiente</span><b>${waitingFunds ? '<span class="bad">esperando fondos</span>' : nextAt ? inT(nextAt) : '<span class="warn">en pausa</span>'}</b></div>
           ${rules ? `<div><span>Reglas de entrada</span><b>≥ ${pct(rules.minApyPct)} · TVL ≥ ${usdK(rules.minTvl)}</b></div>` : ""}
         </div>
         ${parts || `<div class="note">Sin vault elegible ahora; el dinero espera en la wallet.</div>`}
         ${s.closed.length ? `<details><summary>Salidas (${s.closed.length})</summary><div class="note">${s.closed.map(([id, h]) => `${esc(short(id))} · ${hm(h.closed)} · ${esc(h.exitWhy ?? "")}`).join("<br>")}</div></details>` : ""}
-        ${(d.deposits ?? []).length ? `<details><summary>Últimos depósitos</summary><table>${(d.deposits ?? []).slice(-6).reverse().map((x) => `<tr><td>${hm(x.at)}</td><td class="n">${usd(x.usd, 0)}</td><td>${(x.txs ?? []).slice(-1).map((h) => tx(r.chain, h)).join("")}</td></tr>`).join("")}</table></details>` : ""}
+        ${deps.length ? `<details><summary>Últimos depósitos</summary><table>${deps.slice(-8).reverse().map((x) => `<tr><td>${hm(x.at)}</td><td class="n">${usd(x.usd, 0)}</td><td class="mut">${esc(short(x.vault) || "—")}${x.once ? " · único" : ""}</td><td>${(x.txs ?? []).slice(-1).map((h) => tx(r.chain, h)).join("")}</td></tr>`).join("")}</table></details>` : ""}
       </div>`;
     }).join("");
   }
@@ -633,10 +649,14 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   }
 
   function renderActivity() {
-    const rows = S.reports.flatMap((r) => (r.runs ?? []).map((x) => ({ ...x, chain: r.chain }))).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0)).slice(0, 15);
-    const kind = (x) => x.label.includes("-compound") ? "reinversión" : x.label.includes("-profit-") ? "ganancia retenida" : x.label.includes("-redeploy") ? "reinversión de capital" : x.label.includes("-sweep") ? "barrido" : x.label.includes("-exit") || x.kind === "beefy-clm-exit" ? "salida" : x.label.includes("-extra") ? "depósito extra" : x.label.includes("migr") ? "migración" : "depósito";
+    const all = S.reports.flatMap((r) => (r.runs ?? []).map((x) => ({ ...x, chain: r.chain }))).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    // el mismo error repetido (p. ej. una salida que reintenta cada hora) se muestra una vez con el número de veces
+    const rows = [], seen = {};
+    for (const x of all) { const k = `${x.chain}|${x.vault}|${x.status}|${x.error ?? ""}|${x.kind}`; if (x.status === "error" && seen[k]) { seen[k].times++; seen[k].first = x.startedAt; continue; } const y = { ...x, times: 1 }; if (x.status === "error") seen[k] = y; rows.push(y); }
+    rows.splice(15);
+    const kind = (x) => x.label.includes("-once-") ? "depósito único" : x.label.includes("-compound") ? "reinversión" : x.label.includes("-profit-") ? "ganancia retenida" : x.label.includes("-redeploy") ? "reinversión de capital" : x.label.includes("-sweep") ? "barrido" : x.label.includes("-exit") || x.kind === "beefy-clm-exit" ? "salida" : x.label.includes("-extra") ? "depósito extra" : x.label.includes("migr") ? "migración" : "depósito";
     const st = (s) => s === "hecho" ? '<span class="ok">hecho</span>' : s === "error" ? '<span class="bad">error</span>' : `<span class="warn">${esc(s)}</span>`;
-    $("act").innerHTML = rows.length ? `<table>${rows.map((x) => `<tr><td>${hm(x.startedAt)}<div class="mut" style="font-size:11px">${CH[x.chain] ?? x.chain}</div></td><td>${kind(x)}<div class="mut" style="font-size:11px">${esc(short(x.vault))}</div></td><td>${st(x.status)}${x.error ? `<div class="err" title="${esc(x.error)}">${esc(x.error.slice(0, 60))}…</div>` : ""}</td><td>${tx(x.chain, x.txs?.at(-1)?.hash)}</td></tr>`).join("")}</table>` : `<div class="mut">Sin actividad.</div>`;
+    $("act").innerHTML = rows.length ? `<table>${rows.map((x) => `<tr><td>${hm(x.startedAt)}<div class="mut" style="font-size:11px">${CH[x.chain] ?? x.chain}</div></td><td>${kind(x)}<div class="mut" style="font-size:11px">${esc(short(x.vault))}</div></td><td>${st(x.status)}${x.times > 1 ? ` <span class="mut">×${x.times} desde ${hm(x.first)}</span>` : ""}${x.error ? `<div class="err" title="${esc(x.error)}">${esc(x.error.slice(0, 60))}…</div>` : ""}</td><td>${tx(x.chain, x.txs?.at(-1)?.hash)}</td></tr>`).join("")}</table>` : `<div class="mut">Sin actividad.</div>`;
   }
 
   // ------------------------------------------------------------------ ciclo
