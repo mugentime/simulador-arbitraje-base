@@ -117,7 +117,10 @@ export class NeutralLp {
   async note(m) { this.s.events.unshift({ t: Date.now(), m }); this.s.events.length = Math.min(this.s.events.length, 80); await this.diag(`lp-neutral: ${m}`); }
   /** RPC privados (Alchemy, NodeReal) de Base: se prueban y, si responden, van primero en la lista. Nunca se registra la URL. */
   async probePrivate() {
-    const cands = [["alchemy", process.env.ALCHEMY_KEY && `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`], ["nodereal", process.env.NODEREAL_KEY && `https://base-mainnet.nodereal.io/v1/${process.env.NODEREAL_KEY}`]];
+    // NODEREAL_KEY: admite la clave sola o la URL completa pegada (se toma lo que va tras /v1/)
+    const nrRaw = String(process.env.NODEREAL_KEY ?? "").trim(), nrKey = nrRaw.includes("/v1/") ? nrRaw.split("/v1/")[1].replace(/\/+$/, "") : nrRaw;
+    const nrUrl = nrKey ? `https://base-mainnet.nodereal.io/v1/${nrKey}` : null;
+    const cands = [["alchemy", process.env.ALCHEMY_KEY && `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`], ["nodereal", nrUrl]];
     const out = [], ok = [];
     for (const [name, url] of cands) {
       if (!url) { out.push(`${name}: sin clave`); continue; }
@@ -127,7 +130,7 @@ export class NeutralLp {
         const j = await res.json().catch(() => ({}));
         if (j.result) { ok.push(url); out.push(`${name}: OK (${Date.now() - t0} ms, bloque ${parseInt(j.result, 16)})`); }
         else out.push(`${name}: NO responde · HTTP ${res.status} · ${String(j.error?.message ?? "sin detalle").slice(0, 90)}`);
-      } catch (e) { out.push(`${name}: NO responde · ${String(e.name || "error")}`); }
+      } catch (e) { out.push(`${name}: NO responde · ${String(e.name || "error")} ${String(e.cause?.code ?? e.code ?? "")}${name === "nodereal" ? ` · clave de ${nrKey.length} caracteres${/^[0-9a-f]+$/i.test(nrKey) ? "" : " con caracteres raros"}${nrRaw !== nrKey ? " (venía con URL o espacios)" : ""}` : ""}`); }
     }
     this.rpcs = [...ok, ...NLP.RPCS];
     if (ok.length) { this.provider = new ethers.JsonRpcProvider(ok[0], 8453, { staticNetwork: true }); this.rpcIdx = 0; }
