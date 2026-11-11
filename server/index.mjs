@@ -23,6 +23,7 @@ import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy, parseDcaExtra } from "./strategy.mjs";
 import { seedLedger, accrueFree, addDeposits } from "./resultledger.mjs";
+import { runGuard } from "./guard.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
@@ -554,7 +555,7 @@ async function logCashIn() {
 if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada BEEFY_WALLET_EVERY_MIN (60) minutos (solo Base);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
-let lastAudit = null;
+let lastAudit = null, lastGuard = null;
 const beefyDashCache = new Map();
 async function logBeefyWallets() {
   if (CHAIN_CFG.key !== "base") return;
@@ -566,7 +567,9 @@ async function logBeefyWallets() {
         try { const L = await getLedger(); const px = pf.data?.wallet?.prices ?? {}; const n = addDeposits(L, lastAudit.deposits, (c) => (c === "bsc" ? px.BNB : ["base", "arbitrum", "optimism", "robinhood", "ethereum"].includes(c) ? px.ETH : null)); if (n) { await store.set("resultLedger", L); console.log(`${new Date().toISOString()} resultado: ${n} depósito(s) externo(s) nuevo(s) · total ${L.deposits.length} · $${L.deposits.reduce((x, d) => x + d.usd, 0).toFixed(2)}`); } } catch { /* */ } console.log(`${new Date().toISOString()} ${auditLine(lastAudit)} · lista blanca: ${whitelist().join(", ") || "(vacía: solo la propia wallet)"}`); } catch (e) { console.log(`${new Date().toISOString()} auditoría retiros ${a}: error ${e.message}`); }
       const r = await beefyWallet(a, { provider: executor?.provider });
       console.log(`${new Date().toISOString()} ${beefyWalletLine(r)}`);
-      try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`); }
+      try { const d = await beefyDashboard(a, { provider: executor?.provider }); beefyDashCache.set(a.toLowerCase(), { at: Date.now(), d }); console.log(`${new Date().toISOString()} ${beefyDashLine(d)}`);
+        // vigía del pool principal (GUARD_POOL=cadena:pool:vault:nombre): una línea por hora; la tarea programada avisa al teléfono
+        try { const [gc, gp, gv, gn] = (process.env.GUARD_POOL ?? "robinhood:0xdcd2043fFB830072A10C692b38E1EB0A2ce45F8F:aero-cow-robinhood-ai-usdg-vault:AI-USDG").split(":"); if (gp) { lastGuard = await runGuard({ store, row: d.rows.find((x) => x.id === gv) ?? null, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) }); console.log(`${new Date().toISOString()} ${lastGuard.line}`); } } catch (e) { console.log(`${new Date().toISOString()} vigía: error ${String(e.message).slice(0, 120)}`); } }
       catch (e) { console.log(`${new Date().toISOString()} beefy dashboard ${a}: error ${e.message}`); }
       if (r.recent?.length) console.log(`${new Date().toISOString()} beefy movimientos 72 h ${a}: ` + r.recent.map((e) => `${e.at} [${e.chain}] ${e.id} ${e.action ?? ""} ${Number.isFinite(e.usd) ? (e.usd >= 0 ? "+" : "") + e.usd.toFixed(2) + " USD" : ""} tx ${e.tx ?? "?"}`).join(" | "));
       const h = (await store.get("beefyWalletHist")) ?? [];
@@ -589,7 +592,7 @@ async function refreshPortfolio() {
   const [wallet, balances] = await Promise.all([beefyWallet(a, { provider: executor?.provider }), walletBalances(a, { provider: executor?.provider }).catch((e) => ({ error: e.message }))]);
   const L = await getLedger();
   try { accrueFree(L, balances); } catch { /* el libro nunca tumba el panel */ }
-  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice } }; pf.at = Date.now();
+  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice }, guard: lastGuard }; pf.at = Date.now();
   if (pf.at - pf.lastSaved >= 4.5 * 60_000) {
     pf.lastSaved = pf.at;
     const ser = (await store.get("portfolioSeries")) ?? [];

@@ -345,6 +345,10 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
           ${ln("Precio en vaults ya cerrados", closedPrice, "e", "Fijo: estimado al 11 de noviembre")}</div>
       </div>
       ${(S.pf.balances?.errors ?? []).length || S.pf.balances?.error ? `<div class="alert warn" style="margin-top:10px">Lectura incompleta de saldos (${esc((S.pf.balances.errors ?? [S.pf.balances.error]).join(" · ").slice(0, 160))}): el total puede verse más bajo de lo real hasta la siguiente lectura.</div>` : ""}
+      ${(() => { const g = S.pf.guard; if (!g) return ""; const bad = /^ALERTA/.test(g.level), c = bad ? "bad" : g.level === "AVISO" ? "warn" : "info";
+        return `<div class="alert ${c}" style="margin-top:10px"><b>🛡️ Vigía AI-USDG: ${bad ? "ALERTA" : g.level}</b>${g.alerts.length ? " · " + g.alerts.map(esc).join(" · ") : ""}${g.warns.length ? " · " + g.warns.map(esc).join(" · ") : ""}
+          · precio ${g.px ? "$" + g.px.price.toPrecision(4) + ` (24 h ${sgnP(g.px.ch24)}, contra el máximo de 24 h ${sgnP(g.m.dropFromHigh)})` : "sin dato"}${g.px ? ` · volumen 24 h ${usdK(g.px.vol24)} · liquidez del pool ${usdK(g.px.liq)}` : ""}${fin(g.m.ratePct) ? ` · ritmo real ${pct(g.m.ratePct, 2)}/día` : ""}
+          <span class="mut">· ${ago(g.at)} · avisa al teléfono si: precio −15 % en 24 h, −10 % en 1 h, ritmo &lt; 0.5 %/día o posición −10 %</span></div>`; })()}
       <div class="foot">Vale hoy = ${usd(inv)} en Beefy${nlp ? ` + ${usd(nlp)} en lp-neutral` : ""} + ${usd(free)} libres. Bots + volatilidad = resultado total. Los depósitos nuevos de ETH desde otra cuenta se suman solos (revisión cada hora).</div></div>`;
   }
   function renderLive() {
