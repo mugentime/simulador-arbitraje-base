@@ -94,6 +94,14 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 .res .ln b { text-align: right; }
 .res .foot { margin-top: 12px; font-size: 12px; color: var(--mut); }
 @media (max-width: 760px) { .res .two { grid-template-columns: 1fr; } .res .big { font-size: 34px; } .res .ln { grid-template-columns: minmax(0, 1fr) 70px; } .res .dv2 { display: none; } }
+.nlp { border: 2px solid var(--c6); border-radius: 14px; padding: 14px; margin-bottom: 12px; background: linear-gradient(135deg, color-mix(in srgb, var(--c6) 10%, var(--card)), var(--card) 55%); }
+.nlp h2 { margin: 0 0 10px; font-size: 15px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; } .nlp h2 .sp { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--mut); }
+.nlp .g { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.nlp .t { border-radius: 10px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--tc, var(--c6)); }
+.nlp .t > span { display: block; font-size: 12px; color: var(--mut); } .nlp .t b { display: block; font-size: 20px; font-weight: 700; } .nlp .t small { font-size: 12px; color: var(--mut); }
+.nlp .hb { height: 8px; border-radius: 4px; background: var(--soft); margin-top: 6px; overflow: hidden; } .nlp .hb i { display: block; height: 100%; border-radius: 4px; }
+.nlp .rng { position: relative; height: 14px; border-radius: 7px; margin: 8px 0 2px; background: linear-gradient(90deg, var(--badbg) 0 12%, color-mix(in srgb, var(--c2) 30%, var(--card)) 12% 88%, var(--badbg) 88% 100%); }
+.nlp .rng u { position: absolute; top: -3px; bottom: -3px; width: 3px; border-radius: 2px; background: var(--ink); }
 .kpis .kpi:nth-child(4n+1), .hero > div:nth-child(4n+1) { border-top: 3px solid var(--c1); } .kpis .kpi:nth-child(4n+2), .hero > div:nth-child(4n+2) { border-top: 3px solid var(--c2); }
 .kpis .kpi:nth-child(4n+3), .hero > div:nth-child(4n+3) { border-top: 3px solid var(--c3); } .kpis .kpi:nth-child(4n+4), .hero > div:nth-child(4n+4) { border-top: 3px solid var(--c4); }
 .tag.ch-base { background: color-mix(in srgb, var(--c1) 15%, transparent); color: var(--c1); } .tag.ch-robinhood { background: color-mix(in srgb, var(--c2) 15%, transparent); color: var(--c2); } .tag.ch-bsc { background: color-mix(in srgb, var(--c4) 15%, transparent); color: var(--c4); } .tag.ch-monad { background: color-mix(in srgb, var(--c3) 15%, transparent); color: var(--c3); }
@@ -152,6 +160,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
   </header>
 
   <section id="result"></section>
+  <section id="nlpCard"></section>
 
   <div class="card" id="bdCard" style="border:2px solid var(--acc)">
     <h2>Beefy · tu dashboard <span class="mut" style="font-weight:400;font-size:12px">mismas columnas y mismas cuentas que app.beefy.com/dashboard</span>
@@ -307,7 +316,7 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 
   // ------------------------------------------------------------------ render
   function render(changed) {
-    renderLive(); renderResult(); renderKpis(); renderAlerts(); renderAnalysis(); renderWorks(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
+    renderLive(); renderResult(); renderNlp(); renderKpis(); renderAlerts(); renderAnalysis(); renderWorks(); renderPositions(changed); renderStrats(); renderBalances(); renderActivity(); renderChart();
     $("errs").innerHTML = (S.reportErrs ?? []).length ? `<span class="err">Sin reporte de: ${S.reportErrs.map(esc).join(" · ")}</span>` : "";
   }
   // ---- resultado real: total, y de dónde viene (bots contra volatilidad). Mismas cuentas que server/resultledger.mjs (resultSplit)
@@ -350,6 +359,35 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
           · precio ${g.px ? "$" + g.px.price.toPrecision(4) + ` (24 h ${sgnP(g.px.ch24)}, contra el máximo de 24 h ${sgnP(g.m.dropFromHigh)})` : "sin dato"}${g.px ? ` · volumen 24 h ${usdK(g.px.vol24)} · liquidez del pool ${usdK(g.px.liq)}` : ""}${fin(g.m.ratePct) ? ` · ritmo real ${pct(g.m.ratePct, 2)}/día` : ""}
           <span class="mut">· ${ago(g.at)} · avisa al teléfono si: precio −15 % en 24 h, −10 % en 1 h, ritmo &lt; 0.5 %/día o posición −10 %</span></div>`; })()}
       <div class="foot">Vale hoy = ${usd(inv)} en Beefy${nlp ? ` + ${usd(nlp)} en lp-neutral` : ""} + ${usd(free)} libres. Bots + volatilidad = resultado total. Los depósitos nuevos de ETH desde otra cuenta se suman solos (revisión cada hora).</div></div>`;
+  }
+  // ---- lp-neutral: la posición cubierta, con sus dos préstamos y su margen antes de liquidación
+  function renderNlp() {
+    const el = $("nlpCard"), n = S.nlp; if (!el) return;
+    if (!n || !n.last || !n.tokenId) { el.innerHTML = ""; return; }
+    const l = n.last, e = n.entry ?? {}, res = fin(e.usd) ? l.equity - e.usd : null, opened = e.t ?? null;
+    const hc = (h) => (h < 1.05 ? "var(--bad)" : h < 1.15 ? "var(--warn)" : "var(--ok)"), ht = (h) => (h < 1.05 ? "muy cerca de liquidación" : h < 1.15 ? "margen justo" : "con margen");
+    const hbar = (h) => `<div class="hb"><i style="width:${Math.max(4, Math.min(100, (h - 1) / 0.5 * 100)).toFixed(0)}%;background:${hc(h)}"></i></div>`;
+    const drop = (h) => (h > 1 ? (1 - 1 / h) * 100 : 0); // cuánto puede moverse en contra antes de salud 1
+    // rango en precio: ETH medido en BTC (pool WETH/cbBTC); ticks → 1.0001^tick × 10^(18−8)
+    const px = (t) => Math.pow(1.0001, t) * 1e10, lo = l.ticks ? px(l.ticks[0]) : null, hi = l.ticks ? px(l.ticks[1]) : null, cur = fin(l.tick) ? px(l.tick) : l.btc ? l.eth / l.btc : null;
+    const pos = fin(lo) && fin(hi) && fin(cur) ? Math.max(0, Math.min(100, 12 + (cur - lo) / (hi - lo) * 76)) : null;
+    const toLo = fin(cur) && fin(lo) ? (lo / cur - 1) * 100 : null, toHi = fin(cur) && fin(hi) ? (hi / cur - 1) * 100 : null;
+    const lev = l.equity > 0 ? l.lp / l.equity : null;
+    el.innerHTML = `<div class="nlp">
+      <h2>🛡️ lp-neutral · posición cubierta <span class="tag ch-base">Base</span> <span class="tag">#${esc(n.tokenId)}</span> <span class="tag ${l.inRange ? "main" : "bad"}">${l.inRange ? "en rango" : "FUERA de rango"}</span>
+        <span class="sp">${opened ? `abierta ${hm(opened)} (${ago(opened)}) · ` : ""}leída ${ago(l.t)}</span></h2>
+      <div class="g">
+        <div class="t" style="--tc:${res === null ? "var(--c6)" : res >= 0 ? "var(--ok)" : "var(--bad)"}"><span>Tu capital hoy</span><b>${usd(l.equity)}</b><small>pusiste ${usd(e.usd)} · resultado ${sgnU(res)}${fin(res) && e.usd ? ` (${sgnP(res / e.usd * 100, 2)})` : ""}</small></div>
+        <div class="t" style="--tc:var(--c1)"><span>Liquidez puesta (WETH / cbBTC)</span><b>${usd(l.lp)}</b><small>${fin(lev) ? `${lev.toFixed(1)}× tu capital` : ""} · gana comisiones del pool</small></div>
+        <div class="t" style="--tc:${hc(l.revert)}"><span>Préstamo en Revert (contra la liquidez)</span><b>${usd(l.rDebt)}</b><small>salud ${l.revert.toFixed(3)} · <span style="color:${hc(l.revert)}">${ht(l.revert)}</span> · aguanta −${drop(l.revert).toFixed(1)} % del valor</small>${hbar(l.revert)}</div>
+        <div class="t" style="--tc:${hc(l.comet)}"><span>Cobertura en Compound (debes WETH)</span><b>${usd(l.cDebtUsd)}</b><small>${l.cDebt.toFixed(5)} WETH contra ${usd(l.cColl)} en USDC · salud ${l.comet.toFixed(3)} · <span style="color:${hc(l.comet)}">${ht(l.comet)}</span> · aguanta ETH +${((l.comet - 1) * 100).toFixed(1)} %</small>${hbar(l.comet)}</div>
+      </div>
+      ${fin(pos) ? `<div style="margin-top:12px;font-size:12px" class="mut">Precio de ETH medido en BTC dentro del rango: <b style="color:var(--ink)">${cur.toFixed(5)}</b> (rango ${lo.toFixed(5)} – ${hi.toFixed(5)}; faltan ${sgnP(toLo, 2)} para salir por abajo y ${sgnP(toHi, 2)} por arriba)
+        <div class="rng"><u style="left:calc(${pos.toFixed(1)}% - 1px)"></u></div></div>` : ""}
+      <div class="note" style="margin-top:8px">ETH ${usd(l.eth, 0)} · BTC ${usd(l.btc, 0)} · re-centrados ${n.recenters ?? 0} · traspasos ${n.transfers ?? 0} · desapalancamientos ${n.deleverages ?? 0}${fin(n.minRevert) ? ` · salud mínima vista: Revert ${n.minRevert.toFixed(3)}, Compound ${n.minComet?.toFixed?.(3) ?? "—"}` : ""}.
+        Cómo se lee: tu capital = liquidez + colateral − los dos préstamos. La deuda en WETH compensa el ETH que hay en la liquidez, así que el resultado no depende del precio de ETH; depende de las comisiones del pool menos los intereses. Salud 1.000 = liquidación.</div>
+      ${(n.events ?? []).length ? `<details><summary>Últimos movimientos</summary><div class="note">${n.events.slice(0, 8).map((x) => `${hm(x.t)} · ${esc(x.m.slice(0, 200))}`).join("<br>")}</div></details>` : ""}
+    </div>`;
   }
   function renderLive() {
     const p = S.pf; const dot = $("dot");
