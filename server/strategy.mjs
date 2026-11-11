@@ -402,7 +402,11 @@ export class Strategy {
       if (G.paused || now - (this.guardAt ?? 0) < 60_000) return false;
       this.guardAt = now;
       let g; try { const r = await fetch(process.env.GUARD_URL ?? "https://worker-production-1950.up.railway.app/api/guard", { signal: AbortSignal.timeout(15_000) }); g = r.ok ? await r.json() : null; } catch { g = null; }
-      if (!g?.at || now - Date.parse(g.at) > 30 * 60_000 || g.vault !== vault) { G.last = { at: new Date(now).toISOString(), ok: false }; return false; } // sin lectura fresca no se actúa
+      if (!g?.at || now - Date.parse(g.at) > 30 * 60_000 || g.vault !== vault) { // sin lectura fresca no se actúa
+        if (G.last?.ok !== false) await this.diag(`vigía auto: sin lectura fresca del vigía (${!g ? "no responde" : !g.at ? "aún sin datos" : g.vault !== vault ? "otro vault" : "dato de hace " + Math.round((now - Date.parse(g.at)) / 60_000) + " min"}) · no actúa hasta tenerla`);
+        G.last = { at: new Date(now).toISOString(), ok: false }; return false;
+      }
+      if (G.last?.ok !== true) await this.diag(`vigía auto: activo sobre ${vault} · lectura ${g.level} · posición $${g.row?.nowUsd?.toFixed?.(2) ?? "?"} (metido $${g.row?.atDepositUsd?.toFixed?.(2) ?? "?"}) · sale a USDG con alerta confirmada de precio (−15 % en 24 h), caída (−10 % en 1 h) o pérdida (−10 %) · cobra la ganancia una vez al día (mínimo $${Number(process.env.GUARD_TAKE_MIN_USD ?? 3)})`);
       G.last = { at: g.at, ok: true, level: g.level };
       const d = guardDecision(G, g, Object.values(this.s.dca ?? {}).filter((x) => x.vaultId === vault).flatMap((x) => x.deposits ?? []), now, { minTake: Number(process.env.GUARD_TAKE_MIN_USD ?? 3) });
       if (!d) return false;
