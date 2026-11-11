@@ -119,7 +119,7 @@ export class NeutralLp {
   async probePrivate() {
     // NODEREAL_KEY: admite la clave sola o la URL completa pegada (se toma lo que va tras /v1/)
     const nrRaw = String(process.env.NODEREAL_KEY ?? "").trim(), nrKey = nrRaw.includes("/v1/") ? nrRaw.split("/v1/")[1].replace(/\/+$/, "") : nrRaw;
-    const nrUrl = nrKey ? `https://base-mainnet.nodereal.io/v1/${nrKey}` : null;
+    const nrUrl = nrKey ? `https://open-platform.nodereal.io/${nrKey}/base/` : null;
     const cands = [["alchemy", process.env.ALCHEMY_KEY && `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`], ["nodereal", nrUrl]];
     const out = [], ok = [];
     for (const [name, url] of cands) {
