@@ -479,20 +479,24 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
 
   /** Estrategias del bot con sus dos indicadores (una por worker en Base/BSC). */
   function strategyCards() {
-    const NAME = { base: "DCA en Base", bsc: "DCA en BSC", robinhood: "Robinhood" }, cards = [];
-    for (const r of S.reports) {
-      if (r.pnl && fin(r.pnl.aportado)) {
-        const C = Object.values(r.cost ?? {});
-        const precio = C.reduce((a, c) => a + (fin(c.precioEf) ? c.precioEf : 0), 0), il = C.reduce((a, c) => a + (fin(c.il) ? c.il : 0), 0);
-        const medido = C.filter((c) => c.rendSrc === "medido").reduce((a, c) => a + (c.rend ?? 0), 0), estimado = C.filter((c) => c.rendSrc !== "medido").reduce((a, c) => a + (c.rend ?? 0), 0);
-        const rend = fin(r.pnl.rendimiento) ? r.pnl.rendimiento : r.pnl.comisiones;
-        cards.push({ title: NAME[r.chain] ?? r.chain, sub: Object.entries(r.cost ?? {}).filter(([, c]) => !c.closed).map(([id]) => short(id)).join(", "),
-          p: { aportado: r.pnl.aportado, valor: r.pnl.valor, enVault: r.pnl.posiciones, porCobrar: r.pnl.recompensas ?? 0, sueltos: (r.pnl.sobranteX ?? 0) + (r.pnl.sobranteS ?? 0), reservado: 0, pnl: r.pnl.pnl,
-            rend, rendMedido: medido, rendEstimado: estimado, rendDiarioPct: fin(r.pnl.rendDiarioPct) ? r.pnl.rendDiarioPct : null, vol: r.pnl.pnl - rend, volPct: r.pnl.aportado > 0 ? (r.pnl.pnl - rend) / r.pnl.aportado * 100 : null,
-            precio: C.some((c) => fin(c.precioEf)) ? precio : null, il: C.some((c) => fin(c.il)) ? il : null, dias: r.pnl.dias, n: r.pnl.n } });
-      }
+    // Solo posiciones abiertas, una tarjeta por cadena. Aportado = lo que entró a cada vault (costo on-chain del bot o, si no hay,
+    // el depositado neto que registra Beefy). Los vaults ya cerrados no entran: su dinero se movió a los abiertos.
+    const NAME = { base: "Base", bsc: "BSC", robinhood: "Robinhood", monad: "Monad" }, by = {};
+    const costOf = {}; for (const r of S.reports) for (const [id, c] of Object.entries(r.cost ?? {})) if (!c.closed) costOf[id] = c;
+    for (const x of S.pf?.wallet?.positions ?? []) {
+      if (!(x.valueUsd > 0.5)) continue;
+      const c = costOf[x.id], inv = c && c.invested > 0.5 ? c.invested : fin(x.netDepositedUsd) && x.netDepositedUsd > 0.5 ? x.netDepositedUsd : null;
+      if (inv === null) continue;
+      const g = (by[x.chain] ??= { names: [], aportado: 0, valor: 0, porCobrar: 0, rend: 0, hasRend: false, capDays: 0, dias: 0, n: 0 });
+      g.names.push(x.name ?? short(x.id)); g.aportado += inv; g.valor += x.valueUsd; g.porCobrar += x.pendingUsd ?? 0;
+      if (c && fin(c.rend)) { g.rend += c.rend; g.hasRend = true; g.capDays += c.capDays ?? 0; }
+      const t0 = x.firstDeposit ? Date.parse(x.firstDeposit) : NaN; g.dias = Math.max(g.dias, c?.days ?? (Number.isFinite(t0) ? (Date.now() - t0) / 86400000 : 0));
+      g.n += strategies().filter((s) => s.ids.includes(x.id)).reduce((a, s) => a + s.deps.filter((d) => !d.vault || d.vault === x.id).length, 0);
     }
-    return cards;
+    return Object.entries(by).map(([chain, g]) => { const pnl = g.valor + g.porCobrar - g.aportado, rend = g.hasRend ? g.rend : null;
+      return { title: `${NAME[chain] ?? chain} · posiciones abiertas`, sub: g.names.join(", "),
+        p: { aportado: g.aportado, valor: g.valor + g.porCobrar, enVault: g.valor, porCobrar: g.porCobrar, sueltos: 0, reservado: 0, pnl, rend, rendMedido: 0, rendEstimado: rend ?? 0,
+          rendDiarioPct: g.hasRend && g.capDays > 0 ? g.rend / g.capDays * 100 : null, vol: rend === null ? null : pnl - rend, precio: null, il: null, dias: g.dias, n: g.n || null } }; });
   }
 
   function renderWorks() {
@@ -504,17 +508,16 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       const src = p.rendMedido > 0.0005 && !(p.rendEstimado > 0.0005) ? "medido on-chain: nuestra parte de cada harvest del CLM + recompensas" : p.rendMedido > 0.0005 ? `medido ${usd(p.rendMedido, 3)} + estimado ${usd(p.rendEstimado, 3)} (medición en curso)` : "estimado: valor × APY total de Beefy, hora a hora";
       return `<div class="card works" style="margin:0">
         <h3 style="font-size:14px;margin:0">${title}</h3>${sub ? `<div class="mut" style="font-size:12px">${esc(sub)}${closed ? ` · ${closed} vault(s) anteriores cerrados` : ""}</div>` : ""}
-        <div class="sent">${badge(vk)} Rendimiento ${sgnU(p.rend, 3)} · ${rate}</div>
+        <div class="sent">${fin(p.rend) ? `${badge(vk)} Comisiones ${sgnU(p.rend, 3)} · ${rate}` : `Resultado ${sgnU(p.pnl)} sobre ${usd(p.aportado)} aportados`}</div>
         <div class="flow">
-          <span><b style="color:var(--ink)">Rendimiento</b> (comisiones + recompensas)</span><b>${sgnU(p.rend, 3)}</b>
-          <span class="ind"><span>${src}</span></span><b></b>
-          <span><b style="color:var(--ink)">Volatilidad</b> (esperada en DCA, no realizada)</span><b>${volTxt(p.vol)}</b>
-          ${fin(p.precio) ? `<span class="ind"><span>precio de los tokens</span></span><b>${volTxt(p.precio)}</b><span class="ind"><span>pérdida impermanente / rango del CLM</span></span><b>${volTxt(p.il)}</b>` : `<span class="ind"><span>precio + pérdida impermanente</span></span><b></b>`}
-          <span class="tot">Aportado (${p.n ?? "—"} depósitos${fin(p.dias) ? ` en ${p.dias.toFixed(1)} días` : ""})</span><b class="tot">${usd(p.aportado)}</b>
+          <span><b style="color:var(--ink)">Resultado</b> (valor hoy − aportado)</span><b>${sgnU(p.pnl)}</b>
+          ${fin(p.rend) ? `<span class="ind"><span>comisiones y recompensas · ${src}</span></span><b>${sgnU(p.rend, 3)}</b>
+          <span class="ind"><span>cambio de precio de los tokens</span></span><b>${volTxt(p.vol)}</b>` : `<span class="ind"><span>sin desglose en esta cadena: aportado según Beefy</span></span><b></b>`}
+          <span class="tot">Aportado a estos vaults${p.n ? ` (${p.n} depósitos${p.dias ? ` en ${p.dias.toFixed(1)} días` : ""})` : ""}</span><b class="tot">${usd(p.aportado)}</b>
           <span>Valor de mercado hoy</span><b>${usd(p.valor)}</b>
           <span class="ind"><span>en vaults${p.porCobrar >= 0.005 ? " + por cobrar" : ""}${p.sueltos >= 0.01 ? " + sueltos" : ""}${p.reservado >= 0.01 ? " + apartado" : ""}</span></span><b class="mut">${usd(p.enVault)}${p.porCobrar >= 0.005 ? ` + ${usd(p.porCobrar)}` : ""}${p.sueltos >= 0.01 ? ` + ${usd(p.sueltos)}` : ""}${p.reservado >= 0.01 ? ` + ${usd(p.reservado)}` : ""}</b>
         </div>
-        <div class="note">Valor hoy − aportado = rendimiento ${sgnU(p.rend, 2)} + volatilidad ${volTxt(p.vol)}. La volatilidad sube y baja con el precio; la estrategia se juzga por el rendimiento.</div>
+        <div class="note">Solo posiciones abiertas. Lo que se ganó o perdió en vaults ya cerrados no está aquí.</div>
       </div>`;
     }).join("");
   }
@@ -559,17 +562,17 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
     if (!S.pf) return;
     const cards = strategyCards();
     const T = cards.reduce((a, { p }) => ({ aportado: a.aportado + (p.aportado ?? 0), valor: a.valor + (p.valor ?? 0), rend: a.rend + (p.rend ?? 0), vol: a.vol + (fin(p.vol) ? p.vol : 0),
-      capDias: a.capDias + (fin(p.rendDiarioPct) && p.rendDiarioPct !== 0 ? p.rend / (p.rendDiarioPct / 100) : 0), rendForRate: a.rendForRate + (fin(p.rendDiarioPct) ? p.rend : 0) }), { aportado: 0, valor: 0, rend: 0, vol: 0, capDias: 0, rendForRate: 0 });
+      capDias: a.capDias + (fin(p.rendDiarioPct) && p.rendDiarioPct !== 0 ? p.rend / (p.rendDiarioPct / 100) : 0), rendForRate: a.rendForRate + (fin(p.rendDiarioPct) ? p.rend : 0), apRate: a.apRate + (fin(p.rendDiarioPct) ? p.aportado : 0) }), { aportado: 0, valor: 0, rend: 0, vol: 0, capDias: 0, rendForRate: 0, apRate: 0 });
     const maxDias = Math.max(0, ...cards.map((c) => c.p.dias ?? 0));
     const rendDaily = T.capDias > 0 ? T.rendForRate / T.capDias * 100 : null, vk = yieldVerdict(rendDaily), a = maxDias >= 7 ? yr(rendDaily) : null;
-    const perDayNow = T.capDias > 0 && fin(rendDaily) ? T.aportado * rendDaily / 100 : null;
+    const perDayNow = T.capDias > 0 && fin(rendDaily) ? T.apRate * rendDaily / 100 : null;
     const pos = S.pf.wallet?.positions ?? [], proj = pos.filter((x) => managerOf()[x.id] || S.reports.some((r) => r.cost?.[x.id])).reduce((a, x) => a + dailyOf(x), 0);
     // 0 · hero: dos indicadores separados + valor de mercado
-    $("hero").innerHTML = `<div class="main"><span>Rendimiento de las estrategias del bot (comisiones + recompensas)</span><b>${T.rend >= 0 ? "+" : "−"}${usd(Math.abs(T.rend), 2)}</b>
+    $("hero").innerHTML = `<div class="main"><span>Comisiones y recompensas de las posiciones abiertas</span><b>${T.rend >= 0 ? "+" : "−"}${usd(Math.abs(T.rend), 2)}</b>
         <small>${badge(vk)} ${fin(rendDaily) ? `${pct(rendDaily, 3)} al día sobre lo invertido${fin(a) ? ` · ≈ ${pct(a, 0)} al año` : ""}` : "sin suficiente historia"}</small></div>
-      <div class="kpi"><span>Rendimiento al ritmo actual</span><b>${fin(perDayNow) ? usd(perDayNow, 3) : "—"}<small style="font-size:12px;color:var(--mut)"> /día</small></b><small>lo ganado ÷ días invertidos, sobre ${usd(T.aportado, 0)}</small></div>
-      <div class="kpi"><span>Volatilidad (esperada en DCA)</span><b style="color:var(--mut)">${T.vol >= 0 ? "+" : "−"}${usd(Math.abs(T.vol))}</b><small>precio + pérdida impermanente; no realizada</small></div>
-      <div class="kpi"><span>Valor de mercado vs aportado</span><b>${usd(T.valor)}</b><small>aportado ${usd(T.aportado)} · diferencia ${T.valor - T.aportado >= 0 ? "+" : "−"}${usd(Math.abs(T.valor - T.aportado))} = rendimiento + volatilidad</small></div>`;
+      <div class="kpi"><span>Rendimiento al ritmo actual</span><b>${fin(perDayNow) ? usd(perDayNow, 3) : "—"}<small style="font-size:12px;color:var(--mut)"> /día</small></b><small>lo ganado ÷ días invertidos, sobre ${usd(T.apRate, 0)} (vaults con comisiones medidas)</small></div>
+      <div class="kpi"><span>Cambio de precio</span><b style="color:var(--mut)">${T.vol >= 0 ? "+" : "−"}${usd(Math.abs(T.vol))}</b><small>solo vaults con desglose; no realizado</small></div>
+      <div class="kpi"><span>Valor de mercado vs aportado</span><b>${usd(T.valor)}</b><small>aportado ${usd(T.aportado)} · resultado ${T.valor - T.aportado >= 0 ? "+" : "−"}${usd(Math.abs(T.valor - T.aportado))} · solo posiciones abiertas</small></div>`;
     $("legend").innerHTML = `<b style="color:var(--ink);font-weight:600">Rendimiento anual sobre lo invertido:</b> ${badge("good")} ≥ 20 % ${badge("neutral")} 5–20 % ${badge("warn")} 0–5 % ${badge("crit")} 0 o menos · <span><i class="sw" style="background:var(--pos)"></i>rendimiento</span><span><i class="sw" style="background:var(--mut)"></i>volatilidad (esperada)</span> · Proyección con el APY publicado hoy: ${usd(proj, 3)}/día (no garantizada).`;
     // 2 · ranking por rendimiento diario (no por el total)
     const rows = vaultRows().filter((v) => fin(v.rend) || fin(v.total));

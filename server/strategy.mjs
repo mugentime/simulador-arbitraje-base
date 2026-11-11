@@ -814,6 +814,14 @@ export class Strategy {
       } finally { this.sweepStable = undefined; }
       return;
     }
+    // un depósito que falló con la regla anterior (un solo intento y a esperar 24 h) se vuelve a poner en cola una vez:
+    // no cuenta como depósito y el periodo se mide desde el último que sí entró
+    const prevRun = this.s.runs[`${this.label}#${d.n}`];
+    if (prevRun?.status === "error" && !d.lastFailAt && !prevRun.requeued && d.n > 0) {
+      prevRun.requeued = true; prevRun.status = "pendiente"; d.n--; d.fails = 0;
+      d.lastAt = d.deposits?.length ? Date.parse(d.deposits.at(-1).at) : 0;
+      await this.diag(`estrategia beefy-clm-dca: depósito ${this.label}#${d.n + 1} había fallado (${String(prevRun.error ?? "").slice(0, 80)}) · se reintenta ahora`);
+    }
     const label = `${this.label}#${d.n + 1}`;
     if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) return;
     this.run = this.s.runs[label] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: this.dcaUsdCfg };
