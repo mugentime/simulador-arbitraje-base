@@ -430,7 +430,7 @@ const server = http.createServer(async (req, res) => {
     const dca = st?.dca ? Object.fromEntries(Object.entries(st.dca).map(([k, d]) => [k, { ...d, deposits: (d.deposits ?? []).map((x) => ({ ...x, vault: x.vault ?? (x.txs ?? []).map((hh) => vaultOfTx[hh]).find(Boolean) ?? null })) }])) : null;
     const cfg = { extras: parseDcaExtra(process.env.DCA_EXTRA).map((e) => e.spec), mainPaused: !!strategy?.pauseMain, hunterOff: !!strategy?.hunterOff, mainVault: process.env.STRATEGY_VAULT_ID === "auto" ? (process.env.AUTO_PIN || null) : (process.env.STRATEGY_VAULT_ID || null), exitVaults: process.env.EXIT_VAULTS || null };
     const once = Object.values(st?.once ?? {}).flatMap((t) => Object.values(t ?? {})).filter((x) => x?.status === "hecho" && x.vaultId).map((x) => ({ at: x.at, usd: x.usd, vault: x.vaultId, txs: x.txs ?? [], once: true }));
-    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, cfg, once, guardAuto: st?.guardAuto ? { on: process.env.GUARD_AUTO !== "0", paused: !!st.guardAuto.paused, pending: st.guardAuto.pending ? { kind: st.guardAuto.pending.kind, tries: st.guardAuto.pending.tries ?? 0, at: st.guardAuto.pending.at } : null, basis: st.guardAuto.basis ?? null, lastTakeAt: st.guardAuto.lastTakeAt ?? null, takes: (st.guardAuto.takes ?? []).slice(-10), exits: st.guardAuto.exits ?? [], last: st.guardAuto.last ?? null } : null, strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
+    res.writeHead(200, headers); return res.end(J({ chain: CHAIN_CFG.key, explorer: CHAIN_CFG.explorer ?? null, cfg, once, guardAuto: Object.entries(strategy?.guardState?.() ?? {}).map(([key, G]) => ({ key, on: process.env.GUARD_AUTO !== "0", paused: !!G.paused, pending: G.pending ? { kind: G.pending.kind, tries: G.pending.tries ?? 0, at: G.pending.at } : null, basis: G.basis ?? null, lastTakeAt: G.lastTakeAt ?? null, takes: (G.takes ?? []).slice(-10), exits: G.exits ?? [], last: G.last ?? null, take: !!(strategy.guardDefs().find((x) => x.key === key)?.take), vault: (() => { const df = strategy.guardDefs().find((x) => x.key === key); return df ? strategy.guardVaultId(df) : null; })() })), strategy: strategy ? { kind: strategy.kind, label: strategy.label, vaultId: process.env.STRATEGY_VAULT_ID ?? null, dcaUsd: strategy.dcaUsdCfg ?? null, everyH: Number(process.env.DCA_EVERY_H ?? 24), stableSym: strategy.net?.stableSym ?? null, stableDec: strategy.net?.stableDec ?? null } : null, auto, runs, dca, topup: topups[0]?.s ?? (await store.get("topup")) ?? null, topups: Object.fromEntries(topups.map((t) => [t.chainKey, t.s])), snapshots: h.slice(-24 * 7),
       cost: strategy?.lastCost ?? null, pnl: strategy?.lastStrategy ?? null, pnlHist: ((await store.get("dcaStrategyHist").catch(() => null)) ?? []).slice(-24 * 30) }));
   }
   if (req.url.startsWith("/api/withdraw-audit")) {
@@ -461,7 +461,7 @@ const server = http.createServer(async (req, res) => {
     const urls = process.env.STATS_URLS || DEFAULT_STATS_URLS;
     return res.end(fs.readFileSync(new URL("./positions.html", import.meta.url), "utf8").replace('<meta name="viewport"', `<meta name="stats-urls" content="${urls}">\n<meta name="viewport"`));
   }
-  if (req.url.startsWith("/api/guard")) { res.writeHead(200, headers); return res.end(J(lastGuard ?? { ready: false })); }
+  if (req.url.startsWith("/api/guard")) { res.writeHead(200, headers); return res.end(J({ at: new Date().toISOString(), vaults: lastGuards })); }
   if (req.url.startsWith("/api/beefy-dashboard")) {
     // espejo del dashboard de Beefy; caché de 2 min por dirección
     const q = new URL(req.url, "http://x").searchParams;
@@ -556,7 +556,7 @@ async function logCashIn() {
 if (!DCA_ONLY) setTimeout(logCashIn, 6 * 60_000);
 // posiciones de la(s) wallet(s) en Beefy: a los 2 min y cada BEEFY_WALLET_EVERY_MIN (60) minutos (solo Base);
 // guarda la serie (30 días) para seguir el depósito diario: /api/dca-report
-let lastAudit = null, lastGuard = null;
+let lastAudit = null; const lastGuards = {};
 const beefyDashCache = new Map();
 // espejo de Beefy con relleno: una cadena que no responde conserva sus filas del último dato bueno (no es una posición cerrada)
 const staleTxt = (st) => st.map((x) => `${x.chain} ${x.kind === "libre" ? "libre" : "vaults"} $${x.usd.toFixed(2)} (dato de ${new Date(x.t).toISOString().slice(11, 16)} UTC)`).join(", ");
@@ -573,20 +573,24 @@ async function dashNow(addr) {
 // vigía del pool principal (GUARD_POOL=cadena:pool:vault:nombre), solo en Base: evalúa cada 10 min con el precio del pool
 // (DexScreener) y la última lectura de la posición (Beefy, horaria). Escribe la línea "vigía …" cada hora y siempre que haya
 // alerta o cambie de nivel; la tarea programada la lee y avisa al teléfono; worker-robinhood la lee en /api/guard y actúa.
-const GUARD_CFG = (process.env.GUARD_POOL ?? "robinhood:0xdcd2043fFB830072A10C692b38E1EB0A2ce45F8F:aero-cow-robinhood-ai-usdg-vault:AI-USDG").split(":");
+// GUARD_POOLS = "cadena|pool|nombre del vault en Beefy|plataforma, …"
+const GUARDS = (process.env.GUARD_POOLS ?? "robinhood|0xdcd2043fFB830072A10C692b38E1EB0A2ce45F8F|AI-USDG|aero,robinhood|0x644032146cF140963b530EB76a0fD8fd463BE041|CASHCAT-WETH|aero,base|0xF668e21993f0ACd7ab00BB1cFbAeD0df28A3C8EC|NVDAc-USDC|aero")
+  .split(",").map((x) => x.trim().split("|")).filter((x) => x.length >= 3).map(([chain, pool, name, platform]) => ({ key: name, chain, pool, name, platform: platform ?? "" }));
 async function guardTick(log) {
-  if (CHAIN_CFG.key !== "base" || !GUARD_CFG[1]) return;
-  try {
-    const [gc, gp, gv, gn] = GUARD_CFG, prev = lastGuard?.level;
-    const d = [...beefyDashCache.values()].sort((a, b) => b.at - a.at)[0]?.d;
-    if (!d) return; // aún sin lectura de Beefy
-    const row = d.rows?.find((x) => x.id === gv) ?? null;
-    // sin dinero en el vault (y la cadena sí respondió): no se mide nada; con la cadena sin lectura se sigue midiendo el precio
-    const idle = !row && (!Array.isArray(d.readChains) || d.readChains.includes(gc));
-    const g = idle ? guardIdle(gn ?? gv) : await runGuard({ store, row, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) });
-    lastGuard = { ...g, vault: gv };
-    if (g.idle ? log || g.level !== prev : log || g.level !== "OK" && g.level !== "AVISO" || g.level !== prev) console.log(`${new Date().toISOString()} ${g.line}`);
-  } catch (e) { console.log(`${new Date().toISOString()} vigía: error ${String(e.message).slice(0, 120)}`); }
+  if (CHAIN_CFG.key !== "base") return;
+  const d = [...beefyDashCache.values()].sort((a, b) => b.at - a.at)[0]?.d;
+  if (!d) return; // aún sin lectura de Beefy
+  for (const c of GUARDS) {
+    try {
+      const prev = lastGuards[c.key]?.level;
+      const row = d.rows?.find((x) => x.chain === c.chain && x.name === c.name && String(x.platform ?? "").toLowerCase().startsWith(c.platform)) ?? null;
+      // sin dinero en el vault (y la cadena sí respondió): no se mide nada; con la cadena sin lectura se sigue midiendo el precio
+      const idle = !row && (!Array.isArray(d.readChains) || d.readChains.includes(c.chain));
+      const g = idle ? guardIdle(c.name) : await runGuard({ store, row, name: c.name, chain: c.chain, pool: c.pool, storeKey: c.key === "AI-USDG" ? "guard" : `guard:${c.key}`, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) });
+      lastGuards[c.key] = { ...g, key: c.key, chain: c.chain, vault: row?.id ?? null };
+      if (log || (!g.idle && /^ALERTA/.test(g.level)) || g.level !== prev) console.log(`${new Date().toISOString()} ${g.line}`);
+    } catch (e) { console.log(`${new Date().toISOString()} vigía ${c.key}: error ${String(e.message).slice(0, 120)}`); }
+  }
 }
 if (CHAIN_CFG.key === "base") setInterval(() => guardTick(false), 10 * 60_000);
 async function logBeefyWallets() {
@@ -635,7 +639,7 @@ async function refreshPortfolio() {
     if (Date.now() - (pf.lastGoodSaved ?? 0) >= 4.5 * 60_000) { pf.lastGoodSaved = Date.now(); await store.set("portfolioLastGood", last).catch(() => {}); }
   } catch { /* el relleno nunca tumba el panel */ }
   try { accrueFree(L, balances); } catch { /* el libro nunca tumba el panel */ }
-  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, stale, missing, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice }, guard: lastGuard }; pf.at = Date.now();
+  pf.data = { at: wallet.at, address: wallet.address, wallet, balances, stale, missing, ttlS: PORTFOLIO_TTL / 1000, result: { start: L.start, deposits: L.deposits, seed: L.seed, freePrice: L.freePrice }, guards: Object.values(lastGuards) }; pf.at = Date.now();
   if (pf.at - pf.lastSaved >= 4.5 * 60_000) {
     pf.lastSaved = pf.at;
     const ser = (await store.get("portfolioSeries")) ?? [];

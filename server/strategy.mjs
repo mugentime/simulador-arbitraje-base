@@ -64,11 +64,21 @@ export function minOut(simOut, slipBps, refOut) {
 }
 
 /** DCA_EXTRA="SNDKc-USDC@10, AI-USDG" → [{spec, usd}] (puro, probado). */
+// Vaults con defensa automática por cadena. spec = id del vault o el nombre que usa DCA_EXTRA; exitTo = token dólar al que se sale
+// (sin exitTo se sale al estable de la cadena: USDC en Base); take = cobro diario de ganancias.
+const RH_USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+export const GUARD_DEFS = {
+  robinhood: [
+    { key: "AI-USDG", spec: "AI-USDG", exitTo: RH_USDG, exitDec: 6, take: true },
+    { key: "CASHCAT-WETH", spec: "aero:CASHCAT-WETH", exitTo: RH_USDG, exitDec: 6, take: true },
+  ],
+  base: [{ key: "NVDAc-USDC", spec: "aero-cow-base-usdc-nvdac-vault", exitTo: null, take: false }],
+};
 /** Decisión del vigía automático (pura, probada): salida total por alerta de precio/pérdida, o cobro diario de la ganancia. */
-export function guardDecision(G, g, deposits, now, { minTake = 3, everyMs = 24 * 3600_000, maxFrac = 0.5 } = {}) {
+export function guardDecision(G, g, deposits, now, { minTake = 3, everyMs = 24 * 3600_000, maxFrac = 0.5, take = true } = {}) {
   const keys = (g.confirmed ?? []).filter((k) => ["precio", "caida", "perdida"].includes(k)); // confirmadas en dos lecturas seguidas
   if (keys.length) return { kind: "exit", why: (g.alerts ?? []).join(" | ").slice(0, 240) || keys.join(", ") };
-  const row = g.row; if (!row || !(row.nowUsd > 0) || !(row.atDepositUsd > 0)) return null;
+  const row = g.row; if (!take || !row || !(row.nowUsd > 0) || !(row.atDepositUsd > 0)) return null;
   G.basis ??= { at: now, usd: row.atDepositUsd }; // base: lo metido según Beefy el día que se activa; después solo suben los depósitos
   const basis = G.basis.usd + (deposits ?? []).filter((x) => Date.parse(x.at) > G.basis.at).reduce((a, x) => a + (x.usd ?? 0), 0);
   const gain = row.nowUsd - basis;
@@ -83,7 +93,9 @@ export async function resolveVaultSpec(spec, chain) {
   const get = async (path) => { const r = await fetch(`https://api.beefy.finance${path}`, { signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`); return r.json(); };
   const [vs, gs, tvl] = await Promise.all([get("/vaults"), get("/gov-vaults").catch(() => []), get("/tvl").catch(() => ({}))]);
   const tv = {}; for (const b of Object.values(tvl ?? {})) for (const [k, x] of Object.entries(b ?? {})) tv[k] = Number(x) || 0;
-  const all = [...vs, ...gs].filter((v) => v.chain === chain && v.status === "active" && v.type !== "cowcentrated");
+  // "plataforma:nombre" (p. ej. "aero:CASHCAT-WETH") limita la búsqueda a esa plataforma (por el prefijo del id o platformId)
+  const pm = /^([a-z0-9]+):(.+)$/i.exec(spec); const plat = pm ? pm[1].toLowerCase() : null; if (pm) spec = pm[2].trim();
+  const all = [...vs, ...gs].filter((v) => v.chain === chain && v.status === "active" && v.type !== "cowcentrated" && (!plat || String(v.id).toLowerCase().startsWith(plat + "-") || String(v.platformId ?? "").toLowerCase().startsWith(plat)));
   const byId = all.find((v) => v.id === spec);
   if (byId) return byId.id;
   // nombre sin distinguir mayúsculas, sin el sufijo "Reward Pool" y sin importar el orden del par (CASHCAT-USDG = USDG-CASHCAT)
@@ -385,51 +397,89 @@ export class Strategy {
   }
 
   /**
-   * Defensa automática del vault vigilado (solo Robinhood; GUARD_AUTO=0 la apaga). Lee el vigía del worker de Base (/api/guard):
-   *  1) SALIDA: si hay alerta de precio (−15 % desde el máximo de 24 h), caída rápida (−10 % en 1 h) o pérdida (−10 % contra lo
-   *     metido), retira TODO al dólar de la cadena (USDG) y pausa el depósito diario de ese vault hasta GUARD_RESUME=<etiqueta>.
-   *  2) COBRO: una vez al día, si la posición vale más que lo metido (base del día de activación + depósitos posteriores), retira
-   *     esa ganancia a USDG (mínimo GUARD_TAKE_MIN_USD, 3; tope 50 % de la posición por vez).
+   * Defensa automática de los vaults vigilados de esta cadena (GUARD_AUTO=0 la apaga). Lee el vigía del worker de Base (/api/guard):
+   *  1) SALIDA: con alerta CONFIRMADA (dos lecturas seguidas) de precio (−15 % desde el máximo de 24 h), caída rápida (−10 % en
+   *     1 h) o pérdida (−10 % contra lo metido), retira TODO a dólares (USDG en Robinhood, USDC en Base) y pausa el depósito
+   *     diario de ese vault hasta GUARD_RESUME=<etiqueta>.
+   *  2) COBRO (solo vaults con take): una vez al día, si la posición vale más que lo metido (base del día de activación +
+   *     depósitos posteriores), retira esa ganancia a dólares (mínimo GUARD_TAKE_MIN_USD, 3; tope 50 % por vez).
    * Una acción por llamada (true si actuó). La baja de rendimiento solo avisa: no saca.
    */
+  /**
+   * Cadenas donde el DCA gasta ETH (Robinhood): si el ETH + WETH libres no alcanzan para el depósito y hay dólares en la wallet
+   * (DCA_FUND_TOKEN, por omisión USDG; "0" lo apaga), cambia a WETH solo lo que falta para este depósito. El resto sigue en dólares.
+   */
+  async fundFromDollars(usd, ctx) {
+    const tok = process.env.DCA_FUND_TOKEN ?? (this.net.beefy === "robinhood" ? RH_USDG : "0");
+    if (!this.net.wrapNative || tok === "0" || this.run.usdcIn !== undefined || this.run.funded) return;
+    const px = ctx?.ethUsd || 0; if (!(px > 0)) return;
+    const erc = new ethers.Contract(tok, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"], this.provider);
+    const need = ethers.parseEther((usd * 1.02 / px).toFixed(12));
+    const weth = BigInt(await new ethers.Contract(this.net.stable, ["function balanceOf(address) view returns (uint256)"], this.provider).balanceOf(this.me)) - (this.protectStable ?? 0n);
+    const eth = (await this.provider.getBalance(this.me)) - this.reserve - ethers.parseEther("0.0003");
+    const have = (weth > 0n ? weth : 0n) + (eth > 0n ? eth : 0n);
+    if (have >= need) return;
+    const dec = Number(await erc.decimals()), bal = BigInt(await erc.balanceOf(this.me));
+    const miss = Number(ethers.formatEther(need - have)) * px * 1.01, amt = ethers.parseUnits(miss.toFixed(dec), dec);
+    if (bal < amt) return; // sin dólares suficientes: el depósito dirá "fondos insuficientes" y reintentará
+    const got = await routeSwap(this, tok, this.net.stable, amt, `swap dólares→${this.net.stableSym} para el depósito`);
+    this.run.funded = { token: tok, in: String(amt), out: String(got) }; await this.save();
+    await this.diag(`estrategia beefy-clm-dca (extra): fondeo del depósito · $${miss.toFixed(2)} de dólares → ${ethers.formatEther(got)} ${this.net.stableSym}`);
+  }
+  guardDefs() { return GUARD_DEFS[this.net.beefy] ?? []; }
+  guardVaultId(def) { return /-(vault|rp)$/.test(def.spec) ? def.spec : (Object.values(this.s.dca ?? {}).find((x) => x.extra && x.spec === def.spec && x.vaultId)?.vaultId ?? null); }
+  guardState() {
+    if (this.s.guardAuto && Array.isArray(this.s.guardAuto.exits)) this.s.guardAuto = { "AI-USDG": this.s.guardAuto }; // formato anterior (un solo vault)
+    return (this.s.guardAuto ??= {});
+  }
+  /** ¿El vigía sacó todo de este vault y su depósito diario sigue en pausa? */
+  guardPaused(vaultId) { if (!vaultId) return false; const S = this.guardState(); return this.guardDefs().some((d) => S[d.key]?.paused && this.guardVaultId(d) === vaultId); }
   async guardStep(ctx) {
-    if (this.net.beefy !== "robinhood" || process.env.GUARD_AUTO === "0") return false;
-    const vault = process.env.GUARD_VAULT ?? "aero-cow-robinhood-ai-usdg-vault", toTok = process.env.GUARD_EXIT_TO ?? "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", toDec = 6;
-    const G = (this.s.guardAuto ??= { exits: [], takes: [] }), now = Date.now();
-    const rt = process.env.GUARD_RESUME;
-    if (rt && G.resumeTag !== rt) { G.resumeTag = rt; if (G.paused) { G.paused = false; G.basis = null; await this.diag(`vigía auto: depósito diario de ${vault} reanudado (GUARD_RESUME=${rt})`); } }
-    if (!G.pending) {
-      if (G.paused || now - (this.guardAt ?? 0) < 60_000) return false;
+    const defs = this.guardDefs();
+    if (!defs.length || process.env.GUARD_AUTO === "0") return false;
+    const S = this.guardState(), now = Date.now(), rt = process.env.GUARD_RESUME; // GUARD_RESUME=<clave>@<etiqueta>
+    const rm = /^(.+)@([\w.-]+)$/.exec(rt ?? "");
+    let pend = defs.find((d) => S[d.key]?.pending);
+    if (!pend) {
+      if (now - (this.guardAt ?? 0) < 60_000) return false;
       this.guardAt = now;
-      let g; try { const r = await fetch(process.env.GUARD_URL ?? "https://worker-production-1950.up.railway.app/api/guard", { signal: AbortSignal.timeout(15_000) }); g = r.ok ? await r.json() : null; } catch { g = null; }
-      if (!g?.at || now - Date.parse(g.at) > 30 * 60_000 || g.vault !== vault) { // sin lectura fresca no se actúa
-        if (G.last?.ok !== false) await this.diag(`vigía auto: sin lectura fresca del vigía (${!g ? "no responde" : !g.at ? "aún sin datos" : g.vault !== vault ? "otro vault" : "dato de hace " + Math.round((now - Date.parse(g.at)) / 60_000) + " min"}) · no actúa hasta tenerla`);
-        G.last = { at: new Date(now).toISOString(), ok: false }; return false;
+      let all; try { const r = await fetch(process.env.GUARD_URL ?? "https://worker-production-1950.up.railway.app/api/guard", { signal: AbortSignal.timeout(15_000) }); all = r.ok ? await r.json() : null; } catch { all = null; }
+      for (const def of defs) {
+        const G = (S[def.key] ??= { exits: [], takes: [] }), vault = this.guardVaultId(def);
+        if (rm && rm[1] === def.key && G.resumeTag !== rm[2]) { G.resumeTag = rm[2]; if (G.paused) { G.paused = false; G.basis = null; await this.diag(`vigía auto: depósito diario de ${def.key} reanudado (GUARD_RESUME=${rt})`); } }
+        if (G.paused || !vault) continue;
+        const g = all?.vaults?.[def.key];
+        if (!g?.at || now - Date.parse(g.at) > 30 * 60_000) { // sin lectura fresca no se actúa
+          if (G.last?.ok !== false) await this.diag(`vigía auto: ${def.key} sin lectura fresca del vigía (${!all ? "no responde" : !g?.at ? "aún sin datos" : "dato de hace " + Math.round((now - Date.parse(g.at)) / 60_000) + " min"}) · no actúa hasta tenerla`);
+          G.last = { at: new Date(now).toISOString(), ok: false }; continue;
+        }
+        if (G.last?.ok !== true) await this.diag(`vigía auto: activo sobre ${def.key} (${vault}) · lectura ${g.level} · posición ${g.row ? `$${g.row.nowUsd?.toFixed?.(2)} (metido $${g.row.atDepositUsd?.toFixed?.(2)})` : "sin posición aún"} · sale a dólares con alerta confirmada de precio (−15 % en 24 h), caída (−10 % en 1 h) o pérdida (−10 %)${def.take ? ` · cobra la ganancia una vez al día (mínimo $${Number(process.env.GUARD_TAKE_MIN_USD ?? 3)})` : ""}`);
+        G.last = { at: g.at, ok: true, level: g.level };
+        const d = guardDecision(G, g, Object.values(this.s.dca ?? {}).filter((x) => (x.vaultId ?? (x.extra ? null : process.env.STRATEGY_VAULT_ID)) === vault).flatMap((x) => x.deposits ?? []), now, { minTake: Number(process.env.GUARD_TAKE_MIN_USD ?? 3), take: !!def.take });
+        if (!d) continue;
+        G.pending = { ...d, id: `guard-${d.kind}-${now}`, at: now, vault };
+        await this.diag(`vigía auto: ${d.kind === "exit" ? `SALIDA de ${def.key} (${vault}) · ${d.why} · se retira todo a dólares y se pausa su depósito diario` : `COBRO de ganancias de ${def.key} · vale $${d.nowUsd.toFixed(2)}, metido $${d.basis.toFixed(2)} → se retiran ≈ $${d.gain.toFixed(2)} (${(d.frac * 100).toFixed(1)} % de la posición) a dólares`}`);
+        pend = def; break;
       }
-      if (G.last?.ok !== true) await this.diag(`vigía auto: activo sobre ${vault} · lectura ${g.level} · posición $${g.row?.nowUsd?.toFixed?.(2) ?? "?"} (metido $${g.row?.atDepositUsd?.toFixed?.(2) ?? "?"}) · sale a USDG con alerta confirmada de precio (−15 % en 24 h), caída (−10 % en 1 h) o pérdida (−10 %) · cobra la ganancia una vez al día (mínimo $${Number(process.env.GUARD_TAKE_MIN_USD ?? 3)})`);
-      G.last = { at: g.at, ok: true, level: g.level };
-      const d = guardDecision(G, g, Object.values(this.s.dca ?? {}).filter((x) => x.vaultId === vault).flatMap((x) => x.deposits ?? []), now, { minTake: Number(process.env.GUARD_TAKE_MIN_USD ?? 3) });
-      if (!d) return false;
-      G.pending = { ...d, id: `guard-${d.kind}-${now}`, at: now };
-      await this.diag(`vigía auto: ${d.kind === "exit" ? `SALIDA de ${vault} · ${d.why} · se retira todo a USDG y se pausa su depósito diario` : `COBRO de ganancias de ${vault} · vale $${d.nowUsd.toFixed(2)}, metido $${d.basis.toFixed(2)} → se retiran ≈ $${d.gain.toFixed(2)} (${(d.frac * 100).toFixed(1)} % de la posición) a USDG`}`);
+      if (!pend) return false;
     }
-    const p = G.pending;
+    const def = pend, G = S[def.key], p = G.pending, vault = p.vault ?? this.guardVaultId(def);
     if (p.retryAt && now < p.retryAt) return false;
     this.run = this.s.runs[`${this.label}-${p.id}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", extra: true, guard: p.kind };
-    this.vaultId = vault; this.keepStable = true; this.exitTo = toTok; this.exitFrac = p.kind === "take" ? p.frac : null;
+    this.vaultId = vault; this.keepStable = true; this.exitTo = def.exitTo ?? null; this.exitFrac = p.kind === "take" ? p.frac : null;
     try {
       await exitClm(this, ctx);
       this.run.status = "hecho"; this.run.endedAt = Date.now();
-      const out = Number(ethers.formatUnits(this.run.outKept ?? "0", toDec));
-      if (p.kind === "exit") { G.paused = true; G.exits.push({ at: new Date().toISOString(), why: p.why, usd: out }); await this.diag(`vigía auto: SALIDA HECHA · ${vault} · $${out.toFixed(2)} en USDG en la wallet${this.run.outFallback ? " (parte salió en " + this.net.stableSym + ")" : ""} · depósito diario en pausa hasta GUARD_RESUME · motivo: ${p.why}`); }
-      else { G.lastTakeAt = Date.now(); G.takes.push({ at: new Date().toISOString(), usd: out }); if (G.takes.length > 60) G.takes.shift(); await this.diag(`vigía auto: COBRO HECHO · ${vault} · $${out.toFixed(2)} en USDG en la wallet · cobrado en total $${G.takes.reduce((a, x) => a + x.usd, 0).toFixed(2)}`); }
+      const out = def.exitTo ? Number(ethers.formatUnits(this.run.outKept ?? "0", def.exitDec ?? 6)) : Number(ethers.formatUnits(this.run.usdcOut ?? "0", this.net.stableDec)) * this.stableUsd();
+      if (p.kind === "exit") { G.paused = true; G.exits.push({ at: new Date().toISOString(), why: p.why, usd: out }); await this.diag(`vigía auto: SALIDA HECHA · ${def.key} (${vault}) · $${out.toFixed(2)} en dólares en la wallet${this.run.outFallback ? " (parte salió en " + this.net.stableSym + ")" : ""} · depósito diario en pausa hasta GUARD_RESUME · motivo: ${p.why}`); }
+      else { G.lastTakeAt = Date.now(); G.takes.push({ at: new Date().toISOString(), usd: out }); if (G.takes.length > 60) G.takes.shift(); await this.diag(`vigía auto: COBRO HECHO · ${def.key} · $${out.toFixed(2)} en dólares en la wallet · cobrado en total $${G.takes.reduce((a, x) => a + x.usd, 0).toFixed(2)}`); }
       G.pending = null;
     } catch (e) {
       const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
       p.tries = (p.tries ?? 0) + 1;
-      if (e.retry) { p.retryAt = now + 60_000; if (p.tries === 1 || p.tries % 10 === 0) await this.diag(`vigía auto: ${p.kind === "exit" ? "salida" : "cobro"} en espera (${p.tries}) · ${msg}`); }
-      else if (p.kind === "exit" || (p.hard = (p.hard ?? 0) + 1) < 5) { p.retryAt = now + (p.kind === "exit" ? 120_000 : 600_000); if (p.tries === 1 || p.tries % 5 === 0) await this.diag(`vigía auto: ${p.kind === "exit" ? "SALIDA" : "cobro"} falló (${p.tries}) · ${msg} · reintenta`); }
-      else { this.run.status = "error"; this.run.error = msg; G.lastTakeAt = Date.now(); G.pending = null; await this.diag(`vigía auto: cobro abandonado tras 5 intentos · ${msg} · se intenta mañana`); }
+      if (e.retry) { p.retryAt = now + 60_000; if (p.tries === 1 || p.tries % 10 === 0) await this.diag(`vigía auto: ${def.key} ${p.kind === "exit" ? "salida" : "cobro"} en espera (${p.tries}) · ${msg}`); }
+      else if (p.kind === "exit" || (p.hard = (p.hard ?? 0) + 1) < 5) { p.retryAt = now + (p.kind === "exit" ? 120_000 : 600_000); if (p.tries === 1 || p.tries % 5 === 0) await this.diag(`vigía auto: ${def.key} ${p.kind === "exit" ? "SALIDA" : "cobro"} falló (${p.tries}) · ${msg} · reintenta`); }
+      else { this.run.status = "error"; this.run.error = msg; G.lastTakeAt = Date.now(); G.pending = null; await this.diag(`vigía auto: ${def.key} cobro abandonado tras 5 intentos · ${msg} · se intenta mañana`); }
     } finally { this.vaultId = null; this.keepStable = false; this.exitTo = null; this.exitFrac = null; }
     return true;
   }
@@ -741,7 +791,7 @@ export class Strategy {
       // migración: si todos los intentos fallaron (nunca depositó), se vuelve a empezar (los intentos quedan como "-fallido")
       if (!d.migrated && d.n > 0 && !d.totalUsd) { for (let i = 1; i <= d.n; i++) { const k = `${key}#${i}`; if (this.s.runs[k]) { this.s.runs[`${k}-fallido`] = this.s.runs[k]; delete this.s.runs[k]; } } d.n = 0; d.lastAt = 0; d.errors = 0; }
       d.migrated = true;
-      if (this.s.guardAuto?.paused && (d.vaultId ?? "") === (process.env.GUARD_VAULT ?? "aero-cow-robinhood-ai-usdg-vault")) continue; // el vigía sacó todo: sin depósitos hasta GUARD_RESUME
+      if (this.guardPaused(d.vaultId)) continue; // el vigía sacó todo de este vault: sin depósitos hasta GUARD_RESUME
       if (d.retryAt && now < d.retryAt) continue;
       const label = `${key}#${d.n + 1}`;
       if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) continue;
@@ -754,6 +804,7 @@ export class Strategy {
       // el capital de la estrategia principal (ganancia retenida + capital por reinvertir) no se usa en los extra
       this.protectStable = BigInt(this.s.dca?.[this.label]?.retained ?? "0") + BigInt(this.s.dca?.[this.label]?.redeploy ?? "0");
       try {
+        await this.fundFromDollars(e.usd, ctx);
         await enterClm(this, ctx);
         this.run.status = "hecho"; this.run.endedAt = Date.now();
         d.n++; d.lastAt = now; d.totalUsd = +(d.totalUsd + e.usd).toFixed(2); d.retryAt = 0; d.retries = 0; d.fails = 0;
@@ -884,6 +935,7 @@ export class Strategy {
       d.lastAt = d.deposits?.length ? Date.parse(d.deposits.at(-1).at) : 0;
       await this.diag(`estrategia beefy-clm-dca: depósito ${this.label}#${d.n + 1} había fallado (${String(prevRun.error ?? "").slice(0, 80)}) · se reintenta ahora`);
     }
+    if (this.guardPaused(process.env.STRATEGY_VAULT_ID)) return; // el vigía sacó todo de este vault: sin depósitos hasta GUARD_RESUME
     const label = `${this.label}#${d.n + 1}`;
     if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) return;
     this.run = this.s.runs[label] ??= { kind: this.kind, startedAt: now, txs: [], status: "pendiente", usd: this.dcaUsdCfg };

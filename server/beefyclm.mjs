@@ -560,6 +560,15 @@ export async function exitClm(s, ctx) {
   }
   const amt = BigInt(r.usdcOut);
   if (amt <= 0n) throw new Error("no salió USDC del CLM");
+  // s.exitTo en un par que sí tiene el estable de la cadena (p. ej. CASHCAT-WETH): lo que salió en el estable (WETH) se pasa a dólares
+  if (s.exitTo && !r.outToken && String(s.exitTo).toLowerCase() !== String(s.net.stable).toLowerCase()) {
+    if (r.dollarOut === undefined) {
+      try { r.dollarOut = String(await routeSwap(s, s.net.stable, s.exitTo, amt, `swap ${s.net.stableSym}→dólar`)); }
+      catch (e) { if (e.retry) throw e; r.dollarOut = "0"; r.outFallback = String(amt); await s.diag(`estrategia beefy-clm-exit: sin ruta ${s.net.stableSym}→dólar (${(e.shortMessage || e.message).slice(0, 100)}) · queda en ${s.net.stableSym}`); }
+      await s.save();
+    }
+    r.outToken = s.exitTo; r.outKept = r.dollarOut;
+  }
   if (r.outToken) { await s.diag(`estrategia beefy-clm-exit: ${r.partial ? "retiro parcial" : "cerrada"} · ${amt} (crudo) del token ${r.outToken} quedan en la wallet${r.outFallback ? ` + ${ethers.formatUnits(r.outFallback, s.net.stableDec)} ${s.net.stableSym}` : ""} · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   if (s.net.nativeFee === null || s.keepStable) { await s.diag(`estrategia beefy-clm-exit: cerrada · ${ethers.formatUnits(amt, s.net.stableDec)} ${s.net.stableSym} quedan en la wallet · txs ${r.txs.map((t) => `${t.step} ${t.hash}`).join(" | ")}`); return; }
   await approve(s, BASE.USDC, BASE.ROUTER, amt, "approve USDC→router");

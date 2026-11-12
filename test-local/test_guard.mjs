@@ -71,3 +71,23 @@ console.log("vigía ok");
   assert.equal(r.level, "SIN POSICIÓN"); assert.equal(r.idle, true); assert.equal(r.px, null); assert.deepEqual(r.confirmed, []); assert.match(r.line, /^vigía AI-USDG: SIN POSICIÓN · no hay dinero/);
   console.log("vigía en reposo ok");
 }
+// precio cuando el token base del par es el dólar (NVDAc-USDC puede venir como USDC/NVDAc)
+{
+  const { pairPrice } = await import("../server/guard.mjs");
+  assert.deepEqual(pairPrice({ priceUsd: "0.0558", priceNative: "0.0000268", baseToken: { symbol: "CASHCAT" }, quoteToken: { symbol: "WETH" } }), { price: 0.0558, inv: false });
+  const q = pairPrice({ priceUsd: "1.0", priceNative: "0.005", baseToken: { symbol: "USDC" }, quoteToken: { symbol: "NVDAc" } });
+  assert.ok(q.inv && Math.abs(q.price - 200) < 1e-9);
+  const { guardDecision, GUARD_DEFS, resolveVaultSpec } = await import("../server/strategy.mjs");
+  assert.equal(guardDecision({}, { confirmed: [], row: { nowUsd: 300, atDepositUsd: 100 } }, [], t0 + 5 * 24 * 3600_000, { take: false }), null, "sin cobro en vaults sin take");
+  assert.equal(guardDecision({}, { confirmed: ["perdida"], alerts: ["x"], row: { nowUsd: 80, atDepositUsd: 100 } }, [], t0, { take: false }).kind, "exit");
+  assert.deepEqual(GUARD_DEFS.base.map((d) => d.key), ["NVDAc-USDC"]); assert.deepEqual(GUARD_DEFS.robinhood.map((d) => d.key), ["AI-USDG", "CASHCAT-WETH"]);
+  // "aero:CASHCAT-WETH" elige el vault de Aerodrome aunque el de Uniswap tenga más TVL
+  const of = globalThis.fetch;
+  globalThis.fetch = async (u) => ({ ok: true, json: async () => String(u).endsWith("/vaults") ? [
+    { id: "uniswap-cow-robinhood-cashcat-weth-vault", name: "CASHCAT-WETH", chain: "robinhood", status: "active", type: "standard", platformId: "uniswap" },
+    { id: "aero-cow-robinhood-cashcat-weth-vault", name: "CASHCAT-WETH", chain: "robinhood", status: "active", type: "standard", platformId: "aerodrome" }] : String(u).endsWith("/tvl") ? { 4663: { "uniswap-cow-robinhood-cashcat-weth-vault": 20000, "aero-cow-robinhood-cashcat-weth-vault": 500 } } : [] });
+  assert.equal(await resolveVaultSpec("aero:CASHCAT-WETH", "robinhood"), "aero-cow-robinhood-cashcat-weth-vault");
+  assert.equal(await resolveVaultSpec("CASHCAT-WETH", "robinhood"), "uniswap-cow-robinhood-cashcat-weth-vault");
+  globalThis.fetch = of;
+  console.log("vigía multi-vault ok");
+}

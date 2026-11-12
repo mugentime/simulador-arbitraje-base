@@ -44,11 +44,18 @@ export function guardLevel(state, ev, now, th = GUARD_DEFAULTS) {
   return level;
 }
 
-export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAULTS, fetchJson }) {
+const STABLE = /^(USDC|USDT|USDG|DAI|USDbC|USDC\.e)$/i;
+/** Precio en USD del token volátil del par (DexScreener da el del token base: si el base es el dólar, se usa el del otro). */
+export function pairPrice(p) {
+  const pu = Number(p.priceUsd), pn = Number(p.priceNative);
+  if (STABLE.test(p.baseToken?.symbol ?? "") && !STABLE.test(p.quoteToken?.symbol ?? "") && pn > 0) return { price: pu / pn, inv: true };
+  return { price: pu, inv: false };
+}
+export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAULTS, fetchJson, storeKey = "guard" }) {
   const now = Date.now();
-  const st = (await store.get("guard").catch(() => null)) ?? { hist: [], state: {} };
+  const st = (await store.get(storeKey).catch(() => null)) ?? { hist: [], state: {} };
   let px = null, err = null;
-  try { const j = await fetchJson(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`); const p = j?.pairs?.[0] ?? j?.pair ?? null; if (p) px = { price: Number(p.priceUsd), vol24: Number(p.volume?.h24), liq: Number(p.liquidity?.usd), ch24: Number(p.priceChange?.h24), tx24: (p.txns?.h24?.buys ?? 0) + (p.txns?.h24?.sells ?? 0) }; else err = "sin par"; }
+  try { const j = await fetchJson(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${pool}`); const p = j?.pairs?.[0] ?? j?.pair ?? null; if (p) { const pp = pairPrice(p); px = { price: pp.price, vol24: Number(p.volume?.h24), liq: Number(p.liquidity?.usd), ch24: pp.inv ? (1 / (1 + Number(p.priceChange?.h24) / 100) - 1) * 100 : Number(p.priceChange?.h24), tx24: (p.txns?.h24?.buys ?? 0) + (p.txns?.h24?.sells ?? 0) }; } else err = "sin par"; }
   catch (e) { err = String(e.message ?? e).slice(0, 60); }
   const s = { t: now, price: px?.price ?? null, vol24: px?.vol24 ?? null, liq: px?.liq ?? null, yieldUsd: row?.yieldUsd ?? null, nowUsd: row?.nowUsd ?? null, atDep: row?.atDepositUsd ?? null };
   st.hist.push(s); st.hist = st.hist.filter((x) => now - x.t <= 14 * 24 * H);
@@ -60,7 +67,7 @@ export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAU
   const streak = {}; for (const a of ev.alerts) streak[a.k] = (st.state.streak?.[a.k] ?? 0) + 1;
   st.state.streak = streak;
   const confirmed = Object.entries(streak).filter(([, n]) => n >= 2).map(([k]) => k);
-  await store.set("guard", st).catch(() => {});
+  await store.set(storeKey, st).catch(() => {});
   const f = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "—"), k = (v) => (Number.isFinite(v) ? "$" + Math.round(v).toLocaleString("en-US") : "—");
   const line = `vigía ${name}: ${level}${ev.alerts.length ? " · " + ev.alerts.map((a) => a.t).join(" | ") : ""}${ev.warns.length ? " · avisos: " + ev.warns.join(" | ") : ""}` +
     ` · precio ${px ? "$" + px.price.toPrecision(4) : "sin dato" + (err ? ` (${err})` : "")}${px ? ` (24 h ${f(px.ch24)} %, vs máximo 24 h ${f(ev.m.dropFromHigh)} %)` : ""} · volumen 24 h ${k(px?.vol24)} · liquidez ${k(px?.liq)}` +

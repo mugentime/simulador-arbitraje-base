@@ -115,4 +115,34 @@ ok(!(await s.migrate({ ethUsd: 600 })), "migración: no se repite");
   ok(B(RP) === 0n && B(S) === s0 && B(ZEC) === z0, "salida total del vigía: sin participaciones, todo en token1");
   s.exitTo = null; s.keepStable = false;
 }
+// vigía automático de punta a punta: cobro diario y salida total con lectura confirmada; pausa del depósito
+{
+  const { GUARD_DEFS } = await import("../server/strategy.mjs");
+  GUARD_DEFS.bsc = [{ key: "T", spec: "uniswap-cow-bsc-zec-btcb-rp", exitTo: BTCB, exitDec: 18, take: true }];
+  s.run = s.s.runs["par#3"] = { kind: "beefy-clm-dca", startedAt: 7, txs: [], status: "pendiente" }; s.dcaUsd = 25; s.vaultId = null; add(S, 25n * 10n ** 18n);
+  await enterClm(s, { ethUsd: 600 }); s.vaultId = null; s.dcaUsd = null;
+  const rp0 = B(RP), b0 = B(BTCB);
+  let G = { at: new Date().toISOString(), vaults: { T: { at: new Date().toISOString(), level: "OK", keys: [], confirmed: [], alerts: [], row: { nowUsd: 25, atDepositUsd: 25 } } } };
+  const of = globalThis.fetch; globalThis.fetch = async (u) => (String(u).includes("/api/guard") ? { ok: true, json: async () => G } : of(u));
+  ok(!(await s.guardStep({ ethUsd: 600 })) && s.s.guardAuto.T.basis.usd === 25 && B(RP) === rp0, "vigía: lectura OK → no actúa y fija la base");
+  // un día después la posición vale $30: cobra $5 (1/6 de la posición)
+  s.guardAt = 0; s.s.guardAuto.T.basis.at -= 25 * 3600_000; G.vaults.T.row = { nowUsd: 30, atDepositUsd: 25 };
+  ok(await s.guardStep({ ethUsd: 600 }) && !s.s.guardAuto.T.pending && s.s.guardAuto.T.takes.length === 1, `vigía: cobro hecho (${logs.at(-1)?.slice(0, 110)})`);
+  ok(B(RP) === rp0 - rp0 * 166667n / 1000000n && B(BTCB) > b0 && !s.s.guardAuto.T.paused, "vigía: salió 1/6 de las participaciones, todo en el token dólar, sin pausar");
+  s.guardAt = 0; ok(!(await s.guardStep({ ethUsd: 600 })), "vigía: no cobra dos veces el mismo día");
+  // alerta sin confirmar no saca; confirmada saca todo y pausa
+  s.guardAt = 0; G.vaults.T = { ...G.vaults.T, level: "ALERTA NUEVA", keys: ["precio"], confirmed: [], alerts: ["precio −16 %"] };
+  ok(!(await s.guardStep({ ethUsd: 600 })) && B(RP) > 0n, "vigía: alerta sin confirmar → no sale");
+  s.guardAt = 0; G.vaults.T.confirmed = ["precio"];
+  ok(await s.guardStep({ ethUsd: 600 }) && B(RP) === 0n && s.s.guardAuto.T.paused && s.s.guardAuto.T.exits.length === 1, `vigía: salida total y pausa (${logs.at(-1)?.slice(0, 120)})`);
+  ok(s.guardPaused("uniswap-cow-bsc-zec-btcb-rp") && !s.guardPaused("otro"), "vigía: el depósito de ese vault queda en pausa");
+  s.guardAt = 0; ok(!(await s.guardStep({ ethUsd: 600 })), "vigía: en pausa no vuelve a actuar");
+  G.vaults.T = { ...G.vaults.T, level: "SIN POSICIÓN", keys: [], confirmed: [], alerts: [], row: null };
+  process.env.GUARD_RESUME = "T@r1"; s.guardAt = 0; await s.guardStep({ ethUsd: 600 });
+  ok(!s.s.guardAuto.T.paused, "vigía: GUARD_RESUME reanuda");
+  // lectura vieja: no actúa
+  s.guardAt = 0; G.vaults.T.at = new Date(Date.now() - 45 * 60_000).toISOString();
+  ok(!(await s.guardStep({ ethUsd: 600 })) && s.s.guardAuto.T.last.ok === false, "vigía: sin lectura fresca no actúa");
+  globalThis.fetch = of; delete GUARD_DEFS.bsc; delete process.env.GUARD_RESUME;
+}
 console.log(fails ? `${fails} FALLAS` : "todo OK"); process.exit(fails ? 1 : 0);
