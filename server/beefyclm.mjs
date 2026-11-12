@@ -399,7 +399,9 @@ export async function enterClm(s, ctx) {
   if (r.xIn === undefined) {
     const usdc = BigInt(r.usdcIn);
     const xWallet = await bal(s, r.x);
-    const probe = U1; // 1 unidad del estable
+    // cotización con 1 unidad del estable; si el estable vale mucho (WETH en Robinhood) y hay menos de 1 unidad, con 1/50 de lo
+    // que se va a depositar: la cotización en el router de Slipstream se simula como un swap real y falla ("STF") sin ese saldo
+    const probe = usdc > 0n && usdc < U1 ? (usdc / 50n || 1n) : U1;
     if (r.dex === "slip") await approve(s, N.stable, r.router, usdc > 0n ? usdc : U1, "approve estable→router (cotización)");
     const rate = Number(r.dex === "otro" ? (await bestPath(s, N.stable, r.x, probe)).out : await slipQuote(s, N.stable, r.x, probe)) / Number(probe); // X crudo por estable crudo
     const R = await clmRatio(s); // X crudo que pide el CLM por cada estable crudo (Infinity = solo X)
