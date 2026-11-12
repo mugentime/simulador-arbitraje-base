@@ -358,9 +358,9 @@ details summary { cursor: pointer; color: var(--mut); font-size: 12px; margin-to
       </div>
       ${stale.length ? `<div class="alert warn" style="margin-top:10px"><b>Lectura incompleta ahora.</b> Estas cadenas no respondieron y se cuentan con su último dato bueno, no en cero: ${stale.map((x) => `${esc(x.chain)} ${x.kind === "libre" ? "libre" : "vaults"} ${usd(x.usd)} (${ago(new Date(x.t).toISOString())})`).join(" · ")}. El resultado puede variar un poco cuando vuelvan a leerse.</div>` : ""}
       ${(() => { const g = S.pf.guard; if (!g) return ""; const bad = /^ALERTA/.test(g.level), c = bad ? "bad" : g.level === "AVISO" ? "warn" : "info";
-        return `<div class="alert ${c}" style="margin-top:10px"><b>🛡️ Vigía AI-USDG: ${bad ? "ALERTA" : g.level}</b>${g.alerts.length ? " · " + g.alerts.map(esc).join(" · ") : ""}${g.warns.length ? " · " + g.warns.map(esc).join(" · ") : ""}
+        return (g.idle || g.level === "SIN POSICIÓN" ? "" : `<div class="alert ${c}" style="margin-top:10px"><b>🛡️ Vigía AI-USDG: ${bad ? "ALERTA" : g.level}</b>${g.alerts.length ? " · " + g.alerts.map(esc).join(" · ") : ""}${g.warns.length ? " · " + g.warns.map(esc).join(" · ") : ""}
           · precio ${g.px ? "$" + g.px.price.toPrecision(4) + ` (24 h ${sgnP(g.px.ch24)}, contra el máximo de 24 h ${sgnP(g.m.dropFromHigh)})` : "sin dato"}${g.px ? ` · volumen 24 h ${usdK(g.px.vol24)} · liquidez del pool ${usdK(g.px.liq)}` : ""}${fin(g.m.ratePct) ? ` · ritmo real ${pct(g.m.ratePct, 2)}/día` : ""}
-          <span class="mut">· ${ago(g.at)} · avisa al teléfono si: precio −15 % en 24 h, −10 % en 1 h, ritmo &lt; 0.5 %/día o posición −10 %</span></div>` + (() => {
+          <span class="mut">· ${ago(g.at)} · avisa al teléfono si: precio −15 % en 24 h, −10 % en 1 h, ritmo &lt; 0.5 %/día o posición −10 %</span></div>`) + (() => {
             const a = S.reports.find((r) => r.chain === "robinhood")?.guardAuto; if (!a) return "";
             const tk = a.takes ?? [], tot = tk.reduce((x, t) => x + (t.usd ?? 0), 0), lastT = tk.at(-1), ex = (a.exits ?? []).at(-1);
             if (a.paused) return `<div class="alert bad" style="margin-top:6px"><b>⛔ Defensa automática: SALIÓ de AI-USDG</b> ${ex ? `el ${hm(ex.at)} · ${usd(ex.usd)} en USDG en la wallet · motivo: ${esc(ex.why)}` : ""} · el depósito diario está en pausa hasta que decidas volver a entrar.</div>`;

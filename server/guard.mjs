@@ -67,3 +67,9 @@ export async function runGuard({ store, row, name, chain, pool, th = GUARD_DEFAU
     ` · posición ${row ? `$${f(row.nowUsd, 2)} (metido $${f(row.atDepositUsd, 2)}, comisiones $${f(row.yieldUsd, 2)})` : "sin dato"} · ritmo real ${f(ev.m.ratePct, 2)} %/día · reglas: precio −${th.dropPct} % en 24 h, −${th.fastDropPct} % en 1 h, ritmo < ${th.minRatePct} %/día, posición −${th.lossPct} %`;
   return { at: new Date(now).toISOString(), level, keys: ev.alerts.map((a) => a.k), confirmed, alerts: ev.alerts.map((a) => a.t), warns: ev.warns, m: ev.m, px, row: row ? { nowUsd: row.nowUsd, atDepositUsd: row.atDepositUsd, yieldUsd: row.yieldUsd } : null, line };
 }
+
+/** Sin dinero en el vault no hay nada que vigilar: no se consulta el precio ni se guarda la serie; solo queda el estado. */
+export function guardIdle(name, now = Date.now()) {
+  return { at: new Date(now).toISOString(), level: "SIN POSICIÓN", idle: true, keys: [], confirmed: [], alerts: [], warns: [], m: {}, px: null, row: null,
+    line: `vigía ${name}: SIN POSICIÓN · no hay dinero en el vault, no se mide ni se alerta · se reactiva solo si vuelve a haber posición` };
+}

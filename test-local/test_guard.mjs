@@ -64,3 +64,10 @@ console.log("vigía ok");
   assert.equal(r.level, "SIN POSICIÓN"); assert.deepEqual(r.keys, []); assert.deepEqual(r.confirmed, []); assert.match(r.line, /^vigía AI-USDG: SIN POSICIÓN · precio/);
   console.log("vigía sin posición ok");
 }
+// sin dinero en el vault: estado en reposo, sin precio ni alertas
+{
+  const { guardIdle } = await import("../server/guard.mjs");
+  const r = guardIdle("AI-USDG", Date.parse("2026-11-12T00:00:00Z"));
+  assert.equal(r.level, "SIN POSICIÓN"); assert.equal(r.idle, true); assert.equal(r.px, null); assert.deepEqual(r.confirmed, []); assert.match(r.line, /^vigía AI-USDG: SIN POSICIÓN · no hay dinero/);
+  console.log("vigía en reposo ok");
+}

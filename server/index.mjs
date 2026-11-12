@@ -23,7 +23,7 @@ import { auditWallet, auditLine } from "./walletaudit.mjs";
 import { whitelist } from "./withdrawguard.mjs";
 import { Strategy, parseDcaExtra } from "./strategy.mjs";
 import { seedLedger, accrueFree, addDeposits, carryForward } from "./resultledger.mjs";
-import { runGuard } from "./guard.mjs";
+import { runGuard, guardIdle } from "./guard.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
@@ -579,9 +579,13 @@ async function guardTick(log) {
   try {
     const [gc, gp, gv, gn] = GUARD_CFG, prev = lastGuard?.level;
     const d = [...beefyDashCache.values()].sort((a, b) => b.at - a.at)[0]?.d;
-    const g = await runGuard({ store, row: d?.rows?.find((x) => x.id === gv) ?? null, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) });
+    if (!d) return; // aún sin lectura de Beefy
+    const row = d.rows?.find((x) => x.id === gv) ?? null;
+    // sin dinero en el vault (y la cadena sí respondió): no se mide nada; con la cadena sin lectura se sigue midiendo el precio
+    const idle = !row && (!Array.isArray(d.readChains) || d.readChains.includes(gc));
+    const g = idle ? guardIdle(gn ?? gv) : await runGuard({ store, row, name: gn ?? gv, chain: gc, pool: gp, fetchJson: (u) => fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }) });
     lastGuard = { ...g, vault: gv };
-    if (log || g.level !== "OK" && g.level !== "AVISO" || g.level !== prev) console.log(`${new Date().toISOString()} ${g.line}`);
+    if (g.idle ? log || g.level !== prev : log || g.level !== "OK" && g.level !== "AVISO" || g.level !== prev) console.log(`${new Date().toISOString()} ${g.line}`);
   } catch (e) { console.log(`${new Date().toISOString()} vigía: error ${String(e.message).slice(0, 120)}`); }
 }
 if (CHAIN_CFG.key === "base") setInterval(() => guardTick(false), 10 * 60_000);
