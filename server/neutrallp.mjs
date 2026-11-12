@@ -121,6 +121,10 @@ export class NeutralLp {
     const nrRaw = String(process.env.NODEREAL_KEY ?? "").trim(), nrKey = nrRaw.includes("/v1/") ? nrRaw.split("/v1/")[1].replace(/\/+$/, "") : nrRaw;
     const nrUrl = nrKey ? `https://open-platform.nodereal.io/${nrKey}/base/` : null;
     const cands = [["alchemy", process.env.ALCHEMY_KEY && `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`], ["nodereal", nrUrl]];
+    // Coinbase CDP: CDP_RPC_URL admite la URL completa o solo la clave. dRPC: DRPC_KEY.
+    const cdpRaw = String(process.env.CDP_RPC_URL ?? "").trim(), drpc = String(process.env.DRPC_KEY ?? "").trim();
+    cands.unshift(["coinbase", cdpRaw ? (/^https?:\/\//.test(cdpRaw) ? cdpRaw : `https://api.developer.coinbase.com/rpc/v1/base/${cdpRaw}`) : null]);
+    cands.splice(1, 0, ["drpc", drpc ? `https://lb.drpc.org/ogrpc?network=base&dkey=${drpc}` : null]);
     const out = [], ok = [];
     for (const [name, url] of cands) {
       if (!url) { out.push(`${name}: sin clave`); continue; }
@@ -130,7 +134,7 @@ export class NeutralLp {
         const j = await res.json().catch(() => ({}));
         if (j.result) { ok.push(url); out.push(`${name}: OK (${Date.now() - t0} ms, bloque ${parseInt(j.result, 16)})`); }
         else out.push(`${name}: NO responde · HTTP ${res.status} · ${String(j.error?.message ?? "sin detalle").slice(0, 90)}`);
-      } catch (e) { out.push(`${name}: NO responde · ${String(e.name || "error")} ${String(e.cause?.code ?? e.code ?? "")}${name === "nodereal" ? ` · clave de ${nrKey.length} caracteres${/^[0-9a-f]+$/i.test(nrKey) ? "" : " con caracteres raros"}${nrRaw !== nrKey ? " (venía con URL o espacios)" : ""}` : ""}`); }
+      } catch (e) { out.push(`${name}: NO responde · ${String(e.name || "error")} ${String(e.cause?.code ?? e.code ?? "")}${name === "coinbase" ? ` · valor de ${cdpRaw.length} caracteres${/^https?:\/\//.test(cdpRaw) ? " (URL)" : " (solo clave)"}${/\s/.test(cdpRaw) ? " con espacios" : ""}` : ""}${name === "nodereal" ? ` · clave de ${nrKey.length} caracteres${/^[0-9a-f]+$/i.test(nrKey) ? "" : " con caracteres raros"}${nrRaw !== nrKey ? " (venía con URL o espacios)" : ""}` : ""}`); }
     }
     this.rpcs = [...ok, ...NLP.RPCS];
     if (ok.length) { this.provider = new ethers.JsonRpcProvider(ok[0], 8453, { staticNetwork: true }); this.rpcIdx = 0; }

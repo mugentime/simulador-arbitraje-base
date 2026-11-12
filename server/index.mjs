@@ -1,6 +1,7 @@
 // Servicio 24/7 para Railway (o cualquier host con procesos continuos):
 // corre el worker del protocolo sin parar y expone GET /api/stats para el panel de la página.
 // No envía transacciones. Variables opcionales: RPC_URL, LT_HOURS (default 2), DATA_DIR, PORT.
+import { inspect as utilInspect } from "node:util";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,8 +46,10 @@ function reasonsText(byReason) {
 
 // Claves de proveedores (p. ej. NODEREAL_KEY) viven solo en variables de Railway: se tachan de todo lo que se escribe
 // en los logs por si algún error de red incluye la URL completa.
-const SECRETS = [process.env.NODEREAL_KEY, process.env.ALCHEMY_KEY].filter((x) => x && x.length >= 8);
-const redact = (x) => (typeof x === "string" ? SECRETS.reduce((t, k) => t.split(k).join("***"), x) : x);
+const cdpKey = String(process.env.CDP_RPC_URL ?? "").trim().replace(/\/+$/, "").split("/").pop();
+const SECRETS = [process.env.NODEREAL_KEY, process.env.ALCHEMY_KEY, cdpKey, process.env.DRPC_KEY].map((x) => String(x ?? "").trim()).filter((x) => x.length >= 8);
+// los objetos (errores de ethers con requestUrl) se pasan a texto antes de tachar
+const redact = (x) => { const t = typeof x === "string" ? x : x && typeof x === "object" ? utilInspect(x, { depth: 4, breakLength: 200 }) : x; return typeof t === "string" ? SECRETS.reduce((a, k) => a.split(k).join("***"), t) : t; };
 for (const fn of ["log", "warn", "error"]) { const orig = console[fn].bind(console); console[fn] = (...a) => orig(...a.map(redact)); }
 
 // Cadena activa: CHAIN=base|polygon|bsc|arbitrum|optimism|robinhood (una instancia del servicio por cadena)
