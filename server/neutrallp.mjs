@@ -280,6 +280,15 @@ export class NeutralLp {
   async monitor() {
     const r = await this.read(), id = this.s.tokenId, cfg = this.cfg;
     this.s.last = { t: Date.now(), revert: r.h.revert, comet: r.h.comet, lp: r.rValue, rDebt: r.rDebt, cColl: r.cColl, cDebt: r.cDebt, cDebtUsd: r.cDebtUsd, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
+    // comisiones puras: lo que el LP tiene por cobrar (lectura on-chain), sin efecto de precio
+    try {
+      const f = await this.provider.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]) }).then((d) => I.decodeFunctionResult("collect", d));
+      const usd = Number(f[0]) / 1e18 * r.pr.eth + Number(f[1]) / 1e8 * r.pr.btc;
+      const days = (Date.now() - (this.s.openedAt ?? Date.now())) / 86400_000;
+      this.s.last.fees = usd; this.s.last.feeDays = days;
+      this.s.last.feeAprLp = days > 0.02 && r.rValue > 0 ? usd / r.rValue / days * 365 * 100 : null;
+      this.s.last.feeAprCap = days > 0.02 && this.s.entry?.usd ? usd / this.s.entry.usd / days * 365 * 100 : null;
+    } catch {}
     this.s.minRevert = Math.min(this.s.minRevert ?? Infinity, r.h.revert); this.s.minComet = Math.min(this.s.minComet ?? Infinity, r.h.comet);
     if (Date.now() - this.lastLine > 30 * 60_000) { this.lastLine = Date.now(); console.log(`${new Date().toISOString()} ${this.line()}`); }
 
@@ -365,7 +374,7 @@ export class NeutralLp {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${l.fees != null ? ` · comisiones por cobrar $${l.fees.toFixed(3)} en ${(l.feeDays * 24).toFixed(1)} h${l.feeAprCap != null ? ` = ${l.feeAprCap.toFixed(0)} % anual sobre el capital (${l.feeAprLp.toFixed(0)} % sobre el LP)` : ""}` : ""} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
   }
   view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minComet: this.s.minComet, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: this.cfg }; }
 }
