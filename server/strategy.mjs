@@ -792,6 +792,9 @@ export class Strategy {
       if (!d.migrated && d.n > 0 && !d.totalUsd) { for (let i = 1; i <= d.n; i++) { const k = `${key}#${i}`; if (this.s.runs[k]) { this.s.runs[`${k}-fallido`] = this.s.runs[k]; delete this.s.runs[k]; } } d.n = 0; d.lastAt = 0; d.errors = 0; }
       d.migrated = true;
       if (this.guardPaused(d.vaultId)) continue; // el vigía sacó todo de este vault: sin depósitos hasta GUARD_RESUME
+      // DCA_RETRY_NOW=<etiqueta> (una vez por etiqueta): quita la espera del reintento de un depósito que falló y vuelve a intentar ya
+      const rn = process.env.DCA_RETRY_NOW;
+      if (rn && d.retryNowTag !== rn) { d.retryNowTag = rn; if (d.retryAt || d.fails) { d.retryAt = 0; d.fails = 0; d.retries = 0; await this.diag(`estrategia beefy-clm-dca (extra): ${d.vaultId ?? e.spec} · reintento inmediato (DCA_RETRY_NOW=${rn})`); } }
       if (d.retryAt && now < d.retryAt) continue;
       const label = `${key}#${d.n + 1}`;
       if (!this.s.runs[label] && now - d.lastAt < this.dcaEveryMs) continue;
@@ -814,12 +817,13 @@ export class Strategy {
         const msg = (err.shortMessage || err.message || String(err)).slice(0, 300);
         if (err.retry && (d.retries = (d.retries ?? 0) + 1) <= 60) { d.retryAt = now + 60_000; this.run.lastRetry = msg; if (d.retries === 1 || d.retries % 10 === 0) await this.diag(`estrategia beefy-clm-dca (extra): ${d.vaultId} reintento ${d.retries} en 1 min · ${msg}`); }
         else if (err.noFunds) { d.retryAt = now + 3600_000; if (d.lastNoFunds !== label) { d.lastNoFunds = label; await this.diag(`estrategia beefy-clm-dca (extra): ${d.vaultId} · ${msg} · reintento cada hora hasta que haya fondos`); } }
-        else if ((d.fails = (d.fails ?? 0) + 1) < 3) {
-          // error: hasta 3 intentos por periodo, uno por hora (la misma corrida retoma los pasos ya hechos)
-          this.run.status = "pendiente"; this.run.error = msg; d.retryAt = now + 3600_000; d.retries = 0;
-          await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló (intento ${d.fails} de 3) · ${msg} · reintento en 1 h`);
+        else if ((d.fails = (d.fails ?? 0) + 1) < 6) {
+          // error: hasta 6 intentos por periodo; los dos primeros reintentos a los 5 min, luego uno por hora (la misma corrida retoma los pasos ya hechos)
+          const wait = d.fails <= 2 ? 300_000 : 3600_000;
+          this.run.status = "pendiente"; this.run.error = msg; d.retryAt = now + wait; d.retries = 0;
+          await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló (intento ${d.fails} de 6) · ${msg} · reintento en ${wait / 60_000} min`);
         }
-        else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.lastFailAt = now; d.n++; d.fails = 0; d.errors = (d.errors ?? 0) + 1; d.retryAt = 0; d.retries = 0; await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló 3 veces · ${msg} · se intenta de nuevo en el siguiente periodo`); }
+        else { this.run.status = "error"; this.run.error = msg; d.lastAt = now; d.lastFailAt = now; d.n++; d.fails = 0; d.errors = (d.errors ?? 0) + 1; d.retryAt = 0; d.retries = 0; await this.diag(`estrategia beefy-clm-dca (extra): depósito ${label} en ${d.vaultId} falló 6 veces · ${msg} · se intenta de nuevo en el siguiente periodo`); }
       } finally { this.vaultId = null; this.dcaUsd = null; }
       return true;
     }
