@@ -61,7 +61,12 @@ export class Bridger {
       if (tok) {
         const T = new ethers.Contract(tok, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"], this.provider);
         dec = Number(await T.decimals()); sym = await T.symbol().catch(() => "token");
-        amount = await T.balanceOf(me); usd = Number(ethers.formatUnits(amount, dec));
+        amount = await T.balanceOf(me);
+        // BRIDGE_AMOUNT_USD: tope del envío (estable ≈ $1), el resto se queda en esta cadena (Jose 2026-11-12: fondear Base
+        // con el USDG de Robinhood sin vaciar el fondo del DCA de CASHCAT)
+        const cap = Number(process.env.BRIDGE_AMOUNT_USD ?? 0);
+        if (cap > 0) { const c = ethers.parseUnits(cap.toFixed(Math.min(6, dec)), dec); if (c < amount) amount = c; }
+        usd = Number(ethers.formatUnits(amount, dec));
       } else {
         amount = bridgeAmount(bal, this.keepUsd, ctx.ethUsd, gp * 400_000n);
         usd = Number(ethers.formatEther(amount)) * ctx.ethUsd;
