@@ -709,6 +709,14 @@ export const CHAINS = {
   },
 };
 
+// Coinbase CDP (CDP_RPC_URL: URL completa o solo la clave) va primero en la lista de RPC de Base para todo el servidor:
+// lecturas, saldos, dashboard, recargas y envíos. Antes solo lo usaba lp-neutral.
+export function cdpBaseUrl(env = globalThis.process?.env ?? {}) {
+  const raw = String(env.CDP_RPC_URL ?? "").trim();
+  return raw ? (/^https?:\/\//.test(raw) ? raw : `https://api.developer.coinbase.com/rpc/v1/base/${raw}`) : null;
+}
+{ const u = cdpBaseUrl(); if (u && !CHAINS.base.rpcs.includes(u)) CHAINS.base.rpcs.unshift(u); }
+
 export function chainByKey(key) {
   const c = CHAINS[String(key || "base").toLowerCase()];
   if (!c) throw new Error(`cadena desconocida: ${key} (disponibles: ${Object.keys(CHAINS).join(", ")})`);

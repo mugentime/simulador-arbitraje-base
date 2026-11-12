@@ -245,6 +245,11 @@ export class Topup {
 
 /** Destinos de recarga: TOPUP_TARGETS="bsc:0x55d3…:20,robinhood:native:12"; si no, TOPUP_CHAIN/TOPUP_TOKEN/TOPUP_TARGET_USD. */
 export function topupTargets(env = process.env) {
+  // TOPUP_DISABLE="robinhood,bsc": cadenas a las que ya no se recarga desde Base (Jose 2026-11-12: sin recargas de gas a Robinhood)
+  const off = new Set(String(env.TOPUP_DISABLE ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean));
+  return topupTargetsAll(env).filter((t) => !off.has(String(t.chainKey).toLowerCase()));
+}
+function topupTargetsAll(env) {
   if (env.TOPUP_TARGETS) return env.TOPUP_TARGETS.split(",").map((x) => x.trim()).filter(Boolean).map((x, i) => { const [chainKey, token, usd] = x.split(":"); return { chainKey, token, targetUsd: Number(usd), storeKey: i === 0 && chainKey === env.TOPUP_CHAIN ? "topup" : `topup-${chainKey}` }; });
   return env.TOPUP_CHAIN ? [{ chainKey: env.TOPUP_CHAIN, token: env.TOPUP_TOKEN || "", targetUsd: Number(env.TOPUP_TARGET_USD ?? 10), storeKey: "topup" }] : [];
 }

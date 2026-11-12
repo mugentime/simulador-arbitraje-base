@@ -416,7 +416,9 @@ export class Strategy {
     const erc = new ethers.Contract(tok, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)"], this.provider);
     const need = ethers.parseEther((usd * 1.02 / px).toFixed(12));
     const weth = BigInt(await new ethers.Contract(this.net.stable, ["function balanceOf(address) view returns (uint256)"], this.provider).balanceOf(this.me)) - (this.protectStable ?? 0n);
-    const eth = (await this.provider.getBalance(this.me)) - this.reserve - ethers.parseEther("0.0003");
+    // El ETH nativo queda para gas: el depósito se paga con el WETH libre y, lo que falte, con dólares de la wallet (Jose
+    // 2026-11-12: "si quedan 200 USDG en Robinhood, cambio directo en vez de bridge"). DCA_FUND_USE_NATIVE=1 vuelve a usar el nativo.
+    const eth = process.env.DCA_FUND_USE_NATIVE === "1" ? (await this.provider.getBalance(this.me)) - this.reserve - ethers.parseEther("0.0003") : 0n;
     const have = (weth > 0n ? weth : 0n) + (eth > 0n ? eth : 0n);
     if (have >= need) return;
     const dec = Number(await erc.decimals()), bal = BigInt(await erc.balanceOf(this.me));

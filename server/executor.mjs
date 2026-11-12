@@ -15,6 +15,7 @@ import { WithdrawGuard } from "./withdrawguard.mjs";
 import fs from "node:fs";
 import { ethers } from "ethers";
 import * as core from "../src/core.js";
+import { cdpBaseUrl } from "../src/chains.js";
 import { sendBundle, MIN_BUNDLE_GAS_PRICE } from "./bundler.mjs";
 import { bumpPairs } from "../src/pairs.js";
 
@@ -38,7 +39,7 @@ const LADDER_RETRY_RE = /transferFrom reverted|InsufficientProfit|IIA|STF|TRANSF
 // Alchemy (cuenta de Jose, ALCHEMY_KEY en Railway): solo para ENVIAR transacciones (pocas llamadas, propagación rápida).
 const ALCHEMY_SLUG = { base: "base-mainnet", arbitrum: "arb-mainnet", optimism: "opt-mainnet", polygon: "polygon-mainnet", bsc: "bnb-mainnet", robinhood: "robinhood-mainnet" };
 const alchemyUrl = () => (process.env.ALCHEMY_KEY && ALCHEMY_SLUG[core.CHAIN.key] ? [`https://${ALCHEMY_SLUG[core.CHAIN.key]}.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}`] : []);
-const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(alchemyUrl()).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]
+const sendRpcs = () => (process.env.SEND_RPC ? [process.env.SEND_RPC] : []).concat(core.CHAIN.key === "base" && cdpBaseUrl() ? [cdpBaseUrl()] : []).concat(alchemyUrl()).concat(core.CHAIN.key === "base" ? ["https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base", "https://base-rpc.publicnode.com"]
   // publicnode rechaza eth_sendRawTransaction (403): va al final
   : [...(core.CHAIN.rpcs ?? [])].sort((a, b) => /publicnode/.test(a) - /publicnode/.test(b)));
 
