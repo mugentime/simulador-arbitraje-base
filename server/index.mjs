@@ -16,6 +16,7 @@ import { LpLending } from "./lplending.mjs";
 import { RevertLend } from "./revertlend.mjs";
 import { RevertLoan } from "./revertloan.mjs";
 import { NeutralLp } from "./neutrallp.mjs";
+import { NeutralLp2 } from "./neutrallp2.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { beefyDashboard, beefyDashLine, carryDash } from "./beefydash.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
@@ -263,6 +264,7 @@ async function loop() {
       else { revertLend.provider = p; revertLend.logs = logsProviderFor(p, url); }
       await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
       await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
+      await ensureNeutralLp2(exec, p).catch((e) => diag(`lp-neutral2: no arrancó · ${e.message}`));
       if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
         if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
         else { strategy.x = exec; strategy.provider = p; }
@@ -333,6 +335,16 @@ async function ensureNeutralLp(exec, p) {
     await diag(`lp-neutral: activo · ${neutralLp.s.tokenId ? `vigila #${neutralLp.s.tokenId}` : `apertura ${neutralLp.cfg.tag} ($${neutralLp.cfg.usd})`} · cada ${neutralLp.cfg.everyS} s`);
   } else { neutralLp.x = exec; if (!neutralLp.rpcIdx && neutralLp.rpcIdx !== 0) neutralLp.provider = p; } // si cambió de RPC por fallas, conserva el suyo
 }
+let neutralLp2 = null;
+/** LP neutral v2 (cobertura completa en XLend): corre en paralelo a la v1 y usa su proveedor (RPC privados y cambio por fallas). */
+async function ensureNeutralLp2(exec, p) {
+  if (CHAIN_CFG.key !== "base" || process.env.NLP2 === "0") return;
+  if (!neutralLp2) {
+    if (!process.env.NLP2_OPEN && !(await store.get("nlp2"))?.tokenId) return;
+    neutralLp2 = new NeutralLp2({ executor: exec, provider: p, store, diag, peer: neutralLp }); await neutralLp2.init(); neutralLp2.start();
+    await diag(`lp-neutral2: activo · ${neutralLp2.s.tokenId ? `vigila #${neutralLp2.s.tokenId}` : `apertura ${neutralLp2.cfg.tag} ($${neutralLp2.cfg.usd})`} · cada ${neutralLp2.cfg.everyS} s · XLend ${neutralLp2.cfg.a} / Revert ${neutralLp2.cfg.r} · disparadores Revert ${neutralLp2.cfg.revertTrigger} XLend ${neutralLp2.cfg.xlendTrigger} emergencia ${neutralLp2.cfg.emergency}`);
+  } else { neutralLp2.x = exec; neutralLp2.provider = p; neutralLp2.peer = neutralLp; }
+}
 async function ensureRevertLoan(exec, p) {
   if (CHAIN_CFG.key !== "base" || process.env.RVL_LOAN === "0") return;
   if (!revertLoan) {
@@ -358,6 +370,7 @@ async function dcaOnlyLoop(exec, p) {
   if (strategy) strategy.sniper = sniper; // F1–F3: la estrategia ejecuta lo que detecta el radar (SNIPER_TRADE=1)
   await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
       await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
+      await ensureNeutralLp2(exec, p).catch((e) => diag(`lp-neutral2: no arrancó · ${e.message}`));
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
   let n = 0, lastTickErr = null;
@@ -484,6 +497,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url.startsWith("/api/needs")) {
     res.writeHead(200, headers); return res.end(JSON.stringify(strategy?.fundingNeed?.() ?? { needUsd: 0 }));
+  }
+  if (req.url.startsWith("/api/neutral-lp2")) {
+    res.writeHead(200, headers); return res.end(J(neutralLp2 ? neutralLp2.view() : { ready: false }));
   }
   if (req.url.startsWith("/api/neutral-lp")) {
     res.writeHead(200, headers); return res.end(J(neutralLp ? neutralLp.view() : { ready: false }));
