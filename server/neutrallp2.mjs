@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
-import { NLP, openSizing, token0Share } from "./neutrallp.mjs";
+import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText } from "./neutrallp.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/NeutralLpManagerV2.json", import.meta.url)));
 
@@ -34,6 +34,8 @@ const I = new ethers.Interface([
   "function collect((uint256 tokenId,address recipient,uint128 amount0Max,uint128 amount1Max)) returns (uint256 amount0,uint256 amount1)",
   "function loanInfo(uint256) view returns (uint256 debt, uint256 fullValue, uint256 collateralValue, uint256 liquidationCost, uint256 liquidationValue)",
   "function getUserAccountData(address) view returns (uint256 totalCollateralBase,uint256 totalDebtBase,uint256 availableBorrowsBase,uint256 currentLiquidationThreshold,uint256 ltv,uint256 healthFactor)",
+  "function oracle() view returns (address)",
+  "function getValue(uint256 tokenId, address token) view returns (uint256 value, uint256 feeValue, uint256 price0X96, uint256 price1X96)",
 ]);
 const M = new ethers.Interface(ART.abi);
 const MAX128 = (1n << 128n) - 1n;
@@ -70,6 +72,19 @@ export function closeSwap({ x0, x1, d0, d1, px }, slipBps = 80) {
   return { sellToken0: false, amountIn: 0n, minOut: 0n };
 }
 
+/** Re-centrado del 2026-11-14 16:44 (hora de México), anterior al registro de comisiones cobradas. Valores exactos del recibo
+ *  0xeb8f472c…fe698f90: Collect #6565243 = 0.046578023808680974 WETH + 242 sat; DecreaseLiquidity = 0.046482776686998241 WETH + 0.
+ *  Comisiones = la diferencia: 0.000095247121682733 WETH + 0.00000242 cbBTC, a ETH $1,748 y BTC $63,580 ≈ $0.320. */
+export function backfillFirstRecenter(s) {
+  const h = (s.history ?? []).find((x) => String(x.from) === "6565243" && String(x.to) === "6587053");
+  if (!h || (s.feeLog ?? []).some((x) => x.tokenId === "6565243")) return false;
+  const usd = 0.000095247121682733 * 1748 + 0.00000242 * 63580;
+  s.feeLog = [...(s.feeLog ?? []), { t: h.t, tokenId: "6565243", fee0: "95247121682733", fee1: "242", usd, tx: "0xeb8f472c033897ad5919b179cb1ddddcf08ac44f470adb2377e73e75fe698f90", backfill: true }];
+  s.feesCollectedUsd = (s.feesCollectedUsd ?? 0) + usd;
+  s.nftSince ??= h.t;
+  return true;
+}
+
 export class NeutralLp2 {
   /** peer: instancia de la v1 (NeutralLp); si existe se usa su proveedor, que ya maneja RPC privados y cambio por fallas. */
   constructor({ executor, provider, store, diag, peer }) {
@@ -80,7 +95,7 @@ export class NeutralLp2 {
       a: Number(process.env.NLP2_XLEND_LTV ?? process.env.NLP_COMET_LTV ?? 0.78),
       r: Number(env("REVERT_LTV", 0.725)),
       rangePct: Number(env("RANGE_PCT", 2)),
-      outMin: Number(env("RECENTER_OUT_MIN", 60)),
+      outMin: Number(env("RECENTER_OUT_MIN", 30)), // 2026-11-14: 60 → 30
       cooldownMin: Number(env("RECENTER_COOLDOWN_MIN", 30)),
       revertTrigger: Number(env("REVERT_TRIGGER", 1.04)),
       xlendTrigger: Number(process.env.NLP2_XLEND_TRIGGER ?? process.env.NLP_COMET_TRIGGER ?? 1.05),
@@ -104,6 +119,7 @@ export class NeutralLp2 {
   async init() {
     this.s = (await this.store.get("nlp2")) ?? { runs: {}, tokenId: null, events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0 };
     if (process.env.NLP2_MANAGER_ADDRESS) this.s.manager = process.env.NLP2_MANAGER_ADDRESS;
+    backfillFirstRecenter(this.s);
   }
   async save() { this.s.updatedAt = Date.now(); await this.store.set("nlp2", this.s); }
   async note(m) { this.s.events.unshift({ t: Date.now(), m }); this.s.events.length = Math.min(this.s.events.length, 80); await this.diag(`lp-neutral2: ${m}`); }
@@ -226,10 +242,7 @@ export class NeutralLp2 {
     try {
       const f = await this.pendingFees(id);
       const usd = Number(f[0]) / 1e18 * r.pr.eth + Number(f[1]) / 1e8 * r.pr.btc;
-      const days = (Date.now() - (this.s.openedAt ?? Date.now())) / 86400_000;
-      this.s.last.fees = usd; this.s.last.feeDays = days;
-      this.s.last.feeAprLp = days > 0.02 && r.rValue > 0 ? usd / r.rValue / days * 365 * 100 : null;
-      this.s.last.feeAprCap = days > 0.02 && this.s.entry?.usd ? usd / this.s.entry.usd / days * 365 * 100 : null;
+      Object.assign(this.s.last, feeTotals(this.s, usd, r.rValue)); // por cobrar + cobradas en re-centrados, desde la apertura
     } catch {}
     if (Date.now() - this.lastRates > 10 * 60_000) {
       try {
@@ -258,6 +271,22 @@ export class NeutralLp2 {
     } else if (this.s.outSince) { await this.note(`volvió al rango tras ${((Date.now() - this.s.outSince) / 60_000).toFixed(0)} min · sin re-centrar`); this.s.outSince = null; }
     const due = !r.inRange && recenterDue(false, this.s.outSince, Date.now(), cfg.outMin);
     if (due && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) await this.recenter(r);
+    if (!this.revertChecked) { this.revertChecked = true; await this.checkRevertValue(r.pr).catch((e) => this.note(`chequeo Revert falló · ${(e.shortMessage || e.message).slice(0, 120)}`)); }
+  }
+
+  /** Una vez por arranque: ¿el valor del LP que da Revert (y que entra en el "capital") ya incluye las comisiones por cobrar?
+   *  Compara el valor del oráculo de Revert con el capital del LP y con las comisiones, las dos a precio de ese oráculo. */
+  async checkRevertValue(pr) {
+    const vault = this.c(NLP.VAULT), oracle = this.c(await vault.oracle());
+    const ids = [["espejo", this.s.tokenId], ["original", this.peer?.s?.tokenId]].filter(([, id]) => id);
+    for (const [who, id] of ids) {
+      const [li, gv, pos, f] = await Promise.all([vault.loanInfo(id), oracle.getValue(id, NLP.USDC), this.c(NLP.NPM).positions(id), this.pendingFees(id)]);
+      const Q = 2 ** 96, p0 = Number(gv.price0X96) / Q, p1 = Number(gv.price1X96) / Q;
+      const am = amountsFor(Number(pos.liquidity), pr.sqrtP, Number(pos.tickLower), Number(pos.tickUpper));
+      const V = Number(gv.value) / 1e6, P = (am.a0 * p0 + am.a1 * p1) / 1e6, F = (Number(f[0]) * p0 + Number(f[1]) * p1) / 1e6, Fo = Number(gv.feeValue) / 1e6;
+      const incl = Math.abs(V - (P + F)) < Math.abs(V - P);
+      await this.note(`chequeo Revert ${who} #${id}: valor del LP $${V.toFixed(3)} (préstamo $${(Number(li.fullValue) / 1e6).toFixed(3)}) · capital del LP $${P.toFixed(3)} · comisiones por cobrar $${F.toFixed(3)} (oráculo $${Fo.toFixed(3)}) · valor − capital = $${(V - P).toFixed(3)} → el valor ${incl ? "SÍ" : "NO"} incluye las comisiones`);
+    }
   }
 
   async recenter(r) {
@@ -270,13 +299,14 @@ export class NeutralLp2 {
       const sw = rebalanceSwap(x0, x1, r.pr.sqrtP, lower, upper, cfg.slipBps);
       const flash = r.li.debt * 1003n / 1000n + 10n;
       const args = { tokenId: id, tickLower: lower, tickUpper: upper, sellToken0: sw.sellToken0, swapAmountIn: sw.amountIn, swapMinOut: sw.minOut, deadline: this.dl() };
-      await this.send(`re-centra #${id} → ticks [${lower}, ${upper}] (WETH en BTC ${(r.pr.px * 1e10).toFixed(6)})`, this.mgr("recenter", [args, flash]));
+      const rc = await this.send(`re-centra #${id} → ticks [${lower}, ${upper}] (WETH en BTC ${(r.pr.px * 1e10).toFixed(6)})`, this.mgr("recenter", [args, flash]));
       const nid = (await new ethers.Contract(this.s.manager, ART.abi, this.provider).tokenId()).toString();
       this.s.history = [...(this.s.history ?? []), { t: Date.now(), from: id, to: nid }].slice(-50);
+      const got = recordCollected(this.s, { from: id, rc, eth: r.pr.eth, btc: r.pr.btc });
       this.s.tokenId = nid; this.s.recenters++; this.s.outSince = null;
       await this.save();
       const n = await this.read();
-      await this.note(`re-centrado: nueva #${nid} · salud Revert ${n.h.revert.toFixed(3)} XLend ${n.h.xlend.toFixed(3)} · capital $${n.equity.toFixed(2)}`);
+      await this.note(`re-centrado: nueva #${nid} · salud Revert ${n.h.revert.toFixed(3)} XLend ${n.h.xlend.toFixed(3)} · capital $${n.equity.toFixed(2)}${got ? ` · comisiones cobradas ${ethers.formatEther(got.fee0)} WETH + ${ethers.formatUnits(got.fee1, 8)} cbBTC ($${this.s.feeLog.at(-1).usd.toFixed(3)}), reinvertidas en la NFT nueva · cobradas en total $${this.s.feesCollectedUsd.toFixed(3)}` : " · comisiones cobradas: no se encontraron en el recibo"}`);
     } catch (e) { await this.note(`re-centrado falló · ${(e.shortMessage || e.message).slice(0, 180)} · reintenta tras el enfriamiento`); }
   }
 
@@ -333,7 +363,7 @@ export class NeutralLp2 {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral2: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${l.fees != null ? ` · comisiones por cobrar $${l.fees.toFixed(3)} en ${(l.feeDays * 24).toFixed(1)} h${l.feeAprCap != null ? ` = ${l.feeAprCap.toFixed(0)} % anual sobre el capital (${l.feeAprLp.toFixed(0)} % sobre el LP)` : ""}` : ""} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
   }
   view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minXlend: this.s.minXlend, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: { ...this.cfg, minEth: this.cfg.minEth.toString() } }; }
 }

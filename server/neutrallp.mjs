@@ -52,6 +52,53 @@ const M = new ethers.Interface(ART.abi);
 const MO = new ethers.Interface(OLD.abi);
 const MAX128 = (1n << 128n) - 1n;
 
+// ---------------------------------------------------------------- comisiones cobradas en re-centrados
+const NPM_EV = new ethers.Interface([
+  "event DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
+  "event Collect(uint256 indexed tokenId, address recipient, uint256 amount0, uint256 amount1)",
+]);
+/** Comisiones cobradas de `tokenId` en un recibo: Collect (capital + comisiones) − DecreaseLiquidity (solo capital), por moneda (crudo). */
+export function feesFromReceipt(rc, tokenId, npm = NLP.NPM) {
+  let dec0 = 0n, dec1 = 0n, col0 = 0n, col1 = 0n, seen = false;
+  for (const lg of rc?.logs ?? []) {
+    if (String(lg.address).toLowerCase() !== npm.toLowerCase()) continue;
+    let ev; try { ev = NPM_EV.parseLog(lg); } catch { continue; }
+    if (!ev || ev.args.tokenId.toString() !== String(tokenId)) continue;
+    if (ev.name === "DecreaseLiquidity") { dec0 += ev.args.amount0; dec1 += ev.args.amount1; }
+    if (ev.name === "Collect") { col0 += ev.args.amount0; col1 += ev.args.amount1; seen = true; }
+  }
+  if (!seen) return null;
+  return { fee0: col0 > dec0 ? col0 - dec0 : 0n, fee1: col1 > dec1 ? col1 - dec1 : 0n, principal0: dec0, principal1: dec1 };
+}
+/** Registra lo cobrado en un re-centrado y arranca el reloj de la NFT nueva. `s` es el estado del bot. */
+export function recordCollected(s, { from, rc, eth, btc, now = Date.now() }) {
+  const f = feesFromReceipt(rc, from);
+  if (f) {
+    const usd = Number(f.fee0) / 1e18 * eth + Number(f.fee1) / 1e8 * btc;
+    s.feeLog = [...(s.feeLog ?? []), { t: now, tokenId: String(from), fee0: f.fee0.toString(), fee1: f.fee1.toString(), usd, tx: rc.hash }].slice(-50);
+    s.feesCollectedUsd = (s.feesCollectedUsd ?? 0) + usd;
+  }
+  s.nftSince = now;
+  return f;
+}
+/** Comisiones de toda la posición: por cobrar en la NFT actual + cobradas en re-centrados. Horas de la NFT y desde la apertura. */
+export function feeTotals(s, pendingUsd, lpUsd, now = Date.now()) {
+  const collected = s.feesCollectedUsd ?? 0, total = collected + pendingUsd;
+  const days = (now - (s.openedAt ?? now)) / 86400_000, nftDays = (now - (s.nftSince ?? s.openedAt ?? now)) / 86400_000;
+  return {
+    fees: pendingUsd, collected, total, feeDays: days, nftDays,
+    feeAprLp: days > 0.02 && lpUsd > 0 ? total / lpUsd / days * 365 * 100 : null,
+    feeAprCap: days > 0.02 && s.entry?.usd ? total / s.entry.usd / days * 365 * 100 : null,
+  };
+}
+/** Texto de comisiones para la línea de estado. Sin re-centrados queda igual que antes. */
+export function feeText(l) {
+  if (l.fees == null) return "";
+  const apr = l.feeAprCap != null ? ` = ${l.feeAprCap.toFixed(0)} % anual sobre el capital (${l.feeAprLp.toFixed(0)} % sobre el LP)` : "";
+  if (!(l.collected > 0)) return ` · comisiones por cobrar $${l.fees.toFixed(3)} en ${(l.feeDays * 24).toFixed(1)} h${apr}`;
+  return ` · comisiones por cobrar $${l.fees.toFixed(3)} en ${(l.nftDays * 24).toFixed(1)} h (NFT actual) · cobradas en re-centrados $${l.collected.toFixed(3)} · total $${l.total.toFixed(3)} en ${(l.feeDays * 24).toFixed(1)} h${apr}`;
+}
+
 // ---------------------------------------------------------------- funciones puras (test-local/test_neutrallp.mjs)
 /** Tamaño de apertura: C USDC propios → LP V, flash F (= deuda Revert), colateral Compound A, deuda WETH (USD) = V. */
 export function openSizing(C, a, r) {
@@ -89,7 +136,7 @@ export class NeutralLp {
       a: Number(process.env.NLP_COMET_LTV ?? 0.65),
       r: Number(process.env.NLP_REVERT_LTV ?? 0.65),
       rangePct: Number(process.env.NLP_RANGE_PCT ?? 2),
-      outMin: Number(process.env.NLP_RECENTER_OUT_MIN ?? 60),
+      outMin: Number(process.env.NLP_RECENTER_OUT_MIN ?? 30), // 2026-11-14: 60 → 30 (la espejo pasó 1 h 45 min fuera de rango sin ganar)
       cooldownMin: Number(process.env.NLP_RECENTER_COOLDOWN_MIN ?? 30),
       revertTrigger: Number(process.env.NLP_REVERT_TRIGGER ?? 1.10),
       cometTrigger: Number(process.env.NLP_COMET_TRIGGER ?? 1.15),
@@ -284,10 +331,7 @@ export class NeutralLp {
     try {
       const f = await this.provider.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]) }).then((d) => I.decodeFunctionResult("collect", d));
       const usd = Number(f[0]) / 1e18 * r.pr.eth + Number(f[1]) / 1e8 * r.pr.btc;
-      const days = (Date.now() - (this.s.openedAt ?? Date.now())) / 86400_000;
-      this.s.last.fees = usd; this.s.last.feeDays = days;
-      this.s.last.feeAprLp = days > 0.02 && r.rValue > 0 ? usd / r.rValue / days * 365 * 100 : null;
-      this.s.last.feeAprCap = days > 0.02 && this.s.entry?.usd ? usd / this.s.entry.usd / days * 365 * 100 : null;
+      Object.assign(this.s.last, feeTotals(this.s, usd, r.rValue)); // por cobrar + cobradas en re-centrados, desde la apertura
     } catch {}
     this.s.minRevert = Math.min(this.s.minRevert ?? Infinity, r.h.revert); this.s.minComet = Math.min(this.s.minComet ?? Infinity, r.h.comet);
     if (Date.now() - this.lastLine > 30 * 60_000) { this.lastLine = Date.now(); console.log(`${new Date().toISOString()} ${this.line()}`); }
@@ -322,12 +366,14 @@ export class NeutralLp {
       const sw = rebalanceSwap(x0, x1, r.pr.sqrtP, lower, upper, cfg.slipBps);
       const flash = r.li.debt * 1003n / 1000n + 10n;
       const args = { tokenId: id, tickLower: lower, tickUpper: upper, sellToken0: sw.sellToken0, swapAmountIn: sw.amountIn, swapMinOut: sw.minOut, deadline: this.dl() };
-      await this.send(`re-centra #${id} → ticks [${lower}, ${upper}] (WETH en BTC ${(r.pr.px * 1e10).toFixed(6)})`, this.mgr("recenter", [args, flash]));
+      const rc = await this.send(`re-centra #${id} → ticks [${lower}, ${upper}] (WETH en BTC ${(r.pr.px * 1e10).toFixed(6)})`, this.mgr("recenter", [args, flash]));
       const nid = (await new ethers.Contract(this.s.manager, ART.abi, this.provider).tokenId()).toString();
       this.s.history = [...(this.s.history ?? []), { t: Date.now(), from: id, to: nid }].slice(-50);
+      const got = recordCollected(this.s, { from: id, rc, eth: r.pr.eth, btc: r.pr.btc });
       this.s.tokenId = nid; this.s.recenters++; this.s.outSince = null;
+      await this.save();
       const n = await this.read();
-      await this.note(`re-centrado: nueva #${nid} · salud Revert ${n.h.revert.toFixed(3)} Compound ${n.h.comet.toFixed(3)} · capital $${n.equity.toFixed(2)}`);
+      await this.note(`re-centrado: nueva #${nid} · salud Revert ${n.h.revert.toFixed(3)} Compound ${n.h.comet.toFixed(3)} · capital $${n.equity.toFixed(2)}${got ? ` · comisiones cobradas ${ethers.formatEther(got.fee0)} WETH + ${ethers.formatUnits(got.fee1, 8)} cbBTC ($${this.s.feeLog.at(-1).usd.toFixed(3)}), reinvertidas en la NFT nueva · cobradas en total $${this.s.feesCollectedUsd.toFixed(3)}` : " · comisiones cobradas: no se encontraron en el recibo"}`);
     } catch (e) { await this.note(`re-centrado falló · ${(e.shortMessage || e.message).slice(0, 180)} · reintenta tras el enfriamiento`); }
   }
 
@@ -374,7 +420,7 @@ export class NeutralLp {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${l.fees != null ? ` · comisiones por cobrar $${l.fees.toFixed(3)} en ${(l.feeDays * 24).toFixed(1)} h${l.feeAprCap != null ? ` = ${l.feeAprCap.toFixed(0)} % anual sobre el capital (${l.feeAprLp.toFixed(0)} % sobre el LP)` : ""}` : ""} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
   }
   view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minComet: this.s.minComet, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: this.cfg }; }
 }
