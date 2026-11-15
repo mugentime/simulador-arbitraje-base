@@ -83,6 +83,18 @@ export function recordCollected(s, { from, rc, eth, btc, now = Date.now() }) {
   s.nftSince = now;
   return f;
 }
+/** Capital depositado promedio en el tiempo desde la apertura (con depósitos diarios el capital crece; sin ellos es entry.usd). */
+export function avgCapital(s, now = Date.now()) {
+  const days = (now - (s.openedAt ?? now)) / 86400_000, cur = s.entry?.usd ?? 0;
+  if (!(s.capUsdDays > 0) || !(days > 0)) return cur;
+  return (s.capUsdDays + cur * Math.max(0, now - (s.capT ?? now)) / 86400_000) / days;
+}
+/** Acumula capital × tiempo; se llama en cada revisión y justo antes de cambiar entry.usd. */
+export function trackCapital(s, now = Date.now()) {
+  if (!s.entry?.usd || !s.openedAt) return;
+  if (s.capT == null) { s.capUsdDays = s.entry.usd * (now - s.openedAt) / 86400_000; s.capT = now; return; }
+  s.capUsdDays = (s.capUsdDays ?? 0) + s.entry.usd * Math.max(0, now - s.capT) / 86400_000; s.capT = now;
+}
 /** Comisiones de toda la posición: por cobrar en la NFT actual + cobradas en re-centrados. Horas de la NFT y desde la apertura. */
 export function feeTotals(s, pendingUsd, lpUsd, now = Date.now()) {
   const collected = s.feesCollectedUsd ?? 0, total = collected + pendingUsd;
@@ -90,7 +102,7 @@ export function feeTotals(s, pendingUsd, lpUsd, now = Date.now()) {
   return {
     fees: pendingUsd, collected, total, feeDays: days, nftDays,
     feeAprLp: days > 0.02 && lpUsd > 0 ? total / lpUsd / days * 365 * 100 : null,
-    feeAprCap: days > 0.02 && s.entry?.usd ? total / s.entry.usd / days * 365 * 100 : null,
+    feeAprCap: days > 0.02 && s.entry?.usd ? total / avgCapital(s, now) / days * 365 * 100 : null,
   };
 }
 /** Valor del LP a precio del pool (el mismo con el que se valúan las deudas): capital del rango + comisiones por cobrar.

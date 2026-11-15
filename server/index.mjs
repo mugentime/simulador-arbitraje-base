@@ -271,7 +271,7 @@ async function loop() {
       }
       if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
       else for (const t of topups) { t.x = exec; t.provider = p; }
-      if (process.env.BRIDGE_RUN) {
+      if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
         if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
         else { bridger.x = exec; bridger.provider = p; }
       }
@@ -360,7 +360,7 @@ async function dcaOnlyLoop(exec, p) {
   }
   if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
   else for (const t of topups) { t.x = exec; t.provider = p; }
-  if (process.env.BRIDGE_RUN) {
+  if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
     if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
     else { bridger.x = exec; bridger.provider = p; }
   }

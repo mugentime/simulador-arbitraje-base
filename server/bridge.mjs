@@ -29,10 +29,16 @@ export function parseQuote(q) {
   return { txs, inUsd, outUsd, out, requestId: txs.find((t) => t.requestId)?.requestId ?? null };
 }
 
+/** Etiqueta del puente diario: una por día; el día empieza a la hora UTC `hourUtc` (BRIDGE_DAILY_HOUR_UTC, 0 por omisión). */
+export function dailyLabel(tag, now = Date.now(), hourUtc = Number(process.env.BRIDGE_DAILY_HOUR_UTC ?? 0)) { return `${tag}-${new Date(now - hourUtc * 3600_000).toISOString().slice(0, 10)}`; }
+
 export class Bridger {
   constructor({ executor, provider, store, diag }) {
     this.x = executor; this.provider = provider; this.store = store; this.diag = diag;
     this.label = process.env.BRIDGE_RUN || "";
+    // BRIDGE_DAILY=<etiqueta> (Jose 2026-11-15: $50 al día a la espejo): una ejecución por día (el día empieza a las BRIDGE_DAILY_HOUR_UTC), etiqueta "<etiqueta>-AAAA-MM-DD".
+    // Solo con BRIDGE_TOKEN y BRIDGE_AMOUNT_USD (nunca puentea el gas nativo en modo diario).
+    this.daily = process.env.BRIDGE_DAILY || "";
     this.keepUsd = Number(process.env.BRIDGE_KEEP_USD ?? 1);
     this.minUsd = Number(process.env.BRIDGE_MIN_USD ?? 2);
     this.maxFeePct = Number(process.env.BRIDGE_MAX_FEE_PCT ?? 5);
@@ -43,6 +49,11 @@ export class Bridger {
   async save() { await this.store.set("bridge", this.s); }
 
   async onBlock(ctx) {
+    if (this.daily) {
+      if (!process.env.BRIDGE_TOKEN || !(Number(process.env.BRIDGE_AMOUNT_USD ?? 0) > 0)) return;
+      const lbl = dailyLabel(this.daily);
+      if (lbl !== this.label) { this.label = lbl; this.done = false; this.retryAt = 0; }
+    }
     if (this.done || this.busy || !this.wanted) return;
     if (this.retryAt && Date.now() < this.retryAt) return;
     this.busy = true;

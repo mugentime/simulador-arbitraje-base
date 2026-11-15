@@ -102,4 +102,44 @@ async function run(Cls, extra, readAfter) {
   b.s.closed = true; await b.renewManager(); assert.equal(b.s.manager, null); assert.deepEqual(b.s.oldManagers, ["0xold"]); assert.equal(dep, 1);
   b.s.manager = "0xnew"; await b.renewManager(); assert.equal(b.s.manager, "0xnew"); assert.equal(dep, 1);
 }
+// 5) depósito periódico de capital (espejo): mueve USDC de la wallet al contrato y lo apalanca con compound()
+{
+  const { trackCapital, avgCapital } = await import("../server/neutrallp.mjs");
+  const { dailyLabel } = await import("../server/bridge.mjs");
+  const mgr = "0x00000000000000000000000000000000000000aa", me = "0x000000000000000000000000000000000000dEaD";
+  const mk = (wallet, inMgr, extraS = {}) => {
+    const notes = [], sent = [], bal = { [mgr]: inMgr, [me]: wallet };
+    const b = new NeutralLp2({ executor: { mode: "live", wallet: { address: me } }, provider: null, store: null, diag: async () => {} });
+    b.s = { runs: {}, tokenId: "777", events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0, manager: mgr, canCompound: true, openedAt: Date.now() - 2 * 86400_000, entry: { usd: 50 }, base: { equity: 50, feesTotal: 0 }, ...extraS };
+    Object.assign(b.cfg, { a, r, revertFloor: 1.045, xlendFloor: 1.06, slipBps: 80, compoundUsd: 10, compoundCooldownMin: 10, addUsd: 50, addEveryH: 24, addMinUsd: 20 });
+    b.note = async (m) => { notes.push(m); }; b.save = async () => {}; b.sim = async () => 1n;
+    b.c = () => ({ balanceOf: async (who) => BigInt(Math.round(bal[who] * 1e6)) });
+    b.send = async (step, tx) => { sent.push({ step, tx }); if (/de la wallet al contrato/.test(step)) { const [, amt] = new ethers.Interface(["function transfer(address,uint256)"]).decodeFunctionData("transfer", tx.data); bal[me] -= Number(amt) / 1e6; bal[mgr] += Number(amt) / 1e6; } return rc; };
+    b.read = async () => ({ lpValue: 180, h: { revert: 1.07, xlend: 1.09 }, equity: 99.6, net: { eth: 0, btc: 0 } });
+    return { b, notes, sent, bal };
+  };
+  const rr = { rColl: 0.775 * 89, rDebt: 64.6, rValue: 89, lpValue: 89, feesUsd: 0.02, equity: 49.7, inRange: true, xColl: 114.3, xDebt: 89, lt: 0.85, h: { revert: 1.068, xlend: 1.091 }, pr: { eth, btc, px, sqrtP, tick }, pos: { tickLower: lower, tickUpper: upper, liquidity: 1n } };
+  // wallet con $49.93 (lo que llega del puente): lo mete todo y lo apalanca
+  const t = mk(49.93, 0);
+  assert.equal(await t.b.addCapital(rr), true); assert.equal(t.sent.length, 2);
+  const M = new ethers.Interface(JSON.parse(fs.readFileSync(new URL("../server/artifacts/NeutralLpManagerV2.json", import.meta.url))).abi);
+  const [args, flash] = M.decodeFunctionData("compound", t.sent[1].tx.data);
+  const zz = compoundSizing(49.93 + 0.02 * (1 - COMPOUND_HAIRCUT), a, r);
+  near(Number(flash) / 1e6, zz.F, 1e-5); near(Number(args.minUsdcOut) / 1e6, 49.93 + 0.02 * (1 - 0.008 - COMPOUND_HAIRCUT), 1e-6);
+  near(Number(args.borrow0) / 1e18 * eth + Number(args.borrow1) / 1e8 * btc, zz.V, 1e-4);
+  assert.equal(t.b.s.deposits, 1); near(t.b.s.depositedUsd, 49.93); assert.equal(t.b.s.entry.usd, 99.93); near(t.b.s.base.equity, 99.93);
+  assert.ok(!t.b.s.compounds && t.b.s.addAt > 0); near(t.bal[me], 0, 1e-6); assert.match(t.notes.at(-1), /depósito 1 hecho: \$49\.93 · depositado en total \$99\.93/);
+  // capital promedio: 2 días con $50; un día después con $99.93 → (100 + 99.93) / 3
+  const s2 = { ...t.b.s }; near(avgCapital(s2, s2.capT), 50, 1e-3); near(avgCapital(s2, s2.capT + 86400_000), (100 + 99.93) / 3, 1e-3);
+  trackCapital(s2, s2.capT + 86400_000); near(s2.capUsdDays, 199.93, 1e-3);
+  // wallet con más de $50: solo toma $50; con menos del mínimo: espera y avisa una vez
+  const t2 = mk(140, 0); await t2.b.addCapital(rr); near(t2.bal[me], 90, 1e-6); near(t2.b.s.depositedUsd, 50);
+  const t3 = mk(5, 0); assert.equal(await t3.b.addCapital(rr), false); assert.equal(t3.sent.length, 0); assert.match(t3.notes[0], /esperando fondeo/); await t3.b.addCapital(rr); assert.equal(t3.notes.length, 1);
+  // USDC que quedó en el contrato de un intento anterior: no vuelve a mover de más
+  const t4 = mk(30, 30); await t4.b.addCapital(rr); near(t4.bal[me], 10, 1e-6); near(t4.b.s.depositedUsd, 50);
+  // contrato anterior: no mueve nada
+  const t5 = mk(100, 0, { canCompound: false }); assert.equal(await t5.b.addCapital(rr), false); assert.equal(t5.sent.length, 0);
+  assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 23, 59), 0), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 0, 1), 0), "espejo-2026-11-16");
+  assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 17, 50), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 16, 59), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 17, 0), 17), "espejo-2026-11-16");
+}
 console.log("test_nlp_compound OK");
