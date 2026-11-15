@@ -8,7 +8,7 @@
 //     · si el traspaso no alcanza y una salud < NLP_EMERGENCY → desapalanca 25 % con flashloan (proporcional, sigue neutral);
 //     · fuera de rango NLP_RECENTER_OUT_MIN minutos seguidos → re-centra (flash → repaga → cierra → reequilibra → mint → borrow).
 //     · comisiones por cobrar ≥ NLP_COMPOUND_USD ($10) → las cobra, las pasa a USDC y las re-apalanca con el ciclo de la apertura
-//       sobre la misma NFT (solo con el contrato nlm-v1.1 o posterior; NLP_NEW_MANAGER=<etiqueta> despliega uno nuevo sin posición abierta).
+//       sobre la misma NFT (solo con el contrato nlm-v1.2 o posterior; NLP_NEW_MANAGER=<etiqueta> despliega uno nuevo sin posición abierta).
 //   Cierre de la posición anterior (RevertLoanManager WETH/USDC) con NLP_CLOSE_OLD=<etiqueta>: desapalanca todo, saca el NFT, USDC a la wallet.
 //   Cada transacción se simula con eth_call antes de enviarse.
 import fs from "node:fs";
@@ -337,7 +337,7 @@ export class NeutralLp {
     try {
       const args = [this.me, NLP.VAULT, NLP.NPM, NLP.MORPHO, NLP.ROUTER, NLP.COMET, NLP.USDC, NLP.WETH, NLP.CBBTC, NLP.FEE];
       const rc = await this.send("despliegue NeutralLpManager", { data: ART.bytecode + M.encodeDeploy(args).slice(2) });
-      this.s.manager = rc.contractAddress; this.s.canCompound = !!M.getFunction("compound"); await this.save();
+      this.s.manager = rc.contractAddress; this.s.canCompound = !!M.getFunction("compound"); this.s.managerVer = ART.version; await this.save();
       await this.note(`contrato NeutralLpManager (${ART.version}) en ${rc.contractAddress}`);
     } catch (e) { this.s.managerTries = (this.s.managerTries ?? 0) + 1; await this.note(`despliegue falló (${this.s.managerTries}/3) · ${(e.shortMessage || e.message).slice(0, 160)}`); }
   }
@@ -430,7 +430,7 @@ export class NeutralLp {
     const id = this.s.tokenId, cfg = this.cfg, now = Date.now();
     if (now - (this.s.lastCompoundTry ?? 0) < cfg.compoundCooldownMin * 60_000) return false;
     this.s.lastCompoundTry = now;
-    if (!this.s.canCompound) {
+    if (!this.s.canCompound || this.s.managerVer !== ART.version) {
       if (now - (this.s.compoundNoteAt ?? 0) > 24 * 3600_000) { this.s.compoundNoteAt = now; await this.note(`comisiones por cobrar $${r.feesUsd.toFixed(2)} ≥ $${cfg.compoundUsd}: este contrato es de la versión anterior y no puede re-apalancar · hace falta abrir la posición con el contrato nuevo (NLP_NEW_MANAGER)`); }
       return false;
     }
@@ -446,7 +446,7 @@ export class NeutralLp {
         const borrowWeth = BigInt(Math.floor(z.V / r.pr.eth * 1e18));
         const sellWeth = BigInt(Math.floor(Number(borrowWeth) * (1 - w0) * 0.999));
         const minBtcOut = BigInt(Math.floor(Number(sellWeth) * r.pr.px * (1 - cfg.slipBps / 1e4)));
-        const tx = this.mgr("compound", [{ tokenId: id, borrowWeth, sellWeth, minBtcOut, minUsdcOut, deadline: this.dl() }, BigInt(Math.floor(z.F * 1e6))]);
+        const tx = this.mgr("compound", [{ tokenId: id, usdcIn: 0n, borrowWeth, sellWeth, minBtcOut, minUsdcOut, deadline: this.dl() }, BigInt(Math.floor(z.F * 1e6))]);
         try { await this.sim(tx); } catch (e) { why = `no simuló (${(e.shortMessage || e.message || String(e)).slice(0, 100)})`; continue; }
         const rc = await this.send(`re-apalanca: cobra $${r.feesUsd.toFixed(2)} de comisiones → LP +$${z.V.toFixed(2)} · Revert +$${z.F.toFixed(2)} · Compound colateral +$${z.A.toFixed(2)} (apalancamiento ${(k * 100).toFixed(0)} % del máximo)`, tx);
         const got = recordCollected(this.s, { from: id, rc, eth: r.pr.eth, btc: r.pr.btc });
@@ -528,5 +528,5 @@ export class NeutralLp {
     const e = this.s.entry;
     return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""}${baseText(l, this.s.base)} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}${this.s.compounds ? ` re-apalancamientos ${this.s.compounds}` : ""}`;
   }
-  view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minComet: this.s.minComet, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, compounds: this.s.compounds ?? 0, canCompound: !!this.s.canCompound, events: this.s.events.slice(0, 30), line: this.line(), cfg: this.cfg }; }
+  view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minComet: this.s.minComet, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, compounds: this.s.compounds ?? 0, canCompound: !!this.s.canCompound && this.s.managerVer === ART.version, events: this.s.events.slice(0, 30), line: this.line(), cfg: this.cfg }; }
 }

@@ -172,10 +172,11 @@ contract NeutralLpManager {
 
     struct CompoundArgs {
         uint256 tokenId;
+        uint256 usdcIn; // capital nuevo del dueño (transferFrom); 0 = solo comisiones
         uint256 borrowWeth; // WETH a pedir en Compound
         uint256 sellWeth; // WETH a vender por cbBTC
         uint256 minBtcOut;
-        uint256 minUsdcOut; // mínimo de USDC por las comisiones cobradas
+        uint256 minUsdcOut; // mínimo de USDC en el contrato tras cobrar las comisiones (incluye usdcIn)
         uint256 deadline;
     }
 
@@ -242,6 +243,7 @@ contract NeutralLpManager {
     /// Re-apalanca la ganancia realizada: cobra las comisiones, las pasa a USDC y repite con ellas el ciclo de la apertura
     /// sobre la misma NFT (USDC + flash → Compound → WETH → cbBTC → más liquidez → Revert presta el flash).
     function compound(CompoundArgs calldata a, uint256 flashAmount) external onlyOwner {
+        if (a.usdcIn > 0) require(IERC20(usdc).transferFrom(msg.sender, address(this), a.usdcIn), "transferFrom");
         op = 4;
         morpho.flashLoan(usdc, flashAmount, abi.encode(a));
         op = 0;
