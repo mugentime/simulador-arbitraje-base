@@ -171,7 +171,7 @@ export class NeutralLp2 {
       if (this.s.closed && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done) {
         this.s.baseUsd ??= this.s.entry?.usd ?? this.cfg.usd;
         this.s.history = [...(this.s.history ?? []), { t: Date.now(), from: this.s.tokenId, to: null, why: "cierre para reabrir" }].slice(-50);
-        this.s.tokenId = null; this.s.closed = false; this.s.outSince = null; this.s.minRevert = undefined; this.s.minXlend = undefined; this.s.last = null;
+        this.s.tokenId = null; this.s.closed = false; this.s.outSince = null; this.s.minRevert = undefined; this.s.minXlend = undefined; this.s.last = null; this.s.reopen = true;
       }
       if (this.cfg.tag && !this.s.runs[this.cfg.tag]?.done && !this.s.tokenId) await this.open(this.cfg.tag);
       if (this.s.tokenId && !this.s.closed) await this.monitor();
@@ -251,7 +251,8 @@ export class NeutralLp2 {
       await this.note(`apertura ${tag}: $${C} propios · LP $${V.toFixed(2)} (WETH ${(w0 * 100).toFixed(0)} % / cbBTC) rango ticks [${lower}, ${upper}] ±${this.cfg.rangePct} % · XLend: colateral $${A.toFixed(2)}, deuda ${ethers.formatEther(borrow0)} WETH + ${ethers.formatUnits(borrow1, 8)} cbBTC · Revert: deuda $${F.toFixed(2)}`);
       await this.send(`apertura ${tag}: flash $${F.toFixed(2)} → XLend → WETH + cbBTC → LP → Revert → préstamo`, this.mgr("open", [{ usdcIn, borrow0, borrow1, tickLower: lower, tickUpper: upper, deadline: this.dl() }, flash]));
       this.s.tokenId = (await new ethers.Contract(this.s.manager, ART.abi, this.provider).tokenId()).toString();
-      run.done = true; this.s.openedAt = Date.now(); this.s.entry = { usd: this.s.baseUsd ?? C, put: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
+      run.done = true; this.s.openedAt = this.s.reopen && this.s.openedAt ? this.s.openedAt : Date.now(); this.s.reopen = false; this.s.nftSince = Date.now();
+      this.s.entry = { usd: this.s.baseUsd ?? C, put: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
       await this.save();
       const r = await this.read();
       await this.note(`abierta #${this.s.tokenId} · LP $${r.lpValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · XLend colateral $${r.aUsdc.toFixed(2)} deuda ${(Number(r.d0) / 1e18).toFixed(6)} WETH + ${(Number(r.d1) / 1e8).toFixed(6)} cbBTC salud ${r.h.xlend.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
@@ -423,7 +424,10 @@ export class NeutralLp2 {
       for (const k of [1, 0.98, 0.95, 0.9, 0.8]) {
         const tx = this.mgr("deleverage", [{ tokenId: id, liquidity: 0n, withdrawUsdc: BigInt(Math.floor(r.aUsdc * k * 1e6)), sellToken0: sw.sellToken0, swapAmountIn: sw.amountIn, swapMinOut: sw.minOut, close: true, deadline: this.dl() }, flash]);
         try { await this.sim(tx); } catch { continue; }
-        await this.send(`cierre ${tag}: repaga todo y retira ${(k * 100).toFixed(0)} % del colateral de XLend`, tx); sent = true; break;
+        const rc = await this.send(`cierre ${tag}: repaga todo y retira ${(k * 100).toFixed(0)} % del colateral de XLend`, tx); sent = true;
+        const got = recordCollected(this.s, { from: id, rc, eth: r.pr.eth, btc: r.pr.btc }); // las comisiones cobradas al cerrar siguen contando
+        await this.note(`cierre ${tag}: capital antes de cerrar $${r.equity.toFixed(2)}${got ? ` · comisiones cobradas $${this.s.feeLog.at(-1).usd.toFixed(3)} · cobradas en total $${this.s.feesCollectedUsd.toFixed(3)}` : ""}`);
+        await this.save(); break;
       }
       if (!sent) throw new Error("ninguna variante de cierre simuló");
       // deuda residual (polvo): se compra con USDC del colateral
