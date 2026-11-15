@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
-import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText } from "./neutrallp.mjs";
+import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText, lpAtPool, baseText } from "./neutrallp.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/NeutralLpManagerV2.json", import.meta.url)));
 
@@ -23,6 +23,8 @@ export const NLP2 = {
   DEBT_WETH: "0xe99Ec9b8EA5322D8B5BDC66dad3D2294dC61b740",
   DEBT_CBBTC: "0x2AF3a2518d0a33907b0647E0654b75939dCA4D8A",
   RATE_ALERT_PCT: 5,
+  OPEN_TX: "0xf6231e621a6c041c6374deee8c8031aac8bccc69e4603fea19eeb8b025594e90", // apertura de la espejo = inicio común (13 nov 18:33 UTC)
+  OPEN_ID: "6565243", PEER_ID_AT_OPEN: "6543760",
 };
 
 const I = new ethers.Interface([
@@ -129,7 +131,7 @@ export class NeutralLp2 {
     this.timer = setInterval(run, this.cfg.everyS * 1000);
     setTimeout(run, 20_000); // después del primer ciclo de la v1
   }
-  c(addr) { return new ethers.Contract(addr, I, this.provider); }
+  c(addr, p = this.provider) { return new ethers.Contract(addr, I, p); }
   mgr(fn, args) { return { to: this.s.manager, data: M.encodeFunctionData(fn, args) }; }
   dl() { return BigInt(Math.floor(Date.now() / 1000) + 600); }
   async sim(tx) { const t = { from: this.me, ...tx }; await this.provider.call(t); return (await this.provider.estimateGas(t)) * 13n / 10n; }
@@ -161,8 +163,9 @@ export class NeutralLp2 {
   }
 
   // ---------------------------------------------------------------- lecturas
-  async prices() {
-    const e = await this.c(NLP.ETHUSD_POOL).slot0(), s = await this.c(NLP.POOL).slot0();
+  async prices(bt, p) {
+    const o = bt != null ? { blockTag: bt } : {};
+    const e = await this.c(NLP.ETHUSD_POOL, p).slot0(o), s = await this.c(NLP.POOL, p).slot0(o);
     const se = Number(e.sqrtPriceX96) / 2 ** 96, sp = Number(s.sqrtPriceX96) / 2 ** 96;
     const eth = se * se * 1e12, px = sp * sp; // px = cbBTC crudo por WETH crudo
     return { eth, btc: eth / (px * 1e10), px, sqrtP: sp, tick: Number(s.tick) };
@@ -175,13 +178,16 @@ export class NeutralLp2 {
     };
     return { weth: await one(NLP.WETH), btc: await one(NLP.CBBTC) };
   }
-  async read() {
-    const id = this.s.tokenId, m = this.s.manager, pr = await this.prices();
-    const li = await this.c(NLP.VAULT).loanInfo(id);
-    const pos = await this.c(NLP.NPM).positions(id);
-    const acct = await this.c(NLP2.XPOOL).getUserAccountData(m);
-    const aUsdc = Number(await this.c(NLP2.A_USDC).balanceOf(m)) / 1e6;
-    const d0 = await this.c(NLP2.DEBT_WETH).balanceOf(m), d1 = await this.c(NLP2.DEBT_CBBTC).balanceOf(m);
+  /** Lee la posición (opcional: otra NFT, un bloque pasado y otro proveedor). El capital se valúa todo a precio del pool:
+   *  LP (rango + comisiones por cobrar) − deuda Revert + colateral XLend − deudas WETH y cbBTC. Revert y XLend solo dan las saludes. */
+  async read(id = this.s.tokenId, bt, p) {
+    const o = bt != null ? { blockTag: bt } : {}, m = this.s.manager, pr = await this.prices(bt, p);
+    const li = await this.c(NLP.VAULT, p).loanInfo(id, o);
+    const pos = await this.c(NLP.NPM, p).positions(id, o);
+    const acct = await this.c(NLP2.XPOOL, p).getUserAccountData(m, o);
+    const aUsdc = Number(await this.c(NLP2.A_USDC, p).balanceOf(m, o)) / 1e6;
+    const d0 = await this.c(NLP2.DEBT_WETH, p).balanceOf(m, o), d1 = await this.c(NLP2.DEBT_CBBTC, p).balanceOf(m, o);
+    const f = await this.pendingFees(id, bt, p).catch(() => null);
     const debtUsd = Number(d0) / 1e18 * pr.eth + Number(d1) / 1e8 * pr.btc; // a precio del pool, como la v1
     const x = {
       rColl: Number(li.collateralValue) / 1e6, rDebt: Number(li.debt) / 1e6, rValue: Number(li.fullValue) / 1e6,
@@ -192,10 +198,11 @@ export class NeutralLp2 {
     const inRange = pr.tick >= Number(pos.tickLower) && pr.tick < Number(pos.tickUpper);
     const am = amountsFor(Number(pos.liquidity), pr.sqrtP, Number(pos.tickLower), Number(pos.tickUpper));
     const net = netExposure({ x0: am.a0, x1: am.a1, d0: Number(d0), d1: Number(d1), eth: pr.eth, btc: pr.btc });
-    return { ...x, h, pr, pos, li, am, net, inRange, equity: x.rValue - x.rDebt + aUsdc - debtUsd };
+    const lp = lpAtPool(am, f, pr), lpValue = lp.fees != null ? lp.value : x.rValue; // sin lectura de comisiones: el valor de Revert (ya las incluye)
+    return { ...x, h, pr, pos, li, am, net, inRange, lpValue, feesUsd: lp.fees, equity: lpValue - x.rDebt + aUsdc - debtUsd, equityRevert: x.rValue - x.rDebt + aUsdc - debtUsd };
   }
-  async pendingFees(id) {
-    return this.provider.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]) }).then((d) => I.decodeFunctionResult("collect", d));
+  async pendingFees(id, bt, p = this.provider) {
+    return p.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]), ...(bt != null ? { blockTag: bt } : {}) }).then((d) => I.decodeFunctionResult("collect", d));
   }
 
   // ---------------------------------------------------------------- contrato
@@ -231,19 +238,15 @@ export class NeutralLp2 {
       run.done = true; this.s.openedAt = Date.now(); this.s.entry = { usd: this.s.baseUsd ?? C, put: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
       await this.save();
       const r = await this.read();
-      await this.note(`abierta #${this.s.tokenId} · LP $${r.rValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · XLend colateral $${r.aUsdc.toFixed(2)} deuda ${(Number(r.d0) / 1e18).toFixed(6)} WETH + ${(Number(r.d1) / 1e8).toFixed(6)} cbBTC salud ${r.h.xlend.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
+      await this.note(`abierta #${this.s.tokenId} · LP $${r.lpValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · XLend colateral $${r.aUsdc.toFixed(2)} deuda ${(Number(r.d0) / 1e18).toFixed(6)} WETH + ${(Number(r.d1) / 1e8).toFixed(6)} cbBTC salud ${r.h.xlend.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
     } catch (e) { await this.note(`apertura ${tag} falló (${run.tries}/3) · ${(e.shortMessage || e.message).slice(0, 200)}`); }
   }
 
   async monitor() {
     const r = await this.read(), id = this.s.tokenId, cfg = this.cfg;
-    this.s.last = { ...(this.s.last?.rates ? { rates: this.s.last.rates } : {}), t: Date.now(), revert: r.h.revert, xlend: r.h.xlend, lp: r.rValue, rDebt: r.rDebt, xColl: r.aUsdc, d0: Number(r.d0) / 1e18, d1: Number(r.d1) / 1e8, debtUsd: r.debtUsd, net: r.net, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
+    this.s.last = { ...(this.s.last?.rates ? { rates: this.s.last.rates } : {}), t: Date.now(), revert: r.h.revert, xlend: r.h.xlend, lp: r.lpValue, rDebt: r.rDebt, xColl: r.aUsdc, d0: Number(r.d0) / 1e18, d1: Number(r.d1) / 1e8, debtUsd: r.debtUsd, net: r.net, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
     // comisiones puras: lo que el LP tiene por cobrar (lectura on-chain), sin efecto de precio
-    try {
-      const f = await this.pendingFees(id);
-      const usd = Number(f[0]) / 1e18 * r.pr.eth + Number(f[1]) / 1e8 * r.pr.btc;
-      Object.assign(this.s.last, feeTotals(this.s, usd, r.rValue)); // por cobrar + cobradas en re-centrados, desde la apertura
-    } catch {}
+    if (r.feesUsd != null) Object.assign(this.s.last, feeTotals(this.s, r.feesUsd, r.lpValue)); // por cobrar + cobradas en re-centrados, desde la apertura
     if (Date.now() - this.lastRates > 10 * 60_000) {
       try {
         this.s.last.rates = await this.rates(); this.lastRates = Date.now();
@@ -272,6 +275,33 @@ export class NeutralLp2 {
     const due = !r.inRange && recenterDue(false, this.s.outSince, Date.now(), cfg.outMin);
     if (due && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) await this.recenter(r);
     if (!this.revertChecked) { this.revertChecked = true; await this.checkRevertValue(r.pr).catch((e) => this.note(`chequeo Revert falló · ${(e.shortMessage || e.message).slice(0, 120)}`)); }
+    if (!this.s.base && !this.baseTried) { this.baseTried = true; await this.computeBase().catch((e) => this.note(`base del inicio común falló · ${(e.shortMessage || e.message).slice(0, 300)}`)); }
+  }
+
+  /** Base del inicio común: estado de las DOS posiciones en el bloque de la apertura de la espejo (13 nov 18:33 UTC), valuado igual
+   *  que ahora (todo a precio del pool). Se calcula una vez en la cadena (requiere estado histórico) y queda guardada. */
+  async computeBase() {
+    const rpcs = [["en uso", this.provider], ...NLP.RPCS.map((u) => [new URL(u).host, new ethers.JsonRpcProvider(u, 8453, { staticNetwork: true })])];
+    const errs = [];
+    for (const [name, p] of rpcs) {
+      try {
+        const rc = await p.getTransactionReceipt(NLP2.OPEN_TX);
+        if (!rc) throw new Error("sin recibo de la apertura");
+        const B = rc.blockNumber, blk = await p.getBlock(B);
+        const pack = (r) => ({ block: B, t: blk.timestamp * 1000, equity: r.equity, feesTotal: r.feesUsd ?? 0, equityRevert: r.equityRevert, lp: r.lpValue, eth: r.pr.eth, btc: r.pr.btc, rpc: name });
+        const me = await this.read(NLP2.OPEN_ID, B, p);
+        if (me.feesUsd == null) throw new Error("sin comisiones en el bloque histórico");
+        const base = pack(me);
+        let peerBase = null;
+        if (this.peer?.s?.manager) { const po = await this.peer.read(NLP2.PEER_ID_AT_OPEN, B, p); if (po.feesUsd == null) throw new Error("sin comisiones de la original en el bloque histórico"); peerBase = pack(po); }
+        this.s.base = base; await this.save();
+        if (peerBase) { this.peer.s.base = peerBase; await this.peer.save?.(); }
+        const d = new Date(base.t).toISOString().slice(0, 16).replace("T", " ");
+        await this.note(`base del inicio común recalculada en la cadena (bloque ${B}, ${d} UTC, RPC ${name}) · ETH $${base.eth.toFixed(2)} BTC $${base.btc.toFixed(0)} · espejo: capital $${base.equity.toFixed(3)} a precio del pool (con el oráculo de Revert $${base.equityRevert.toFixed(3)}), comisiones $${base.feesTotal.toFixed(3)}${peerBase ? ` · original: capital $${peerBase.equity.toFixed(3)} a precio del pool (con el oráculo de Revert $${peerBase.equityRevert.toFixed(3)}), comisiones ganadas $${peerBase.feesTotal.toFixed(3)}` : " · original: sin dato"}`);
+        return;
+      } catch (e) { errs.push(`${name}: ${(e.shortMessage || e.message).slice(0, 70)}`); }
+    }
+    throw new Error(errs.join(" | "));
   }
 
   /** Una vez por arranque: ¿el valor del LP que da Revert (y que entra en el "capital") ya incluye las comisiones por cobrar?
@@ -363,7 +393,7 @@ export class NeutralLp2 {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral2: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""}${baseText(l, this.s.base)} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
   }
   view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minXlend: this.s.minXlend, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: { ...this.cfg, minEth: this.cfg.minEth.toString() } }; }
 }

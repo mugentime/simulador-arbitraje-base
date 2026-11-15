@@ -91,6 +91,24 @@ export function feeTotals(s, pendingUsd, lpUsd, now = Date.now()) {
     feeAprCap: days > 0.02 && s.entry?.usd ? total / s.entry.usd / days * 365 * 100 : null,
   };
 }
+/** Valor del LP a precio del pool (el mismo con el que se valúan las deudas): capital del rango + comisiones por cobrar.
+ *  am = cantidades crudas del rango (amountsFor), fees = [fee0, fee1] crudas o null. */
+export function lpAtPool(am, fees, pr) {
+  const principal = am.a0 / 1e18 * pr.eth + am.a1 / 1e8 * pr.btc;
+  const f = fees ? Number(fees[0]) / 1e18 * pr.eth + Number(fees[1]) / 1e8 * pr.btc : null;
+  return { principal, fees: f, value: principal + (f ?? 0) };
+}
+/** Resultado desde el inicio común (13 nov 12:33 hora de México, recalculado en la cadena): total = comisiones + precio. */
+export function baseResult(l, base) {
+  if (!base || l?.equity == null) return null;
+  const total = l.equity - base.equity, fees = (l.total ?? l.fees ?? 0) - (base.feesTotal ?? 0);
+  return { total, fees, price: total - fees };
+}
+export function baseText(l, base) {
+  const b = baseResult(l, base); if (!b) return "";
+  const sg = (v) => `${v < 0 ? "−" : "+"}$${Math.abs(v).toFixed(2)}`;
+  return ` · desde el inicio común (base $${base.equity.toFixed(2)}): resultado ${sg(b.total)} = comisiones ${sg(b.fees)} + precio ${sg(b.price)}`;
+}
 /** Texto de comisiones para la línea de estado. Sin re-centrados queda igual que antes. */
 export function feeText(l) {
   if (l.fees == null) return "";
@@ -209,7 +227,7 @@ export class NeutralLp {
     }
     await this.note(`error ${msg}`).catch(() => {});
   }
-  c(addr) { return new ethers.Contract(addr, I, this.provider); }
+  c(addr, p = this.provider) { return new ethers.Contract(addr, I, p); }
   mgr(fn, args) { return { to: this.s.manager, data: M.encodeFunctionData(fn, args) }; }
   dl() { return BigInt(Math.floor(Date.now() / 1000) + 600); }
   async sim(tx) { const t = { from: this.me, ...tx }; await this.provider.call(t); return (await this.provider.estimateGas(t)) * 13n / 10n; }
@@ -243,22 +261,32 @@ export class NeutralLp {
   }
 
   // ---------------------------------------------------------------- lecturas
-  async prices() {
-    const e = await this.c(NLP.ETHUSD_POOL).slot0(), s = await this.c(NLP.POOL).slot0();
+  async prices(bt, p) {
+    const o = bt != null ? { blockTag: bt } : {};
+    const e = await this.c(NLP.ETHUSD_POOL, p).slot0(o), s = await this.c(NLP.POOL, p).slot0(o);
     const se = Number(e.sqrtPriceX96) / 2 ** 96, sp = Number(s.sqrtPriceX96) / 2 ** 96;
     const eth = se * se * 1e12, px = sp * sp; // px = cbBTC crudo por WETH crudo
     return { eth, btc: eth / (px * 1e10), px, sqrtP: sp, tick: Number(s.tick) };
   }
-  async read() {
-    const id = this.s.tokenId, m = this.s.manager, pr = await this.prices();
-    const li = await this.c(NLP.VAULT).loanInfo(id);
-    const pos = await this.c(NLP.NPM).positions(id);
-    const cColl = Number(await this.c(NLP.COMET).collateralBalanceOf(m, NLP.USDC)) / 1e6;
-    const cDebt = Number(await this.c(NLP.COMET).borrowBalanceOf(m)) / 1e18;
+  async pendingFees(id, bt, p = this.provider) {
+    return p.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]), ...(bt != null ? { blockTag: bt } : {}) }).then((d) => I.decodeFunctionResult("collect", d));
+  }
+  /** Lee la posición (opcional: otra NFT, un bloque pasado y otro proveedor). El capital se valúa todo a precio del pool:
+   *  LP (rango + comisiones por cobrar) − deuda Revert + colateral Compound − deuda WETH. Revert solo da las saludes. */
+  async read(id = this.s.tokenId, bt, p) {
+    const o = bt != null ? { blockTag: bt } : {}, m = this.s.manager, pr = await this.prices(bt, p);
+    const li = await this.c(NLP.VAULT, p).loanInfo(id, o);
+    const pos = await this.c(NLP.NPM, p).positions(id, o);
+    const cColl = Number(await this.c(NLP.COMET, p).collateralBalanceOf(m, NLP.USDC, o)) / 1e6;
+    const cDebt = Number(await this.c(NLP.COMET, p).borrowBalanceOf(m, o)) / 1e18;
+    const f = await this.pendingFees(id, bt, p).catch(() => null);
+    const am = amountsFor(Number(pos.liquidity), pr.sqrtP, Number(pos.tickLower), Number(pos.tickUpper));
+    const lp = lpAtPool(am, f, pr);
     const x = { rColl: Number(li.collateralValue) / 1e6, rDebt: Number(li.debt) / 1e6, rValue: Number(li.fullValue) / 1e6, cColl, cDebt, cDebtUsd: cDebt * pr.eth };
     const h = healths(x);
     const inRange = pr.tick >= Number(pos.tickLower) && pr.tick < Number(pos.tickUpper);
-    return { ...x, h, pr, pos, li, inRange, equity: x.rValue - x.rDebt + x.cColl - x.cDebtUsd };
+    const lpValue = lp.fees != null ? lp.value : x.rValue; // sin lectura de comisiones: el valor de Revert (ya las incluye)
+    return { ...x, h, pr, pos, li, am, inRange, lpValue, feesUsd: lp.fees, equity: lpValue - x.rDebt + x.cColl - x.cDebtUsd, equityRevert: x.rValue - x.rDebt + x.cColl - x.cDebtUsd };
   }
 
   // ---------------------------------------------------------------- contrato
@@ -320,19 +348,15 @@ export class NeutralLp {
       this.s.tokenId = (await new ethers.Contract(this.s.manager, ART.abi, this.provider).tokenId()).toString();
       run.done = true; this.s.openedAt = Date.now(); this.s.entry = { usd: this.s.baseUsd ?? C, put: C, eth: pr.eth, btc: pr.btc, V, F, A, t: Date.now() };
       const r = await this.read();
-      await this.note(`abierta #${this.s.tokenId} · LP $${r.rValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · Compound colateral $${r.cColl.toFixed(2)} deuda ${r.cDebt.toFixed(6)} WETH salud ${r.h.comet.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
+      await this.note(`abierta #${this.s.tokenId} · LP $${r.lpValue.toFixed(2)} · Revert deuda $${r.rDebt.toFixed(2)} salud ${r.h.revert.toFixed(3)} · Compound colateral $${r.cColl.toFixed(2)} deuda ${r.cDebt.toFixed(6)} WETH salud ${r.h.comet.toFixed(3)} · capital $${r.equity.toFixed(2)}`);
     } catch (e) { await this.note(`apertura ${tag} falló (${run.tries}/3) · ${(e.shortMessage || e.message).slice(0, 200)}`); }
   }
 
   async monitor() {
     const r = await this.read(), id = this.s.tokenId, cfg = this.cfg;
-    this.s.last = { t: Date.now(), revert: r.h.revert, comet: r.h.comet, lp: r.rValue, rDebt: r.rDebt, cColl: r.cColl, cDebt: r.cDebt, cDebtUsd: r.cDebtUsd, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
+    this.s.last = { t: Date.now(), revert: r.h.revert, comet: r.h.comet, lp: r.lpValue, rDebt: r.rDebt, cColl: r.cColl, cDebt: r.cDebt, cDebtUsd: r.cDebtUsd, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
     // comisiones puras: lo que el LP tiene por cobrar (lectura on-chain), sin efecto de precio
-    try {
-      const f = await this.provider.call({ from: NLP.VAULT, to: NLP.NPM, data: I.encodeFunctionData("collect", [{ tokenId: id, recipient: NLP.VAULT, amount0Max: MAX128, amount1Max: MAX128 }]) }).then((d) => I.decodeFunctionResult("collect", d));
-      const usd = Number(f[0]) / 1e18 * r.pr.eth + Number(f[1]) / 1e8 * r.pr.btc;
-      Object.assign(this.s.last, feeTotals(this.s, usd, r.rValue)); // por cobrar + cobradas en re-centrados, desde la apertura
-    } catch {}
+    if (r.feesUsd != null) Object.assign(this.s.last, feeTotals(this.s, r.feesUsd, r.lpValue)); // por cobrar + cobradas en re-centrados, desde la apertura
     this.s.minRevert = Math.min(this.s.minRevert ?? Infinity, r.h.revert); this.s.minComet = Math.min(this.s.minComet ?? Infinity, r.h.comet);
     if (Date.now() - this.lastLine > 30 * 60_000) { this.lastLine = Date.now(); console.log(`${new Date().toISOString()} ${this.line()}`); }
 
@@ -420,7 +444,7 @@ export class NeutralLp {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · Compound colateral $${l.cColl.toFixed(2)} deuda ${l.cDebt.toFixed(6)} WETH ($${l.cDebtUsd.toFixed(2)}) salud ${l.comet.toFixed(3)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""}${baseText(l, this.s.base)} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
   }
   view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minComet: this.s.minComet, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: this.cfg }; }
 }
