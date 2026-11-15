@@ -8,12 +8,14 @@
 //     · salud XLend (la del protocolo) < disparador → pide USDC en Revert y lo pone en XLend (cripto subió);
 //     · si el traspaso no alcanza y una salud < emergencia → desapalanca 25 % con flashloan;
 //     · fuera de rango N minutos seguidos → re-centra.
+//     · comisiones por cobrar ≥ NLP2_COMPOUND_USD ($10) → las cobra, las pasa a USDC y las re-apalanca con el ciclo de la apertura
+//       sobre la misma NFT (solo con el contrato nlm-v2.1 o posterior; NLP2_NEW_MANAGER=<etiqueta> despliega uno nuevo sin posición abierta).
 //   Los umbrales toman NLP2_*; si no existen, los NLP_* de la v1 (para que las dos pruebas sean espejo).
 //   Cierre: NLP2_CLOSE=<etiqueta>. Cada transacción se simula con eth_call antes de enviarse.
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
-import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText, lpAtPool, baseText } from "./neutrallp.mjs";
+import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText, lpAtPool, baseText, compoundSizing, afterCompound, COMPOUND_HAIRCUT } from "./neutrallp.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/NeutralLpManagerV2.json", import.meta.url)));
 
@@ -110,6 +112,9 @@ export class NeutralLp2 {
       slipBps: Number(env("SLIP_BPS", 80)),
       minEth: ethers.parseEther(String(env("MIN_ETH", "0.002"))),
       close: process.env.NLP2_CLOSE || null, // etiqueta: cierra todo y deja USDC/WETH/cbBTC en la wallet
+      compoundUsd: Number(env("COMPOUND_USD", 10)), // comisiones por cobrar que disparan el re-apalancamiento (0 = apagado)
+      compoundCooldownMin: Number(env("COMPOUND_COOLDOWN_MIN", 10)),
+      newManager: process.env.NLP2_NEW_MANAGER || null, // etiqueta: sin posición abierta, despliega el contrato de esta versión
     };
     this.busy = false; this.timer = null; this.lastLine = 0; this.lastRates = 0; this.lastRateAlert = 0;
   }
@@ -120,8 +125,18 @@ export class NeutralLp2 {
 
   async init() {
     this.s = (await this.store.get("nlp2")) ?? { runs: {}, tokenId: null, events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0 };
-    if (process.env.NLP2_MANAGER_ADDRESS) this.s.manager = process.env.NLP2_MANAGER_ADDRESS;
+    if (process.env.NLP2_MANAGER_ADDRESS && !this.s.oldManagers?.length) this.s.manager = process.env.NLP2_MANAGER_ADDRESS;
     backfillFirstRecenter(this.s);
+  }
+  /** Contrato nuevo (una vez por etiqueta y solo sin posición abierta): olvida el anterior para que ensureManager despliegue esta versión. */
+  async renewManager() {
+    const tag = this.cfg.newManager, run = `mgr:${tag}`;
+    if (!tag || this.s.runs[run]?.done || (this.s.tokenId && !this.s.closed)) return;
+    if (this.s.manager) this.s.oldManagers = [...(this.s.oldManagers ?? []), this.s.manager];
+    this.s.oldManagers ??= ["-"]; // desde aquí manda el contrato desplegado, no la variable *_MANAGER_ADDRESS
+    this.s.manager = null; this.s.managerTries = 0; this.s.canCompound = false; this.s.runs[run] = { done: true };
+    await this.note(`NLP2_NEW_MANAGER=${tag}: se despliega el contrato nuevo (${ART.version}, re-apalanca comisiones)${this.s.oldManagers.at(-1) !== "-" ? ` · anterior ${this.s.oldManagers.at(-1)}` : ""}`);
+    await this.ensureManager();
   }
   async save() { this.s.updatedAt = Date.now(); await this.store.set("nlp2", this.s); }
   async note(m) { this.s.events.unshift({ t: Date.now(), m }); this.s.events.length = Math.min(this.s.events.length, 80); await this.diag(`lp-neutral2: ${m}`); }
@@ -152,6 +167,7 @@ export class NeutralLp2 {
     try {
       await this.ensureManager();
       if (this.cfg.close && this.s.tokenId && !this.s.runs[`close:${this.cfg.close}`]?.done) { await this.closeAll(this.cfg.close); if (!this.s.closed) return; }
+      await this.renewManager();
       if (this.s.closed && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done) {
         this.s.baseUsd ??= this.s.entry?.usd ?? this.cfg.usd;
         this.s.history = [...(this.s.history ?? []), { t: Date.now(), from: this.s.tokenId, to: null, why: "cierre para reabrir" }].slice(-50);
@@ -211,8 +227,8 @@ export class NeutralLp2 {
     try {
       const args = [this.me, NLP.VAULT, NLP.NPM, NLP.MORPHO, NLP.ROUTER, NLP2.XPOOL, NLP.USDC, NLP.WETH, NLP.CBBTC, NLP.FEE, NLP2.DEBT_WETH, NLP2.DEBT_CBBTC];
       const rc = await this.send("despliegue NeutralLpManagerV2", { data: ART.bytecode + M.encodeDeploy(args).slice(2) });
-      this.s.manager = rc.contractAddress; await this.save();
-      await this.note(`contrato NeutralLpManagerV2 en ${rc.contractAddress}`);
+      this.s.manager = rc.contractAddress; this.s.canCompound = !!M.getFunction("compound"); await this.save();
+      await this.note(`contrato NeutralLpManagerV2 (${ART.version}) en ${rc.contractAddress}`);
     } catch (e) { this.s.managerTries = (this.s.managerTries ?? 0) + 1; await this.note(`despliegue falló (${this.s.managerTries}/3) · ${(e.shortMessage || e.message).slice(0, 160)}`); }
   }
 
@@ -246,7 +262,7 @@ export class NeutralLp2 {
     const r = await this.read(), id = this.s.tokenId, cfg = this.cfg;
     this.s.last = { ...(this.s.last?.rates ? { rates: this.s.last.rates } : {}), t: Date.now(), revert: r.h.revert, xlend: r.h.xlend, lp: r.lpValue, rDebt: r.rDebt, xColl: r.aUsdc, d0: Number(r.d0) / 1e18, d1: Number(r.d1) / 1e8, debtUsd: r.debtUsd, net: r.net, equity: r.equity, eth: r.pr.eth, btc: r.pr.btc, inRange: r.inRange, ticks: [Number(r.pos.tickLower), Number(r.pos.tickUpper)], tick: r.pr.tick };
     // comisiones puras: lo que el LP tiene por cobrar (lectura on-chain), sin efecto de precio
-    if (r.feesUsd != null) Object.assign(this.s.last, feeTotals(this.s, r.feesUsd, r.lpValue)); // por cobrar + cobradas en re-centrados, desde la apertura
+    if (r.feesUsd != null) Object.assign(this.s.last, feeTotals(this.s, r.feesUsd, r.lpValue), { compounds: this.s.compounds ?? 0 }); // por cobrar + cobradas, desde la apertura
     if (Date.now() - this.lastRates > 10 * 60_000) {
       try {
         this.s.last.rates = await this.rates(); this.lastRates = Date.now();
@@ -274,6 +290,8 @@ export class NeutralLp2 {
     } else if (this.s.outSince) { await this.note(`volvió al rango tras ${((Date.now() - this.s.outSince) / 60_000).toFixed(0)} min · sin re-centrar`); this.s.outSince = null; }
     const due = !r.inRange && recenterDue(false, this.s.outSince, Date.now(), cfg.outMin);
     if (due && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) await this.recenter(r);
+    // 3) ganancia realizada: comisiones por cobrar ≥ umbral → cobra y re-apalanca
+    else if (cfg.compoundUsd > 0 && r.inRange && r.feesUsd != null && r.feesUsd >= cfg.compoundUsd) await this.compound(r);
     if (!this.revertChecked) { this.revertChecked = true; await this.checkRevertValue(r.pr).catch((e) => this.note(`chequeo Revert falló · ${(e.shortMessage || e.message).slice(0, 120)}`)); }
     if (!this.s.base && !this.baseTried) { this.baseTried = true; await this.computeBase().catch((e) => this.note(`base del inicio común falló · ${(e.shortMessage || e.message).slice(0, 300)}`)); }
   }
@@ -317,6 +335,42 @@ export class NeutralLp2 {
       const incl = Math.abs(V - (P + F)) < Math.abs(V - P);
       await this.note(`chequeo Revert ${who} #${id}: valor del LP $${V.toFixed(3)} (préstamo $${(Number(li.fullValue) / 1e6).toFixed(3)}) · capital del LP $${P.toFixed(3)} · comisiones por cobrar $${F.toFixed(3)} (oráculo $${Fo.toFixed(3)}) · valor − capital = $${(V - P).toFixed(3)} → el valor ${incl ? "SÍ" : "NO"} incluye las comisiones`);
     }
+  }
+
+  /** Re-apalanca la ganancia realizada: cobra las comisiones, las pasa a USDC y repite con ellas el ciclo de la apertura sobre la
+   *  misma NFT (USDC + flash → XLend → WETH + cbBTC → más liquidez → Revert presta el flash). Prueba el apalancamiento máximo
+   *  (k = 1) y, si las saludes esperadas quedan bajo su piso o no simula, una fracción menor. */
+  async compound(r) {
+    const id = this.s.tokenId, cfg = this.cfg, now = Date.now();
+    if (now - (this.s.lastCompoundTry ?? 0) < cfg.compoundCooldownMin * 60_000) return false;
+    this.s.lastCompoundTry = now;
+    if (!this.s.canCompound) {
+      if (now - (this.s.compoundNoteAt ?? 0) > 24 * 3600_000) { this.s.compoundNoteAt = now; await this.note(`comisiones por cobrar $${r.feesUsd.toFixed(2)} ≥ $${cfg.compoundUsd}: este contrato es de la versión anterior y no puede re-apalancar · hace falta abrir la posición con el contrato nuevo (NLP2_NEW_MANAGER)`); }
+      return false;
+    }
+    try {
+      const C = r.feesUsd * (1 - COMPOUND_HAIRCUT);
+      const minUsdcOut = BigInt(Math.floor(r.feesUsd * (1 - cfg.slipBps / 1e4 - COMPOUND_HAIRCUT) * 1e6));
+      const w0 = token0Share(r.pr.sqrtP, Number(r.pos.tickLower), Number(r.pos.tickUpper));
+      let why = "las saludes esperadas quedan bajo su piso";
+      for (const k of [1, 0.66, 0.33]) {
+        const z = compoundSizing(C, cfg.a, cfg.r, k);
+        const h = afterCompound({ rColl: r.rColl, rDebt: r.rDebt, rValue: r.rValue, hColl: r.xColl, hDebt: r.xDebt, lt: r.lt }, z, r.feesUsd);
+        if (h.revert < cfg.revertFloor || h.hedge < cfg.xlendFloor) continue;
+        const { borrow0, borrow1 } = openBorrows(z.V, r.pr.eth, r.pr.btc, w0);
+        const tx = this.mgr("compound", [{ tokenId: id, borrow0, borrow1, minUsdcOut, deadline: this.dl() }, BigInt(Math.floor(z.F * 1e6))]);
+        try { await this.sim(tx); } catch (e) { why = `no simuló (${(e.shortMessage || e.message || String(e)).slice(0, 100)})`; continue; }
+        const rc = await this.send(`re-apalanca: cobra $${r.feesUsd.toFixed(2)} de comisiones → LP +$${z.V.toFixed(2)} · Revert +$${z.F.toFixed(2)} · XLend colateral +$${z.A.toFixed(2)} (apalancamiento ${(k * 100).toFixed(0)} % del máximo)`, tx);
+        const got = recordCollected(this.s, { from: id, rc, eth: r.pr.eth, btc: r.pr.btc });
+        this.s.compounds = (this.s.compounds ?? 0) + 1; this.s.compoundedUsd = (this.s.compoundedUsd ?? 0) + (got ? this.s.feeLog.at(-1).usd : r.feesUsd);
+        await this.save();
+        const n = await this.read();
+        await this.note(`re-apalancado (${this.s.compounds}) · antes: LP $${r.lpValue.toFixed(2)} salud Revert ${r.h.revert.toFixed(3)} XLend ${r.h.xlend.toFixed(3)} capital $${r.equity.toFixed(2)} · después: LP $${n.lpValue.toFixed(2)} salud Revert ${n.h.revert.toFixed(3)} XLend ${n.h.xlend.toFixed(3)} capital $${n.equity.toFixed(2)} · neto ETH $${n.net.eth.toFixed(2)} BTC $${n.net.btc.toFixed(2)} · re-apalancado en total $${this.s.compoundedUsd.toFixed(2)}`);
+        return true;
+      }
+      await this.note(`re-apalancamiento pospuesto · ${why} · reintenta en ${cfg.compoundCooldownMin} min`);
+    } catch (e) { await this.note(`re-apalancamiento falló · ${(e.shortMessage || e.message).slice(0, 180)} · reintenta en ${cfg.compoundCooldownMin} min`); }
+    return false;
   }
 
   async recenter(r) {
@@ -393,7 +447,7 @@ export class NeutralLp2 {
   line() {
     const l = this.s.last; if (!l) return `lp-neutral2: ${this.s.tokenId ? `#${this.s.tokenId}` : "sin posición"}`;
     const e = this.s.entry;
-    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""}${baseText(l, this.s.base)} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}`;
+    return `lp-neutral2: #${this.s.tokenId} · LP $${l.lp.toFixed(2)} ${l.inRange ? "en rango" : "FUERA de rango"} · Revert deuda $${l.rDebt.toFixed(2)} salud ${l.revert.toFixed(3)} · XLend colateral $${l.xColl.toFixed(2)} deuda ${l.d0.toFixed(6)} WETH + ${l.d1.toFixed(6)} cbBTC ($${l.debtUsd.toFixed(2)}) salud ${l.xlend.toFixed(3)}${l.rates ? ` · tasas WETH ${l.rates.weth.toFixed(2)} % cbBTC ${l.rates.btc.toFixed(2)} %` : ""} · neto ETH $${l.net.eth.toFixed(2)} BTC $${l.net.btc.toFixed(2)}${feeText(l)} · capital $${l.equity.toFixed(2)}${e ? ` (inicio $${e.usd}, ${((l.equity / e.usd - 1) * 100).toFixed(2)} %)` : ""}${baseText(l, this.s.base)} · ETH $${l.eth.toFixed(0)} BTC $${l.btc.toFixed(0)} · re-centrados ${this.s.recenters} traspasos ${this.s.transfers} desapalancamientos ${this.s.deleverages}${this.s.compounds ? ` re-apalancamientos ${this.s.compounds}` : ""}`;
   }
-  view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minXlend: this.s.minXlend, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, events: this.s.events.slice(0, 30), line: this.line(), cfg: { ...this.cfg, minEth: this.cfg.minEth.toString() } }; }
+  view() { return { ready: true, manager: this.s.manager, tokenId: this.s.tokenId, entry: this.s.entry, last: this.s.last, minRevert: this.s.minRevert, minXlend: this.s.minXlend, recenters: this.s.recenters, transfers: this.s.transfers, deleverages: this.s.deleverages, compounds: this.s.compounds ?? 0, canCompound: !!this.s.canCompound, events: this.s.events.slice(0, 30), line: this.line(), cfg: { ...this.cfg, minEth: this.cfg.minEth.toString() } }; }
 }

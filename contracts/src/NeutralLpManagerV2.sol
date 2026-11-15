@@ -81,6 +81,19 @@ interface INPM {
         uint128 amount1Max;
     }
 
+    struct IncreaseLiquidityParams {
+        uint256 tokenId;
+        uint256 amount0Desired;
+        uint256 amount1Desired;
+        uint256 amount0Min;
+        uint256 amount1Min;
+        uint256 deadline;
+    }
+
+    function increaseLiquidity(IncreaseLiquidityParams calldata)
+        external
+        payable
+        returns (uint128 liquidity, uint256 amount0, uint256 amount1);
     function mint(MintParams calldata) external payable returns (uint256 tokenId, uint128 liquidity, uint256, uint256);
     function decreaseLiquidity(DecreaseLiquidityParams calldata) external payable returns (uint256, uint256);
     function collect(CollectParams calldata) external payable returns (uint256, uint256);
@@ -110,10 +123,12 @@ contract NeutralLpManagerV2 {
     error BadCallback();
     error BadToken();
     error InsufficientToRepayFlash(uint256 have, uint256 need);
+    error GainTooLow(uint256 got, uint256 min);
 
     event Opened(uint256 indexed tokenId, uint256 usdcIn, uint256 flash, uint256 borrowed0, uint256 borrowed1);
     event Recentered(uint256 indexed oldTokenId, uint256 indexed newTokenId, int24 tickLower, int24 tickUpper, uint256 borrowed);
     event Deleveraged(uint256 indexed tokenId, uint256 flash, uint128 liquidity, uint256 usdcWithdrawn, bool closed);
+    event Compounded(uint256 indexed tokenId, uint256 usdcGained, uint256 flash, uint256 borrowed0, uint256 borrowed1, uint128 liquidityAdded);
 
     uint256 private constant VARIABLE = 2; // modo de tasa variable de Aave v3
     uint24 private constant USDC_WETH_FEE = 500; // pool WETH/USDC 0.05 % para trimDebt
@@ -131,7 +146,7 @@ contract NeutralLpManagerV2 {
     address public immutable debt1; // token de deuda variable de cbBTC en XLend
     uint24 public immutable poolFee; // pool de la posición (también se usa para reequilibrar)
 
-    uint8 private op; // 1 open, 2 recenter, 3 deleverage
+    uint8 private op; // 1 open, 2 recenter, 3 deleverage, 4 compound
     uint256 public tokenId;
 
     struct OpenArgs {
@@ -161,6 +176,14 @@ contract NeutralLpManagerV2 {
         uint256 swapAmountIn; // 0 = sin swap; se limita al saldo
         uint256 swapMinOut;
         bool close; // repaga toda la deuda de Revert y saca el NFT
+        uint256 deadline;
+    }
+
+    struct CompoundArgs {
+        uint256 tokenId;
+        uint256 borrow0; // WETH a pedir en XLend
+        uint256 borrow1; // cbBTC a pedir en XLend
+        uint256 minUsdcOut; // mínimo de USDC por las comisiones cobradas
         uint256 deadline;
     }
 
@@ -230,6 +253,14 @@ contract NeutralLpManagerV2 {
         if (!a.close && extra > 0 && vault.loans(a.tokenId) > 0) vault.repay(a.tokenId, extra, false);
     }
 
+    /// Re-apalanca la ganancia realizada: cobra las comisiones, las pasa a USDC y repite con ellas el ciclo de la apertura
+    /// sobre la misma NFT (USDC + flash → XLend → WETH + cbBTC → más liquidez → Revert presta el flash).
+    function compound(CompoundArgs calldata a, uint256 flashAmount) external onlyOwner {
+        op = 4;
+        morpho.flashLoan(usdc, flashAmount, abi.encode(a));
+        op = 0;
+    }
+
     /// Cripto subió: las deudas WETH/cbBTC crecen → pide USDC en Revert (su colateral también subió) y lo pone en XLend.
     function revertToXlend(uint256 id, uint256 amount) external onlyOwner {
         vault.borrow(id, amount);
@@ -287,7 +318,8 @@ contract NeutralLpManagerV2 {
         if (msg.sender != address(morpho) || op == 0) revert BadCallback();
         if (op == 1) _open(assets, abi.decode(data, (OpenArgs)));
         else if (op == 2) _recenter(assets, abi.decode(data, (RecenterArgs)));
-        else _deleverage(assets, abi.decode(data, (DeleverageArgs)));
+        else if (op == 3) _deleverage(assets, abi.decode(data, (DeleverageArgs)));
+        else _compound(assets, abi.decode(data, (CompoundArgs)));
         uint256 bal = IERC20(usdc).balanceOf(address(this));
         if (bal < assets) revert InsufficientToRepayFlash(bal, assets);
     }
@@ -360,6 +392,46 @@ contract NeutralLpManagerV2 {
         }
         if (a.withdrawUsdc > 0) pool.withdraw(usdc, a.withdrawUsdc, address(this));
         emit Deleveraged(a.tokenId, assets, a.liquidity, a.withdrawUsdc, a.close);
+    }
+
+    function _compound(uint256 assets, CompoundArgs memory a) internal {
+        // 1) comisiones → USDC (cbBTC → WETH → USDC): la ganancia queda realizada y sin exposición
+        vault.decreaseLiquidityAndCollect(
+            IRevertVault.DecreaseLiquidityAndCollectParams({
+                tokenId: a.tokenId,
+                liquidity: 0,
+                amount0Min: 0,
+                amount1Min: 0,
+                feeAmount0: type(uint128).max,
+                feeAmount1: type(uint128).max,
+                deadline: a.deadline,
+                recipient: address(this)
+            })
+        );
+        uint256 f1 = IERC20(token1).balanceOf(address(this));
+        if (f1 > 0) _swapFee(token1, token0, poolFee, f1, 0);
+        uint256 f0 = IERC20(token0).balanceOf(address(this));
+        if (f0 > 0) _swapFee(token0, usdc, USDC_WETH_FEE, f0, 0);
+        uint256 bal = IERC20(usdc).balanceOf(address(this));
+        uint256 gained = bal > assets ? bal - assets : 0;
+        if (gained < a.minUsdcOut) revert GainTooLow(gained, a.minUsdcOut);
+        // 2) mismo ciclo que la apertura, sobre la NFT que ya está en Revert
+        pool.supply(usdc, bal, address(this), 0);
+        if (a.borrow0 > 0) pool.borrow(token0, a.borrow0, VARIABLE, 0, address(this));
+        if (a.borrow1 > 0) pool.borrow(token1, a.borrow1, VARIABLE, 0, address(this));
+        (uint128 liq,,) = npm.increaseLiquidity(
+            INPM.IncreaseLiquidityParams({
+                tokenId: a.tokenId,
+                amount0Desired: IERC20(token0).balanceOf(address(this)),
+                amount1Desired: IERC20(token1).balanceOf(address(this)),
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: a.deadline
+            })
+        );
+        if (assets > 0) vault.borrow(a.tokenId, assets);
+        _repayLeftovers();
+        emit Compounded(a.tokenId, gained, assets, a.borrow0, a.borrow1, liq);
     }
 
     // ------------------------------------------------------------------ internos
