@@ -91,6 +91,18 @@ export function backfillFirstRecenter(s) {
   return true;
 }
 
+/** Depósito 1 (15 nov 11:45 hora de México): durante el cierre previo el DCA de NVDAc tomó $10.00 USDC de la wallet, así que la
+ *  re-apertura usó $39.59 (no $49.59) y el depósito $49.97. El capital nuevo real de la espejo fue $39.97: corrige una sola vez
+ *  lo depositado y la base del resultado (si no, aparecería una pérdida de $10 que no existe). */
+export function fixDeposit1115(s) {
+  const d = (s.depositLog ?? []).find((x) => x.tx === "0x1b9aabfb7950c98b9fff9137914ab0a81c86d001cca406c5bf8731211f83be28");
+  if (!d || d.fixed) return false;
+  d.fixed = true; d.usd = +(d.usd - 10).toFixed(6); s.depositedUsd = +((s.depositedUsd ?? 0) - 10).toFixed(6);
+  if (s.entry) { s.entry.usd = +(s.entry.usd - 10).toFixed(2); s.baseUsd = s.entry.usd; }
+  if (s.base) s.base.equity -= 10;
+  return true;
+}
+
 export class NeutralLp2 {
   /** peer: instancia de la v1 (NeutralLp); si existe se usa su proveedor, que ya maneja RPC privados y cambio por fallas. */
   constructor({ executor, provider, store, diag, peer }) {
@@ -133,6 +145,7 @@ export class NeutralLp2 {
     this.s = (await this.store.get("nlp2")) ?? { runs: {}, tokenId: null, events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0 };
     if (process.env.NLP2_MANAGER_ADDRESS && !this.s.oldManagers?.length) this.s.manager = process.env.NLP2_MANAGER_ADDRESS;
     backfillFirstRecenter(this.s);
+    if (fixDeposit1115(this.s)) await this.diag(`lp-neutral2: corrección del depósito 1 · el DCA de NVDAc tomó $10.00 de la wallet durante el cierre, así que el capital nuevo real fue $${this.s.depositLog[0].usd.toFixed(2)} · depositado en total $${this.s.entry?.usd}`);
   }
   /** Contrato nuevo (una vez por etiqueta y solo sin posición abierta): olvida el anterior para que ensureManager despliegue esta versión. */
   async renewManager() {
@@ -484,7 +497,10 @@ export class NeutralLp2 {
       if (debt0 === 0n && debt1 === 0n && (await this.c(NLP2.A_USDC).balanceOf(m)) > 0n) await this.send(`cierre ${tag}: resto del colateral de XLend`, this.mgr("xlendWithdraw", [NLP.USDC, ethers.MaxUint256]));
       for (const t of [NLP.USDC, NLP.WETH, NLP.CBBTC]) if ((await this.c(t).balanceOf(m)) > 0n) await this.send(`cierre ${tag}: saldo a la wallet`, this.mgr("sweep", [t, 0n]));
       run.done = true; this.s.closed = true;
-      this.s.closeReturned = Number((await this.c(NLP.USDC).balanceOf(this.me)) - usdcBefore) / 1e6;
+      // lo que devolvió el cierre: diferencia de saldo, salvo que otro módulo haya movido USDC de la wallet en esos segundos
+      // (15 nov: el DCA tomó $10 a medio cierre); en ese caso vale el capital que tenía la posición
+      const ret = Number((await this.c(NLP.USDC).balanceOf(this.me)) - usdcBefore) / 1e6;
+      this.s.closeReturned = ret > r.equity * 0.98 && ret < r.equity * 1.005 ? ret : r.equity;
       await this.note(`cerrada · devolvió $${this.s.closeReturned.toFixed(2)} · wallet USDC ${ethers.formatUnits(await this.c(NLP.USDC).balanceOf(this.me), 6)} · deuda restante ${ethers.formatEther(debt0)} WETH + ${ethers.formatUnits(debt1, 8)} cbBTC`);
     } catch (e) { await this.note(`cierre ${tag} falló (${run.tries}/3) · ${(e.shortMessage || e.message).slice(0, 180)}`); }
   }

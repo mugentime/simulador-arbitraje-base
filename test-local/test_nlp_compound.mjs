@@ -145,4 +145,10 @@ async function run(Cls, extra, readAfter) {
   assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 23, 59), 0), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 0, 1), 0), "espejo-2026-11-16");
   assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 17, 50), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 16, 59), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 17, 0), 17), "espejo-2026-11-16");
 }
+{
+  const { fixDeposit1115 } = await import("../server/neutrallp2.mjs");
+  const s = { depositLog: [{ t: 1, usd: 49.967, tx: "0x1b9aabfb7950c98b9fff9137914ab0a81c86d001cca406c5bf8731211f83be28" }], depositedUsd: 49.967, entry: { usd: 99.97 }, base: { equity: 99.967 } };
+  assert.equal(fixDeposit1115(s), true); assert.equal(s.entry.usd, 89.97); near(s.base.equity, 89.967); near(s.depositedUsd, 39.967); assert.equal(fixDeposit1115(s), false); assert.equal(s.entry.usd, 89.97);
+  assert.equal(fixDeposit1115({ depositLog: [{ usd: 50, tx: "0xotra" }] }), false);
+}
 console.log("test_nlp_compound OK");
