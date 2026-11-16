@@ -27,6 +27,7 @@ import { Strategy, parseDcaExtra } from "./strategy.mjs";
 import { seedLedger, accrueFree, addDeposits, carryForward } from "./resultledger.mjs";
 import { runGuard, guardIdle } from "./guard.mjs";
 import { Bridger, Topup, topupTargets, RemoteBridge } from "./bridge.mjs";
+import { MirrorFund } from "./mirrorfund.mjs";
 import { Sniper } from "./sniper.mjs";
 import { EventFeed } from "./events.mjs";
 import { FastLoop } from "./fastloop.mjs";
@@ -266,10 +267,10 @@ async function loop() {
       await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
       await ensureNeutralLp2(exec, p).catch((e) => diag(`lp-neutral2: no arrancó · ${e.message}`));
       if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
-        if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
+        if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; await strategy.init(); }
         else { strategy.x = exec; strategy.provider = p; }
       }
-      if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
+      if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); t.reserveStable = mirrorReserve; await t.init(); topups.push(t); } }
       else for (const t of topups) { t.x = exec; t.provider = p; }
       if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
         if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
@@ -336,14 +337,18 @@ async function ensureNeutralLp(exec, p) {
   } else { neutralLp.x = exec; if (!neutralLp.rpcIdx && neutralLp.rpcIdx !== 0) neutralLp.provider = p; } // si cambió de RPC por fallas, conserva el suyo
 }
 let neutralLp2 = null;
+/** USDC de Base apartado para el próximo depósito de la espejo (crudo, 6 decimales): el DCA y las recargas no lo usan. */
+function mirrorReserve() { return CHAIN_CFG.key === "base" && neutralLp2 ? BigInt(Math.round(neutralLp2.reserveUsd() * 1e6)) : 0n; }
 /** LP neutral v2 (cobertura completa en XLend): corre en paralelo a la v1 y usa su proveedor (RPC privados y cambio por fallas). */
 async function ensureNeutralLp2(exec, p) {
   if (CHAIN_CFG.key !== "base" || process.env.NLP2 === "0") return;
   if (!neutralLp2) {
     if (!process.env.NLP2_OPEN && !(await store.get("nlp2"))?.tokenId) return;
-    neutralLp2 = new NeutralLp2({ executor: exec, provider: p, store, diag, peer: neutralLp }); await neutralLp2.init(); neutralLp2.start();
+    neutralLp2 = new NeutralLp2({ executor: exec, provider: p, store, diag, peer: neutralLp }); await neutralLp2.init();
+    neutralLp2.fund = new MirrorFund({ executor: exec, provider: p, store, diag, strategy: () => strategy }); await neutralLp2.fund.init();
+    neutralLp2.start();
     await diag(`lp-neutral2: activo · ${neutralLp2.s.tokenId ? `vigila #${neutralLp2.s.tokenId}` : `apertura ${neutralLp2.cfg.tag} ($${neutralLp2.cfg.usd})`} · cada ${neutralLp2.cfg.everyS} s · XLend ${neutralLp2.cfg.a} / Revert ${neutralLp2.cfg.r} · disparadores Revert ${neutralLp2.cfg.revertTrigger} XLend ${neutralLp2.cfg.xlendTrigger} emergencia ${neutralLp2.cfg.emergency}`);
-  } else { neutralLp2.x = exec; neutralLp2.provider = p; neutralLp2.peer = neutralLp; }
+  } else { neutralLp2.x = exec; neutralLp2.provider = p; neutralLp2.peer = neutralLp; if (neutralLp2.fund) { neutralLp2.fund.x = exec; neutralLp2.fund.provider = p; } }
 }
 async function ensureRevertLoan(exec, p) {
   if (CHAIN_CFG.key !== "base" || process.env.RVL_LOAN === "0") return;
@@ -355,10 +360,10 @@ async function ensureRevertLoan(exec, p) {
 }
 async function dcaOnlyLoop(exec, p) {
   if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
-    if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); await strategy.init(); }
+    if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; await strategy.init(); }
     else { strategy.x = exec; strategy.provider = p; }
   }
-  if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); await t.init(); topups.push(t); } }
+  if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); t.reserveStable = mirrorReserve; await t.init(); topups.push(t); } }
   else for (const t of topups) { t.x = exec; t.provider = p; }
   if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
     if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }

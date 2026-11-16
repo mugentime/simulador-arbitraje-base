@@ -238,7 +238,7 @@ async function extraTokenRows(p, chainKey, beefyKey, address, prices, skip) {
       const raw = BigInt(r.returnData); if (raw === 0n) return;
       const t = part[j], a = Number(raw) / 10 ** t.decimals, px = Number(prices?.[t.oracleId] ?? NaN);
       const usd = a * (Number.isFinite(px) ? px : tokenUsd(prices, t.sym) ?? 0);
-      if (usd >= 0.01 && usd < 1e7) rows.push({ sym: t.sym, amount: a, usd });
+      if (usd >= 0.01 && usd < 1e7) rows.push({ sym: t.sym, amount: a, usd, address: t.address });
     });
   }
   for (const v of VENUS[chainKey] ?? []) {
@@ -247,7 +247,7 @@ async function extraTokenRows(p, chainKey, beefyKey, address, prices, skip) {
       if (bal === 0n) continue;
       const rate = VTOK.decodeFunctionResult("exchangeRateStored", await p.call({ to: v.address, data: VTOK.encodeFunctionData("exchangeRateStored") }))[0];
       const under = Number(bal * rate / 10n ** 18n) / 10 ** v.underDec;
-      if (under * v.usd >= 0.01) rows.push({ sym: v.sym, amount: under, usd: under * v.usd });
+      if (under * v.usd >= 0.01) rows.push({ sym: v.sym, amount: under, usd: under * v.usd, address: v.address, venus: true });
     } catch {}
   }
   extraCache.set(ck, { at: Date.now(), rows });
@@ -274,7 +274,7 @@ export async function walletBalances(address, { provider = null } = {}) {
         try {
           const raw = ERC20B.decodeFunctionResult("balanceOf", await p.call(call).catch(() => p.call(call)))[0];
           const a = Number(raw) / 10 ** t.decimals;
-          if (a > 0) rows.push({ sym: t.sym, amount: a, usd: a * (tokenUsd(prices, t.sym) ?? 0) });
+          if (a > 0) rows.push({ sym: t.sym, amount: a, usd: a * (tokenUsd(prices, t.sym) ?? 0), address: t.address });
         } catch (e) { partial = true; out.errors.push(`${c.key} ${t.sym}: ${(e.shortMessage || e.message).slice(0, 60)}`); }
       }
       try { rows.push(...await extraTokenRows(p, c.key, c.beefy ?? c.key, address, prices, new Set(c.tokens.map((t) => String(t.address).toLowerCase())))); }

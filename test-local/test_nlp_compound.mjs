@@ -112,7 +112,7 @@ async function run(Cls, extra, readAfter) {
     const notes = [], sent = [], bal = { [mgr]: inMgr, [me]: wallet };
     const b = new NeutralLp2({ executor: { mode: "live", wallet: { address: me } }, provider: null, store: null, diag: async () => {} });
     b.s = { runs: {}, tokenId: "777", events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0, manager: mgr, canCompound: true, managerVer: 'nlm-v2.2', openedAt: Date.now() - 2 * 86400_000, entry: { usd: 50 }, base: { equity: 50, feesTotal: 0 }, ...extraS };
-    Object.assign(b.cfg, { a, r, revertFloor: 1.045, xlendFloor: 1.06, slipBps: 80, compoundUsd: 10, compoundCooldownMin: 10, addUsd: 50, addEveryH: 24, addMinUsd: 20 });
+    Object.assign(b.cfg, { a, r, revertFloor: 1.045, xlendFloor: 1.06, slipBps: 80, compoundUsd: 10, compoundCooldownMin: 10, addUsd: 50, addEveryH: 24, addMinUsd: 20, addWaitH: 4, addOwedMaxUsd: 50 });
     b.note = async (m) => { notes.push(m); }; b.save = async () => {}; b.sim = async () => 1n;
     const MV = new ethers.Interface(JSON.parse(fs.readFileSync(new URL("../server/artifacts/NeutralLpManagerV2.json", import.meta.url))).abi);
     b.c = () => ({ balanceOf: async (who) => BigInt(Math.round(bal[who] * 1e6)), allowance: async () => 0n });
@@ -142,6 +142,26 @@ async function run(Cls, extra, readAfter) {
   const t4 = mk(30, 30); await t4.b.addCapital(rr); near(t4.bal[me], 10, 1e-6); near(t4.b.s.depositedUsd, 50);
   // contrato anterior: no mueve nada
   const t5 = mk(100, 0, { managerVer: 'nlm-v2.1' }); assert.equal(await t5.b.addCapital(rr), false); assert.equal(t5.sent.length, 0);
+  // fondeo desde cualquier cadena (2026-11-16): el objetivo es el monto diario + lo que quedó debiendo
+  const due = { addAt: Date.now() - 25 * 3600_000 };
+  const t6 = mk(70, 0, { ...due, addOwedUsd: 10.03 }); assert.equal(t6.b.addTarget, 60.03); assert.equal(t6.b.reserveUsd(), 60.03);
+  assert.equal(await t6.b.addCapital(rr), true); near(t6.bal[me], 9.97, 1e-6); near(t6.b.s.depositedUsd, 60.03); assert.equal(t6.b.s.addOwedUsd, 0);
+  // falta dinero y el fondeo sigue trabajando: espera sin mover nada (los primeros 10 min ni siquiera lo llama)
+  const steps = []; const fundOf = (pending) => ({ step: async (cycle, gap) => { steps.push({ cycle, gap }); return { pending }; } });
+  const t7 = mk(42.8, 0, { ...due, addOwedUsd: 10.03 }); t7.b.fund = fundOf(true);
+  assert.equal(await t7.b.addCapital(rr), false); assert.equal(steps.length, 0); assert.equal(t7.sent.length, 0);
+  t7.b.s.addDueSeen = Date.now() - 11 * 60_000;
+  assert.equal(await t7.b.addCapital(rr), false); assert.equal(steps.length, 1); near(steps[0].gap, 17.23, 1e-6); assert.equal(steps[0].cycle, due.addAt + 24 * 3600_000); assert.equal(t7.sent.length, 0);
+  // el dinero llegó: deposita el objetivo completo sin volver a llamar al fondeo
+  t7.bal[me] = 60.5; assert.equal(await t7.b.addCapital(rr), true); assert.equal(steps.length, 1); near(t7.b.s.depositedUsd, 60.03); assert.equal(t7.b.s.addOwedUsd, 0);
+  // no hay de dónde tomar más: entra con lo que hay y el resto queda debiendo (se repone después)
+  const t8 = mk(42.8, 0, { ...due, addOwedUsd: 10.03, addDueSeen: Date.now() - 11 * 60_000, addDueAt: due.addAt + 24 * 3600_000 }); t8.b.fund = fundOf(false);
+  assert.equal(await t8.b.addCapital(rr), true); near(t8.b.s.depositedUsd, 42.8); assert.equal(t8.b.s.addOwedUsd, 17.23); assert.match(t8.notes.at(-1), /quedan \$17\.23 por reponer/);
+  // pasó la espera máxima (4 h): deja de esperar aunque el fondeo siga pendiente; lo debido nunca pasa del tope (un depósito)
+  const t9 = mk(25, 0, { ...due, addOwedUsd: 50, addDueSeen: Date.now() - 5 * 3600_000, addDueAt: due.addAt + 24 * 3600_000 }); t9.b.fund = fundOf(true);
+  assert.equal(await t9.b.addCapital(rr), true); near(t9.b.s.depositedUsd, 25); assert.equal(t9.b.s.addOwedUsd, 50); assert.ok(t9.notes.some((m) => /no completó \$100 en 4 h/.test(m)));
+  // sin posición que reciba depósitos no se aparta nada
+  const t10 = mk(100, 0, { managerVer: 'nlm-v2.1' }); assert.equal(t10.b.reserveUsd(), 0);
   assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 23, 59), 0), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 0, 1), 0), "espejo-2026-11-16");
   assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 15, 17, 50), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 16, 59), 17), "espejo-2026-11-15"); assert.equal(dailyLabel("espejo", Date.UTC(2026, 10, 16, 17, 0), 17), "espejo-2026-11-16");
 }

@@ -187,7 +187,8 @@ export class Topup {
       // espera a que haya USDC suficiente (p. ej. lo que dejan los cierres de EXIT_VAULTS). No cuenta para TOPUP_MAX_PER_DAY.
       const once = parseTopupOnce(process.env.TOPUP_ONCE);
       if (once && once.chainKey === this.chainKey && !(this.s.once ??= {})[once.tag]) {
-        const usdcBal = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) }));
+        const usdcRaw = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) })), rsv = this.reserveStable?.() ?? 0n;
+        const usdcBal = usdcRaw > rsv ? usdcRaw - rsv : 0n;
         if (usdcBal >= ethers.parseUnits(once.usd.toFixed(6), 6)) {
           const n = this.s.sends.length;
           await this.send({ kind: "único", usd: once.usd, currency: this.native ? NATIVE : this.token }, ctx);
@@ -225,7 +226,9 @@ export class Topup {
   /** Puentea `usd` dólares desde Base (USDC; si no alcanza, ETH) hacia `currency` en la cadena destino. */
   async send(j, ctx) {
     const me = this.x.wallet.address;
-    const usdcBal = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) }));
+    // el USDC apartado para el depósito de la espejo (reserveStable) no se usa para recargar otras cadenas
+    const usdcRaw = BigInt(await this.provider.call({ to: BASE_USDC, data: ERC20.encodeFunctionData("balanceOf", [me]) })), rsv = this.reserveStable?.() ?? 0n;
+    const usdcBal = usdcRaw > rsv ? usdcRaw - rsv : 0n;
     const amtUsdc = ethers.parseUnits(j.usd.toFixed(6), 6);
     let originCurrency = BASE_USDC, amount = amtUsdc;
     if (usdcBal < amtUsdc) {

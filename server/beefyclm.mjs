@@ -350,7 +350,7 @@ export async function enterClm(s, ctx) {
   // 1) nativo → estable (todo lo disponible; o, en DCA, solo lo necesario para s.dcaUsd usando primero el estable de la wallet)
   if (r.usdcIn === undefined && s.sweepStable !== undefined) {
     // barrido: solo el estable que sobró antes (sin pasar del saldo) + el X que haya en la wallet (paso 2)
-    const have0 = await bal(s, N.stable), prot = s.protectStable ?? 0n, have = have0 > prot ? have0 - prot : 0n;
+    const have0 = await bal(s, N.stable), prot = (s.protectStable ?? 0n) + (s.reserveStable?.() ?? 0n), have = have0 > prot ? have0 - prot : 0n;
     const want = ethers.parseUnits(s.sweepStable.toFixed(Math.min(6, D)), D);
     r.ethIn = "0"; r.usdcIn = String(want < have ? want : have); await s.save();
   }
@@ -358,7 +358,7 @@ export async function enterClm(s, ctx) {
     // el "estable" es el nativo envuelto (WETH): objetivo = dcaUsd / precio; se envuelve solo lo que falte (sin tocar lo retenido)
     if (!(ctx?.ethUsd > 0)) throw retry("sin precio del nativo");
     const target = ethers.parseEther((s.dcaUsd / ctx.ethUsd).toFixed(18));
-    const w0 = await bal(s, N.stable), prot = s.protectStable ?? 0n, have = w0 > prot ? w0 - prot : 0n;
+    const w0 = await bal(s, N.stable), prot = (s.protectStable ?? 0n) + (s.reserveStable?.() ?? 0n), have = w0 > prot ? w0 - prot : 0n;
     const need = have >= target ? 0n : target - have;
     if (need > 0n) {
       const balEth = await s.provider.getBalance(s.me);
@@ -370,7 +370,7 @@ export async function enterClm(s, ctx) {
   if (r.usdcIn === undefined) {
     const balEth = await s.provider.getBalance(s.me);
     const target = s.dcaUsd ? ethers.parseUnits(String(s.dcaUsd), D) : null;
-    const usdcHave = target !== null ? await (async () => { const b = await bal(s, N.stable), p = s.protectStable ?? 0n; return b > p ? b - p : 0n; })() : 0n;
+    const usdcHave = target !== null ? await (async () => { const b = await bal(s, N.stable), p = (s.protectStable ?? 0n) + (s.reserveStable?.() ?? 0n); return b > p ? b - p : 0n; })() : 0n;
     let amountIn;
     if (target === null) {
       amountIn = spendable(balEth, s.reserve, ethers.parseEther("0.0003"));

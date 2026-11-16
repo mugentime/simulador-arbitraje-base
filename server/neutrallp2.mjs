@@ -12,11 +12,16 @@
 //       sobre la misma NFT (solo con el contrato nlm-v2.2 o posterior; NLP2_NEW_MANAGER=<etiqueta> despliega uno nuevo sin posición abierta).
 //     · depósito periódico: NLP2_ADD_USD (p. ej. 50) cada NLP2_ADD_EVERY_H (24) horas, del USDC de la wallet (mínimo NLP2_ADD_MIN_USD):
 //       compound() lo jala de la wallet (approve + transferFrom) y lo apalanca (de paso cobra y re-apalanca las comisiones que haya).
+//       Fondeo (Jose 2026-11-16): el objetivo del día es NLP2_ADD_USD + lo que quedó debiendo de días anteriores (tope
+//       NLP2_ADD_OWED_MAX_USD). Si en Base no alcanza, mirrorfund.mjs lo trae de cualquier cadena y el depósito espera hasta
+//       NLP2_ADD_WAIT_H horas; pasado ese tiempo entra con lo que haya y el resto queda debiendo. Ese USDC queda apartado: ni el
+//       DCA de Beefy ni las recargas a otras cadenas lo usan (reserveUsd).
 //   Los umbrales toman NLP2_*; si no existen, los NLP_* de la v1 (para que las dos pruebas sean espejo).
 //   Cierre: NLP2_CLOSE=<etiqueta>. Cada transacción se simula con eth_call antes de enviarse.
 import fs from "node:fs";
 import { ethers } from "ethers";
 import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
+import { owedFromLog } from "./mirrorfund.mjs";
 import { NLP, openSizing, token0Share, recordCollected, feeTotals, feeText, lpAtPool, baseText, compoundSizing, afterCompound, COMPOUND_HAIRCUT, trackCapital, avgCapital } from "./neutrallp.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/NeutralLpManagerV2.json", import.meta.url)));
@@ -131,6 +136,8 @@ export class NeutralLp2 {
       addUsd: Number(process.env.NLP2_ADD_USD ?? 0), // depósito periódico de capital (0 = apagado)
       addEveryH: Number(process.env.NLP2_ADD_EVERY_H ?? 24),
       addMinUsd: Number(process.env.NLP2_ADD_MIN_USD ?? 20), // si la wallet tiene menos que el depósito completo, mete lo que haya desde este mínimo
+      addWaitH: Number(process.env.NLP2_ADD_WAIT_H ?? 4), // cuánto espera el depósito a que el fondeo complete el objetivo
+      addOwedMaxUsd: Number(process.env.NLP2_ADD_OWED_MAX_USD ?? process.env.NLP2_ADD_USD ?? 0), // tope de lo que se arrastra de días anteriores
       newManager: process.env.NLP2_NEW_MANAGER || null, // etiqueta: sin posición abierta, despliega el contrato de esta versión
     };
     this.busy = false; this.timer = null; this.lastLine = 0; this.lastRates = 0; this.lastRateAlert = 0;
@@ -140,11 +147,19 @@ export class NeutralLp2 {
   get me() { return this.x?.wallet?.address; }
   get canCompound() { return !!this.s?.canCompound && this.s.managerVer === ART.version; }
   get live() { return this.x?.mode === "live" && !!this.me; }
+  /** Objetivo del próximo depósito: el monto diario + lo que quedó debiendo. */
+  get addTarget() { return +(this.cfg.addUsd + (this.s?.addOwedUsd ?? 0)).toFixed(2); }
+  /** USDC de la wallet apartado para el próximo depósito (0 si no hay depósitos periódicos o la posición no los recibe). */
+  reserveUsd() { return this.cfg.addUsd > 0 && this.s?.tokenId && !this.s.closed && this.canCompound ? this.addTarget : 0; }
 
   async init() {
     this.s = (await this.store.get("nlp2")) ?? { runs: {}, tokenId: null, events: [], actions: 0, recenters: 0, transfers: 0, deleverages: 0 };
     if (process.env.NLP2_MANAGER_ADDRESS && !this.s.oldManagers?.length) this.s.manager = process.env.NLP2_MANAGER_ADDRESS;
     backfillFirstRecenter(this.s);
+    if (this.cfg.addUsd > 0 && this.s.addOwedUsd === undefined) {
+      this.s.addOwedUsd = owedFromLog(this.s.depositLog, this.cfg.addUsd, this.cfg.addOwedMaxUsd);
+      if (this.s.addOwedUsd > 0) await this.diag(`lp-neutral2: depósitos anteriores quedaron $${this.s.addOwedUsd.toFixed(2)} por debajo de $${this.cfg.addUsd} al día · se reponen en el siguiente depósito (objetivo $${this.addTarget})`);
+    }
     if (fixDeposit1115(this.s)) await this.diag(`lp-neutral2: corrección del depósito 1 · el DCA de NVDAc tomó $10.00 de la wallet durante el cierre, así que el capital nuevo real fue $${this.s.depositLog[0].usd.toFixed(2)} · depositado en total $${this.s.entry?.usd}`);
   }
   /** Contrato nuevo (una vez por etiqueta y solo sin posición abierta): olvida el anterior para que ensureManager despliegue esta versión. */
@@ -370,11 +385,24 @@ export class NeutralLp2 {
     if (now - (this.s.lastCompoundTry ?? 0) < cfg.compoundCooldownMin * 60_000) return false;
     if (!this.canCompound) { this.s.lastCompoundTry = now; if (now - (this.s.compoundNoteAt ?? 0) > 24 * 3600_000) { this.s.compoundNoteAt = now; await this.note(`depósito de $${cfg.addUsd}: este contrato es de la versión anterior y no puede agregar capital`); } return false; }
     const usdc = this.c(NLP.USDC), inMgr = Number(await usdc.balanceOf(m)) / 1e6, inWallet = Number(await usdc.balanceOf(this.me)) / 1e6;
-    const amount = Math.min(cfg.addUsd, inMgr + inWallet);
+    const target = this.addTarget, have = inMgr + inWallet;
+    // falta USDC en Base: el fondeo lo trae de otras cadenas (una acción por vuelta) y el depósito espera a que llegue
+    const dueAt = (this.s.addAt ?? 0) + cfg.addEveryH * 3600_000;
+    if (have < target - 0.5 && this.fund) {
+      if (this.s.addDueAt !== dueAt) { this.s.addDueAt = dueAt; this.s.addDueSeen = now; }
+      const waited = now - (this.s.addDueSeen ?? now);
+      if (waited < cfg.addWaitH * 3600_000) {
+        // 10 min de gracia: el puente diario de Robinhood puede venir en camino
+        const st = waited < 10 * 60_000 ? { pending: true } : await this.fund.step(dueAt, target - have).catch(async (e) => { await this.note(`fondeo: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return { pending: true }; });
+        if (st.pending) return false;
+      } else if (!this.s.addWaitOverNoted || this.s.addWaitOverNoted !== dueAt) { this.s.addWaitOverNoted = dueAt; await this.note(`depósito: el fondeo no completó $${target} en ${cfg.addWaitH} h · entra con lo que hay ($${have.toFixed(2)})`); }
+    }
+    const amount = Math.min(target, have);
     if (amount < Math.min(cfg.addMinUsd, cfg.addUsd)) {
-      if (now - (this.s.addWaitNoteAt ?? 0) > 6 * 3600_000) { this.s.addWaitNoteAt = now; await this.note(`depósito de $${cfg.addUsd}: esperando fondeo · USDC en la wallet $${inWallet.toFixed(2)}${inMgr > 0.005 ? ` + $${inMgr.toFixed(2)} en el contrato` : ""} (mínimo $${cfg.addMinUsd})`); }
+      if (now - (this.s.addWaitNoteAt ?? 0) > 6 * 3600_000) { this.s.addWaitNoteAt = now; await this.note(`depósito de $${target}: esperando fondeo · USDC en la wallet $${inWallet.toFixed(2)}${inMgr > 0.005 ? ` + $${inMgr.toFixed(2)} en el contrato` : ""} (mínimo $${cfg.addMinUsd})`); }
       return false;
     }
+    this.addTargetNow = target;
     // saludes esperadas con el apalancamiento más bajo de la lista: si ni así pasan, no mueve el dinero
     const z = compoundSizing(amount, cfg.a, cfg.r, 0.33), h = afterCompound({ rColl: r.rColl, rDebt: r.rDebt, rValue: r.rValue, hColl: r.xColl, hDebt: r.xDebt, lt: r.lt }, z, r.feesUsd);
     if (h.revert < cfg.revertFloor || h.hedge < cfg.xlendFloor) { this.s.lastCompoundTry = now; await this.note(`depósito de $${amount.toFixed(2)} pospuesto · las saludes esperadas quedan bajo su piso (Revert ${h.revert.toFixed(3)}, XLend ${h.hedge.toFixed(3)}) · reintenta en ${cfg.compoundCooldownMin} min`); return false; }
@@ -415,10 +443,13 @@ export class NeutralLp2 {
           if (this.s.entry) { this.s.entry.usd = +(this.s.entry.usd + extraUsd).toFixed(2); this.s.baseUsd = this.s.entry.usd; }
           if (this.s.base) this.s.base.equity += extraUsd;
           (this.s.depositLog ??= []).push({ t: Date.now(), usd: extraUsd, tx: rc.hash }); this.s.depositLog = this.s.depositLog.slice(-60);
+          // lo que faltó contra el objetivo del día se arrastra al siguiente depósito (con tope); menos de $0.50 no se persigue
+          const short = (this.addTargetNow ?? cfg.addUsd) - extraUsd;
+          this.s.addOwedUsd = short >= 0.5 ? +Math.min(cfg.addOwedMaxUsd, short).toFixed(2) : 0; this.addTargetNow = null;
         } else this.s.compounds = (this.s.compounds ?? 0) + 1;
         await this.save();
         const n = await this.read();
-        await this.note(`${extraUsd > 0 ? `depósito ${this.s.deposits} hecho: $${extraUsd.toFixed(2)} · depositado en total $${this.s.entry?.usd}` : `re-apalancado (${this.s.compounds})`} · antes: LP $${r.lpValue.toFixed(2)} salud Revert ${r.h.revert.toFixed(3)} XLend ${r.h.xlend.toFixed(3)} capital $${r.equity.toFixed(2)} · después: LP $${n.lpValue.toFixed(2)} salud Revert ${n.h.revert.toFixed(3)} XLend ${n.h.xlend.toFixed(3)} capital $${n.equity.toFixed(2)} · neto ETH $${n.net.eth.toFixed(2)} BTC $${n.net.btc.toFixed(2)} · re-apalancado en total $${this.s.compoundedUsd.toFixed(2)}`);
+        await this.note(`${extraUsd > 0 ? `depósito ${this.s.deposits} hecho: $${extraUsd.toFixed(2)} · depositado en total $${this.s.entry?.usd}${this.s.addOwedUsd > 0 ? ` · quedan $${this.s.addOwedUsd.toFixed(2)} por reponer en el siguiente` : ""}` : `re-apalancado (${this.s.compounds})`} · antes: LP $${r.lpValue.toFixed(2)} salud Revert ${r.h.revert.toFixed(3)} XLend ${r.h.xlend.toFixed(3)} capital $${r.equity.toFixed(2)} · después: LP $${n.lpValue.toFixed(2)} salud Revert ${n.h.revert.toFixed(3)} XLend ${n.h.xlend.toFixed(3)} capital $${n.equity.toFixed(2)} · neto ETH $${n.net.eth.toFixed(2)} BTC $${n.net.btc.toFixed(2)} · re-apalancado en total $${this.s.compoundedUsd.toFixed(2)}`);
         return true;
       }
       await this.note(`${extraUsd > 0 ? `depósito de $${extraUsd.toFixed(2)} pospuesto (el USDC sigue en la wallet)` : "re-apalancamiento pospuesto"} · ${why} · reintenta en ${cfg.compoundCooldownMin} min`);

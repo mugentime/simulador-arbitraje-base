@@ -487,6 +487,40 @@ export class Strategy {
   }
 
   /**
+   * Fondeo de la espejo (server/mirrorfund.mjs): retira del vault pedido solo la parte que hace falta (s.fundReq = { cycle,
+   * spec, usd, status }) y deja el USDC en la wallet, apartado para el depósito de lp-neutral2. Un retiro por pedido; pasos
+   * reanudables. true si actuó.
+   */
+  async fundExitStep(ctx) {
+    const q = this.s.fundReq, now = Date.now();
+    if (!q || q.status !== "pendiente" || (q.retryAt && now < q.retryAt)) return false;
+    try {
+      q.vaultId ??= await resolveVaultSpec(q.spec, this.net.beefy);
+      if (q.frac == null) {
+        const v = await vaultValue(this, q.vaultId);
+        const val = Number(ethers.formatUnits(v.value, this.net.stableDec)) * this.stableUsd();
+        if (!(val >= 1)) { q.status = "vacío"; await this.diag(`lp-neutral2: fondeo · el vault ${q.vaultId} no tiene posición; nada que retirar`); return true; }
+        q.valueUsd = +val.toFixed(2); q.frac = Math.min(1, q.usd / val);
+        await this.diag(`lp-neutral2: fondeo · retiro de ≈ $${Math.min(q.usd, val).toFixed(2)} del vault ${q.vaultId} (vale $${val.toFixed(2)}; ${(q.frac * 100).toFixed(1)} % de la posición)`);
+      }
+      this.run = this.s.runs[`${this.label}-fund-${q.cycle}`] ??= { kind: "beefy-clm-exit", startedAt: now, txs: [], status: "pendiente", extra: true, fund: true };
+      this.vaultId = q.vaultId; this.keepStable = true; this.exitFrac = q.frac < 0.98 ? q.frac : null;
+      await exitClm(this, ctx);
+      this.run.status = "hecho"; this.run.endedAt = Date.now();
+      q.outUsd = +(Number(ethers.formatUnits(this.run.usdcOut ?? "0", this.net.stableDec)) * this.stableUsd()).toFixed(2);
+      q.status = "hecho"; q.doneAt = new Date().toISOString();
+      await this.diag(`lp-neutral2: fondeo · retiro del vault hecho · $${q.outUsd.toFixed(2)} ${this.net.stableSym} en la wallet para el depósito de la espejo`);
+    } catch (e) {
+      const msg = (e.shortMessage || e.message || String(e)).slice(0, 200);
+      q.tries = (q.tries ?? 0) + 1;
+      if (e.retry) { q.retryAt = now + 60_000; if (q.tries === 1 || q.tries % 10 === 0) await this.diag(`lp-neutral2: fondeo · retiro del vault en espera (${q.tries}) · ${msg}`); }
+      else if ((q.hard = (q.hard ?? 0) + 1) < 5) { q.retryAt = now + 600_000; await this.diag(`lp-neutral2: fondeo · retiro del vault falló (${q.hard} de 5) · ${msg} · reintenta en 10 min`); }
+      else { q.status = "error"; q.error = msg; if (this.run) { this.run.status = "error"; this.run.error = msg; } await this.diag(`lp-neutral2: fondeo · retiro del vault abandonado tras 5 intentos · ${msg}`); }
+    } finally { this.vaultId = null; this.keepStable = false; this.exitFrac = null; }
+    return true;
+  }
+
+  /**
    * Depósitos únicos (DEPOSIT_ONCE="<id o nombre>@usd,…" + DEPOSIT_ONCE_TAG=<etiqueta>): un solo depósito por vault y etiqueta,
    * con el mismo flujo que el DCA. Sin fondos → reintenta cada hora (p. ej. mientras llega el puente). true si actuó.
    */
@@ -981,7 +1015,7 @@ export class Strategy {
       this.busy = true; this.busySince = Date.now(); this.stuckLogged = false;
       try {
         if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
-        this.stage = "migración"; const m = (await this.guardStep(ctx).catch(async (e) => { await this.diag(`vigía auto: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; })) || (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (await this.stakeLooseOnce()) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
+        this.stage = "migración"; const m = (await this.guardStep(ctx).catch(async (e) => { await this.diag(`vigía auto: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; })) || (await this.fundExitStep(ctx)) || (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (await this.stakeLooseOnce()) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
         this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
         this.stage = "dca"; if (!m && !x) await this.dca(ctx);
         this.stage = "sueltos"; if (!this.looseAt || Date.now() - this.looseAt >= 3600_000) { this.looseAt = Date.now(); await this.looseReport(ctx).catch(async (e) => this.diag(`tokens sueltos ${this.label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`)); }
