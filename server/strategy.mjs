@@ -1016,8 +1016,10 @@ export class Strategy {
       try {
         if (!this.checked) { this.checked = true; this.stage = "verificación"; await this.checkVaults().catch(() => {}); }
         this.stage = "migración"; const m = (await this.guardStep(ctx).catch(async (e) => { await this.diag(`vigía auto: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; })) || (await this.fundExitStep(ctx)) || (await this.exitList(ctx)) || (await this.migrate(ctx)) || (await this.depositOnce(ctx)) || (await this.stakeLooseOnce()) || (this.stage = "sniper", await this.snipeStep(ctx).catch(async (e) => { await this.diag(`sniper: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`); return false; }));
-        this.stage = "extra"; const x = !m && (await this.extraDca(ctx));
-        this.stage = "dca"; if (!m && !x) await this.dca(ctx);
+        // DCA_OFF=1 (Jose 2026-11-16 21:35: "elimina los vaults"): sin depósitos nuevos en Beefy; las salidas siguen funcionando
+        const dcaOff = process.env.DCA_OFF === "1";
+        this.stage = "extra"; const x = !m && !dcaOff && (await this.extraDca(ctx));
+        this.stage = "dca"; if (!m && !x && !dcaOff) await this.dca(ctx);
         this.stage = "sueltos"; if (!this.looseAt || Date.now() - this.looseAt >= 3600_000) { this.looseAt = Date.now(); await this.looseReport(ctx).catch(async (e) => this.diag(`tokens sueltos ${this.label}: error ${(e.shortMessage || e.message || String(e)).slice(0, 160)}`)); }
         this.stage = "listo";
       } finally { this.busy = false; await this.save().catch(() => {}); }
