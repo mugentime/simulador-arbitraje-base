@@ -6,7 +6,9 @@
 //   2) lo estacionado en Venus (BSC): retira solo lo que falta y luego lo puentea
 //   3) otros tokens sueltos (WMON en Monad, VVV en Base…), del más grande al más chico → USDC en Base con Relay
 //   4) como último recurso, un retiro parcial del vault NVDAc de Beefy (lo ejecuta la estrategia, en su propia vuelta)
-// Nunca toca el nativo de cada cadena (es el gas), ni el WETH/cbBTC (los usan los otros módulos), ni saldos de menos de
+//   3b) el nativo que sobre de la reserva de gas (Jose 2026-11-17: "que el bot use los fondos disponibles siempre"; ese día fondeó
+//       la wallet con 0.17 ETH en Base y el depósito no lo podía usar): ETH por encima de NLP2_FUND_GAS_RESERVE_ETH (0.01) → USDC
+// Nunca toca la reserva de gas del nativo de cada cadena, ni el WETH/cbBTC (los usan los otros módulos), ni saldos de menos de
 // NLP2_FUND_MIN_SRC_USD ($3: la comisión fija los vuelve caros). Manda solo lo que falta (+2 %), no el saldo entero.
 // Cada transacción se simula con eth_call y estimateGas antes de enviarse y pasa por la guardia de retiros: el destino de
 // Relay es siempre la propia wallet. NLP2_FUND=0 lo apaga; NLP2_FUND_VAULT=0 deja fuera el vault.
@@ -24,6 +26,7 @@ const VTOK = new ethers.Interface(["function balanceOf(address) view returns (ui
 // vToken de Venus → su subyacente (lo que queda en la wallet tras retirar)
 const VENUS_UNDER = { "0xfd5840cd36d94d7229439859c0112a4185bc0255": { sym: "USDT", address: "0x55d398326f99059fF775485246999027B3197955", dec: 18 } };
 const SEL = { transfer: "0xa9059cbb", transferFrom: "0x23b872dd" };
+const NATIVE = "0x0000000000000000000000000000000000000000";
 
 /** Lo que quedó debiendo cada depósito pasado contra el monto diario (faltantes de menos de $1 no cuentan), con tope. */
 export function owedFromLog(log, addUsd, capUsd = addUsd) {
@@ -33,10 +36,18 @@ export function owedFromLog(log, addUsd, capUsd = addUsd) {
 }
 
 /** Fuentes utilizables de la lectura de saldos, en orden: dólares, Venus y luego el resto de mayor a menor (pura, probada). */
-export function fundSources(bal, { skip = new Set(), minUsd = 3 } = {}) {
+export function fundSources(bal, { skip = new Set(), minUsd = 3, nativeReserve = null } = {}) {
   const out = [];
   for (const c of bal?.chains ?? []) for (const r of c.rows ?? []) {
-    if (!r.address || !(r.usd >= minUsd)) continue; // sin dirección = nativo (gas): no se toca
+    if (!r.address) {
+      // nativo (gas): solo lo que sobra de la reserva de su moneda (nativeReserve = { ETH: 0.01 }); sin reserva definida no se toca
+      const res = nativeReserve?.[String(r.sym ?? "").toUpperCase()];
+      if (res == null || !(r.amount > res) || !(r.usd > 0)) continue;
+      const usd = +(r.usd * (r.amount - res) / r.amount).toFixed(2);
+      if (usd >= minUsd) out.push({ chain: c.chain, sym: r.sym, address: NATIVE, usd, kind: "native", rank: 3 });
+      continue;
+    }
+    if (!(r.usd >= minUsd)) continue;
     const sym = String(r.sym ?? "").toUpperCase(), a = String(r.address).toLowerCase();
     if (c.chain === "base" && a === BASE_USDC.toLowerCase()) continue; // ya es el destino
     if (skip.has(sym) || skip.has(`${sym}@${String(c.chain).toUpperCase()}`)) continue;
@@ -64,6 +75,8 @@ export class MirrorFund {
       transitMin: Number(process.env.NLP2_FUND_TRANSIT_MIN ?? 20),
       vault: process.env.NLP2_FUND_VAULT ?? "NVDAc-USDC",
       skip: new Set(String(process.env.NLP2_FUND_SKIP ?? "WETH,CBBTC,WBTC").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean)),
+      // reserva de gas en ETH por cadena: lo que sobre se puede cambiar a USDC para el depósito ("off" = no tocar el nativo)
+      nativeReserve: /^(off|no)$/i.test(String(process.env.NLP2_FUND_GAS_RESERVE_ETH ?? "")) ? null : { ETH: Math.max(0.003, Number(process.env.NLP2_FUND_GAS_RESERVE_ETH ?? 0.01) || 0.01) },
     };
     this.busy = false; this.guards = new Map(); this.provs = new Map();
   }
@@ -136,12 +149,12 @@ export class MirrorFund {
       const need = gapUsd - transit;
       if (need < c.minUsd) return { pending: transit > 0 };
       // 1) lo que dejó a medias un paso anterior (p. ej. el USDT recién retirado de Venus) y 2) el resto de las fuentes
-      const list = [...s.queue.map((q) => ({ ...q, kind: "token", queued: true })), ...fundSources(await this.balances(), { skip: c.skip, minUsd: c.minSrcUsd })];
+      const list = [...s.queue.map((q) => ({ ...q, kind: "token", queued: true })), ...fundSources(await this.balances(), { skip: c.skip, minUsd: c.minSrcUsd, nativeReserve: c.nativeReserve })];
       for (const src of list) {
         const key = `${src.chain}:${String(src.address).toLowerCase()}`;
         if (!src.queued && (s.cool[key] ?? 0) > now) continue;
         try {
-          const did = src.kind === "venus" ? await this.redeemVenus(src, need) : await this.sendToken(src, need);
+          const did = src.kind === "venus" ? await this.redeemVenus(src, need) : src.kind === "native" ? await this.sendNative(src, need) : await this.sendToken(src, need);
           if (src.queued) s.queue = s.queue.filter((q) => `${q.chain}:${String(q.address).toLowerCase()}` !== key);
           this._bal = null;
           if (did) return { pending: true, acted: true }; // lo enviado cuenta como "en camino": no se manda dos veces
@@ -188,6 +201,33 @@ export class MirrorFund {
     const rec = { at: new Date().toISOString(), t: Date.now(), chain: src.chain, sym: src.sym, amount: ethers.formatUnits(amount, dec), inUsd: q.inUsd, outUsd: q.outUsd, feePct: +feePct.toFixed(2), requestId: q.requestId, hash, status: q.requestId ? "enviado" : "hecho" };
     this.s.sends.push(rec);
     await this.note(`${rec.amount} ${src.sym} de ${src.chain} ($${q.inUsd.toFixed(2)}) → ~$${q.outUsd.toFixed(2)} USDC en Base vía Relay (comisión ${feePct.toFixed(2)} %) · tx ${hash}`);
+    return true;
+  }
+
+  /** Nativo que sobra de la reserva de gas → USDC en Base con Relay (una sola tx con valor, hacia un contrato). true si envió. */
+  async sendNative(src, need) {
+    const { id, p } = this.chain(src.chain), c = this.cfg;
+    const res = c.nativeReserve?.[String(src.sym ?? "").toUpperCase()];
+    if (res == null) return false;
+    const avail = (await p.getBalance(this.me)) - ethers.parseEther(res.toFixed(6));
+    if (avail <= 0n) return false;
+    let q = await this.quote(id, NATIVE, avail);
+    if (!(q.inUsd >= c.minSrcUsd)) return false;
+    const amount = sendAmount(avail, q.inUsd, need);
+    if (amount <= 0n) return false;
+    if (amount < avail) q = await this.quote(id, NATIVE, amount);
+    if (q.txs.length !== 1 || q.txs[0].chainId !== id) throw new Error(`cotización de Relay inesperada (${q.txs.length} tx)`);
+    const t = q.txs[0];
+    if (t.value !== amount) throw new Error("la cotización de Relay no manda exactamente el monto pedido; no se firma");
+    if ([SEL.transfer, SEL.transferFrom].includes(String(t.data).slice(0, 10).toLowerCase())) throw new Error("la cotización de Relay pide un envío directo; no se firma");
+    if (!Number.isFinite(q.inUsd) || !Number.isFinite(q.outUsd) || !(q.inUsd > 0)) throw new Error("cotización de Relay sin valores en dólares");
+    const feePct = (1 - q.outUsd / q.inUsd) * 100;
+    if (feePct > c.maxFeePct) throw new Error(`comisión + deslizamiento ${feePct.toFixed(1)} % > ${c.maxFeePct} %`);
+    if (q.outUsd < c.minUsd) return false;
+    const hash = await this.sendOn(src.chain, t); // la guardia de retiros bloquea el valor nativo hacia cuentas sin código
+    const rec = { at: new Date().toISOString(), t: Date.now(), chain: src.chain, sym: src.sym, amount: ethers.formatEther(amount), inUsd: q.inUsd, outUsd: q.outUsd, feePct: +feePct.toFixed(2), requestId: q.requestId, hash, status: q.requestId ? "enviado" : "hecho" };
+    this.s.sends.push(rec);
+    await this.note(`${Number(rec.amount).toFixed(6)} ${src.sym} de ${src.chain} ($${q.inUsd.toFixed(2)}; queda la reserva de gas de ${res} ${src.sym}) → ~$${q.outUsd.toFixed(2)} USDC en Base vía Relay (comisión ${feePct.toFixed(2)} %) · tx ${hash}`);
     return true;
   }
 

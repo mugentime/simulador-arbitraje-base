@@ -99,4 +99,55 @@ ok(sendAmount(1000n, 0, 5) === 0n && sendAmount(0n, 10, 5) === 0n, "sin valor o 
   ok(sent.length === n2 && notes.some((m) => /envío directo; no se firma/.test(m)), "10) una cotización que pide un transfer directo no se firma");
   globalThis.fetch = f0;
 }
+// ---- nativo que sobra de la reserva de gas (Jose 2026-11-17: "que el bot use los fondos disponibles siempre")
+{
+  const inv2 = { chains: [
+    { chain: "base", rows: [{ sym: "ETH", amount: 0.17726, usd: 319.07 }, { sym: "WETH", amount: 0.0006, usd: 1.1, address: "0x00000000000000000000000000000000000000a3" }] },
+    { chain: "robinhood", rows: [{ sym: "ETH", amount: 0.0054, usd: 9.7 }, { sym: "USDG", amount: 5, usd: 5, address: USDG }] },
+    { chain: "bsc", rows: [{ sym: "BNB", amount: 0.5, usd: 300 }] },
+    { chain: "arbitrum", rows: [{ sym: "ETH", amount: 0.0112, usd: 20.2 }] },
+  ] };
+  const a = fundSources(inv2, { skip: new Set(["WETH"]), minUsd: 3, nativeReserve: { ETH: 0.01 } });
+  ok(a.map((x) => `${x.sym}@${x.chain}`).join(",") === "USDG@robinhood,ETH@base", `dólares primero y luego el ETH que sobra de la reserva (${a.map((x) => `${x.sym}@${x.chain}`).join(",")})`);
+  const e = a.find((x) => x.kind === "native");
+  ok(Math.abs(e.usd - 319.07 * (0.16726 / 0.17726)) < 0.01 && /^0x0{40}$/.test(e.address), "el ETH utilizable es el saldo menos la reserva de gas");
+  ok(!a.some((x) => x.sym === "BNB") && !a.some((x) => x.chain === "robinhood" && x.sym === "ETH") && !a.some((x) => x.chain === "arbitrum"), "gas bajo la reserva, sobrante de centavos y nativos sin reserva definida no se tocan");
+  ok(!fundSources(inv2, { minUsd: 3 }).some((x) => x.kind === "native"), "sin reserva definida el nativo no se toca (comportamiento anterior)");
+
+  // flujo: faltan $52; solo hay ETH en Base → cambia lo que falta (+2 %) y deja el resto
+  const me = ethers.Wallet.createRandom().address, notes = [], sent = [], quotes = [];
+  const px = 1800, bal0 = ethers.parseEther("0.17726");
+  const prov = { getBalance: async () => bal0, call: async () => "0x" };
+  const f0 = globalThis.fetch; let mode = "ok";
+  globalThis.fetch = async (url, o) => {
+    if (String(url).includes("/quote/v2")) {
+      const b = JSON.parse(o.body); quotes.push(b);
+      const inUsd = Number(ethers.formatEther(BigInt(b.amount))) * px;
+      const value = mode === "mas" ? (BigInt(b.amount) + 1n).toString() : b.amount;
+      return { ok: true, json: async () => ({ steps: [{ id: "swap", kind: "transaction", requestId: "0xq", items: [{ data: { to: "0x00000000000000000000000000000000000000bb", data: "0x99", value, chainId: b.originChainId } }] }],
+        details: { currencyIn: { amountUsd: String(inUsd) }, currencyOut: { amountUsd: String(inUsd * (mode === "caro" ? 0.9 : 0.997)) } } }) };
+    }
+    return { ok: true, json: async () => ({ status: "success" }) };
+  };
+  const mem = {}; const store = { get: async (k) => mem[k], set: async (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); } };
+  const mk = async () => { const mf = new MirrorFund({ executor: { wallet: { address: me }, mode: "live" }, provider: prov, store: { get: async () => undefined, set: async () => {} }, diag: async (m) => notes.push(m), strategy: () => null });
+    await mf.init(); mf.chain = () => ({ id: 8453, p: prov, local: true }); mf.sendOn = async (k, tx) => { sent.push({ k, ...tx }); return `0xn${sent.length}`; };
+    mf.balances = async () => ({ chains: [inv2.chains[0]] }); mf.cfg.vault = "0"; return mf; };
+  let mf = await mk();
+  ok(mf.cfg.nativeReserve.ETH === 0.01, "reserva de gas por omisión: 0.01 ETH");
+  let r = await mf.step(501, 52);
+  const want = 52 * 1.02 / px;
+  ok(r.pending && sent.length === 1 && sent[0].k === "base" && Math.abs(Number(ethers.formatEther(sent[0].value)) - want) < 1e-6, `11) manda solo el ETH que hace falta (${sent[0] ? ethers.formatEther(sent[0].value) : "nada"})`);
+  ok(quotes[0].originCurrency === "0x0000000000000000000000000000000000000000" && quotes[0].originChainId === 8453 && quotes[0].recipient === me && BigInt(quotes[0].amount) === bal0 - ethers.parseEther("0.01"), "11b) cotiza el nativo de Base menos la reserva, con destino a la propia wallet");
+  ok(notes.some((m) => /ETH de base .*queda la reserva de gas de 0\.01 ETH.* USDC en Base vía Relay/.test(m)), "11c) lo avisa en el log");
+  // una cotización que manda más valor del pedido o cobra de más no se firma
+  mode = "mas"; mf = await mk(); const n0 = sent.length; await mf.step(502, 52);
+  ok(sent.length === n0 && notes.some((m) => /no manda exactamente el monto pedido/.test(m)), "12) valor distinto al pedido: no se firma");
+  mode = "caro"; mf = await mk(); await mf.step(503, 52);
+  ok(sent.length === n0 && notes.some((m) => /comisión \+ deslizamiento 10\.0 %/.test(m)), "13) comisión alta: no se firma");
+  // NLP2_FUND_GAS_RESERVE_ETH=off: no toca el nativo
+  mode = "ok"; mf = await mk(); mf.cfg.nativeReserve = null; r = await mf.step(504, 52);
+  ok(sent.length === n0 && r.pending === false, "14) con la reserva apagada el nativo no se usa");
+  globalThis.fetch = f0;
+}
 console.log(fails ? "HAY FALLAS" : "todo OK"); process.exit(fails ? 1 : 0);
