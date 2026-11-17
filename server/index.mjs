@@ -335,7 +335,7 @@ async function ensureNeutralLp(exec, p) {
   if (!neutralLp) {
     if (!process.env.NLP_OPEN && !process.env.NLP_CLOSE_OLD && !(await store.get("nlp"))?.tokenId) return;
     neutralLp = new NeutralLp({ executor: exec, provider: p, store, diag }); await neutralLp.init(); neutralLp.start();
-    await diag(`lp-neutral: activo · ${neutralLp.s.tokenId ? `vigila #${neutralLp.s.tokenId}` : `apertura ${neutralLp.cfg.tag} ($${neutralLp.cfg.usd})`} · cada ${neutralLp.cfg.everyS} s`);
+    await diag(`lp-neutral: activo · ${neutralLp.s.tokenId ? `vigila #${neutralLp.s.tokenId}` : `apertura ${neutralLp.cfg.tag} ($${neutralLp.cfg.usd})`} · cada ${neutralLp.cfg.everyS} s · Compound ${neutralLp.cfg.a} / Revert ${neutralLp.cfg.r} · disparadores Revert ${neutralLp.cfg.revertTrigger} Compound ${neutralLp.cfg.cometTrigger} · pisos Revert ${neutralLp.cfg.revertFloor} Compound ${neutralLp.cfg.cometFloor} · contrato ${neutralLp.s.managerVer ?? "anterior"}${neutralLp.canCompound ? " (recibe depósitos)" : " (no recibe depósitos)"}`);
   } else { neutralLp.x = exec; if (!neutralLp.rpcIdx && neutralLp.rpcIdx !== 0) neutralLp.provider = p; } // si cambió de RPC por fallas, conserva el suyo
 }
 let neutralLp2 = null;
