@@ -20,6 +20,27 @@ export function hedgeOrder(target, cur, px, szDecimals, { minUsd = 10.5, minDiff
   return { sz, isBuy: diff > 0, usd, reduceOnly };
 }
 
+/** Saldo real de la cuenta de Hyperliquid a partir de los estados crudos (pura, probada).
+ *  Cuenta estándar: cada dex tiene su saldo → valor del dex + USDC libre del dex principal (como antes).
+ *  Cuenta unificada / portfolio margin (2026-11-17: el bot leía $19 de una cuenta con $40.66): todo el saldo y sus retenciones
+ *  están en el USDC spot y el estado de cada dex solo trae el margen ocupado, así que el valor de la cuenta es
+ *  USDC spot total + PnL sin realizar de las posiciones, y no hay nada que pasar entre dexes (mainUsdc y withdrawable en 0).
+ *  Se toma como unificada si el modo lo dice o, si el modo no se pudo leer, cuando el USDC spot tiene retención y hay margen en uso. */
+export function hlAccount({ dex, main, spotUsdc, mode }) {
+  const num = (x) => { const v = Number(x ?? 0); return Number.isFinite(v) ? v : 0; };
+  const dexAcct = num(dex?.marginSummary?.accountValue), used = num(dex?.marginSummary?.totalMarginUsed);
+  const mainUsed = num(main?.marginSummary?.totalMarginUsed);
+  const upnl = (st) => (st?.assetPositions ?? []).reduce((acc, x) => acc + num(x?.position?.unrealizedPnl), 0);
+  const byMode = mode === "unifiedAccount" || mode === "portfolioMargin";
+  const byHold = mode !== "disabled" && !!spotUsdc && spotUsdc.hold > 0 && used > 0;
+  if (spotUsdc && (byMode || byHold)) {
+    const account = Math.max(spotUsdc.total + upnl(dex) + upnl(main), dexAcct);
+    const marginUsed = used + mainUsed;
+    return { account, marginUsed, usage: account > 0 ? marginUsed / account : 0, withdrawable: 0, mainUsdc: 0, unified: true, spotUsdc: spotUsdc.total, dexAccount: dexAcct };
+  }
+  return { account: dexAcct, marginUsed: used, usage: dexAcct > 0 ? used / dexAcct : 0, withdrawable: num(dex?.withdrawable), mainUsdc: num(main?.withdrawable), unified: false, spotUsdc: spotUsdc?.total ?? 0, dexAccount: dexAcct };
+}
+
 export class Hl {
   constructor({ privateKey, dex = "xyz" }) {
     this.wallet = new ethers.Wallet(privateKey);
@@ -45,16 +66,31 @@ export class Hl {
     if (i < 0) throw new Error(`Hyperliquid: ${coin} sin contexto`);
     return { px: Number(ctxs[i].markPx), oracle: Number(ctxs[i].oraclePx), funding: Number(ctxs[i].funding), maxLev: meta.universe[i].maxLeverage };
   }
-  /** Estado del dex: posición del activo (tamaño con signo), margen, valor de la cuenta y USDC del dex principal. */
+  /** Modo de cuenta del usuario ("unifiedAccount", "portfolioMargin", "disabled", "default"…); null si no se pudo leer. Caché 10 min. */
+  async mode() {
+    if (this._mode && Date.now() - this._mode.at < 600_000) return this._mode.v;
+    let v = null;
+    try {
+      const j = await this.info.userAbstraction({ user: this.me });
+      v = typeof j === "string" ? j : null;
+    } catch { v = null; }
+    if (v !== null) this._mode = { v, at: Date.now() };
+    return v ?? this._mode?.v ?? null;
+  }
+  /** Estado del dex: posición del activo (tamaño con signo), margen, valor de la cuenta y USDC del dex principal.
+   *  En cuenta unificada el saldo vive en el USDC spot (ver hlAccount). */
   async state(coin) {
-    const [d, main] = await Promise.all([this.info.clearinghouseState({ user: this.me, dex: this.dex }), this.info.clearinghouseState({ user: this.me })]);
+    const [d, main, spot, mode] = await Promise.all([
+      this.info.clearinghouseState({ user: this.me, dex: this.dex }), this.info.clearinghouseState({ user: this.me }),
+      this.info.spotClearinghouseState({ user: this.me }).catch(() => null), this.mode(),
+    ]);
     const p = d.assetPositions.find((x) => x.position.coin === coin)?.position;
-    const acct = Number(d.marginSummary.accountValue), used = Number(d.marginSummary.totalMarginUsed);
+    const u = spot?.balances?.find((b) => b.coin === "USDC");
+    const a = hlAccount({ dex: d, main, spotUsdc: u ? { total: Number(u.total), hold: Number(u.hold) } : null, mode });
     return {
       size: p ? Number(p.szi) : 0, entry: p ? Number(p.entryPx) : null, upnl: p ? Number(p.unrealizedPnl) : 0, liqPx: p?.liquidationPx ? Number(p.liquidationPx) : null,
       funding: p ? -Number(p.cumFunding?.sinceOpen ?? 0) : 0, // positivo = cobrado
-      account: acct, marginUsed: used, usage: acct > 0 ? used / acct : 0, withdrawable: Number(d.withdrawable),
-      mainUsdc: Number(main.withdrawable),
+      ...a,
     };
   }
   async setLeverage(coin, lev) { return this.ex.updateLeverage({ asset: this.asset(coin), isCross: true, leverage: lev }); }

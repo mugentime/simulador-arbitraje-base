@@ -143,6 +143,11 @@ export class SpcxLp {
     }
     r.m = await this.hl.mark(SPX.COIN); r.h = await this.hl.state(SPX.COIN);
     r.hlTotal = r.h.account + r.h.mainUsdc;
+    // aviso una vez (y cada vez que cambie) de cómo se está leyendo la cuenta de Hyperliquid
+    if (this._hlUnified !== r.h.unified) {
+      this._hlUnified = r.h.unified;
+      await this.note(`Hyperliquid: cuenta ${r.h.unified ? "unificada" : "estándar"} · saldo $${r.hlTotal.toFixed(2)}${r.h.unified ? ` (USDC spot $${r.h.spotUsdc.toFixed(2)} + PnL sin realizar $${(r.h.account - r.h.spotUsdc).toFixed(2)}; el dex ${this.hl.dex} solo muestra $${r.h.dexAccount.toFixed(2)})` : ` (dex ${this.hl.dex} $${r.h.account.toFixed(2)} + principal $${r.h.mainUsdc.toFixed(2)})`} · margen usado $${r.h.marginUsed.toFixed(2)} (${(r.h.usage * 100).toFixed(0)} %)`);
+    }
     r.capital = (r.lp?.usd ?? 0) + r.hlTotal + r.xaero * r.xaeroPx;
     return r;
   }
