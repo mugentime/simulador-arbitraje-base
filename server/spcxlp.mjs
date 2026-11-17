@@ -238,6 +238,11 @@ export class SpcxLp {
     const plan = rebalanceSwap(0, Number(usdgNeed), Number(r.sqrtP) / 2 ** 96, lo.lower, lo.upper, this.cfg.slipBps);
     const spcxOut = Number(plan.amountIn) / 1e6 / r.px;
     const summary = `apertura ${tag}: $${this.cfg.usd} · rango [${lo.lower}, ${lo.upper}] (±${this.cfg.rangePct} %, SPCX $${(r.px * 1.0001 ** (lo.lower - r.tick)).toFixed(2)}–$${(r.px * 1.0001 ** (lo.upper - r.tick)).toFixed(2)}) · swap ${n(plan.amountIn, 6).toFixed(2)} USDG → ~${spcxOut.toFixed(4)} SPCX · corto ~${spcxOut.toFixed(2)} ${SPX.COIN} (${(spcxOut * r.m.px).toFixed(2)} $) a ${this.cfg.lev}× · USDG en wallet ${n(usdgHave, 6).toFixed(2)}/${this.cfg.usd} · Hyperliquid $${hlHave.toFixed(2)}/${this.cfg.hlMarginUsd} · SPCX pool $${r.px.toFixed(2)} vs perp $${r.m.px.toFixed(2)} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año`;
+    // margen de Hyperliquid desde el USDG sobrante de Robinhood (lo que pasa del LP), con Relay; una vez cada 30 min mientras falte
+    if (this.cfg.live && hlHave < this.cfg.hlMarginUsd * 0.9 && usdgHave >= usdgNeed && Date.now() - (run.hlFundAt ?? 0) > 30 * 60_000) {
+      const spare = n(usdgHave - usdgNeed, 6), want = +(this.cfg.hlMarginUsd - hlHave + 1.5).toFixed(2);
+      if (spare >= Math.max(6, want)) { run.hlFundAt = Date.now(); await this.fundHl(want); return; }
+    }
     const funded = usdgHave >= usdgNeed && hlHave >= this.cfg.hlMarginUsd * 0.9;
     if (!this.cfg.live || !funded) {
       if (Date.now() - (run.noteAt ?? 0) > 3600_000) { run.noteAt = Date.now(); await this.note(`${this.cfg.live ? "" : "(lectura) "}${summary} · ${funded ? "fondos listos" : "esperando fondos"}${this.cfg.live ? "" : " · no envía nada (SPX_LIVE=1 para abrir)"}`); }
@@ -262,6 +267,22 @@ export class SpcxLp {
     this.s.entry = { usd: r3.capital, lp: r3.lp.usd, hl: r3.hlTotal, px: r3.px, at: Date.now() };
     run.done = true; run.step = "hecho";
     await this.note(`abierta #${id} · LP $${r3.lp.usd.toFixed(2)} (${r3.lp.spcx.toFixed(4)} SPCX + ${r3.lp.usdg.toFixed(2)} USDG) en gauge · corto ${r3.h.size} SPCX · capital $${r3.capital.toFixed(2)}`);
+  }
+
+  /** USDG de Robinhood → USDC de Hyperliquid (cuenta = esta wallet) con Relay. */
+  async fundHl(usd) {
+    const me = this.me, amt = ethers.parseUnits(usd.toFixed(2), 6);
+    const body = { user: me, recipient: me, originChainId: 4663, destinationChainId: 1337, originCurrency: SPX.USDG, destinationCurrency: "0x00000000000000000000000000000000", amount: amt.toString(), tradeType: "EXACT_INPUT" };
+    const res = await fetch(`${process.env.RELAY_API || "https://api.relay.link"}/quote/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+    const q = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`Relay ${res.status}: ${(q?.message ?? "").slice(0, 160)}`);
+    const qp = parseQuote(q);
+    if (!qp.txs.length || qp.txs.some((t) => t.chainId !== 4663)) throw new Error("cotización de Relay inesperada");
+    const feePct = qp.inUsd > 0 && qp.outUsd > 0 ? (1 - qp.outUsd / qp.inUsd) * 100 : null;
+    if (feePct !== null && feePct > 8) throw new Error(`comisión de Relay ${feePct.toFixed(1)} %`);
+    const hashes = [];
+    for (const t of qp.txs) hashes.push((await this.send(`relay ${t.step} → Hyperliquid`, { to: t.to, data: t.data, value: t.value })).hash);
+    await this.note(`margen: $${usd} USDG → ~$${qp.outUsd?.toFixed?.(2) ?? "?"} USDC en Hyperliquid vía Relay (comisión ${feePct?.toFixed?.(2) ?? "?"} %) · txs ${hashes.join(", ")}`);
   }
 
   async claim(r) {
