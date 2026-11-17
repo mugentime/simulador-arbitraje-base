@@ -73,6 +73,7 @@ export class Bridger {
         const T = new ethers.Contract(tok, ["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"], this.provider);
         dec = Number(await T.decimals()); sym = await T.symbol().catch(() => "token");
         amount = await T.balanceOf(me);
+        const rsvT = this.reserveToken?.() ?? 0n; amount = amount > rsvT ? amount - rsvT : 0n; // USDG apartado para lp-spcx
         // BRIDGE_AMOUNT_USD: tope del envío (estable ≈ $1), el resto se queda en esta cadena (Jose 2026-11-12: fondear Base
         // con el USDG de Robinhood sin vaciar el fondo del DCA de CASHCAT)
         const cap = Number(process.env.BRIDGE_AMOUNT_USD ?? 0);

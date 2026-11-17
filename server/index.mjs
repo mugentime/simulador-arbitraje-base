@@ -17,6 +17,7 @@ import { RevertLend } from "./revertlend.mjs";
 import { RevertLoan } from "./revertloan.mjs";
 import { NeutralLp } from "./neutrallp.mjs";
 import { NeutralLp2 } from "./neutrallp2.mjs";
+import { SpcxLp, SpcxFund } from "./spcxlp.mjs";
 import { beefyWallet, beefyWalletLine, walletBalances, walletBalancesLine } from "./beefywallet.mjs";
 import { beefyDashboard, beefyDashLine, carryDash } from "./beefydash.mjs";
 import { dcaCostReport } from "./dcacost.mjs";
@@ -266,14 +267,15 @@ async function loop() {
       await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
       await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
       await ensureNeutralLp2(exec, p).catch((e) => diag(`lp-neutral2: no arrancó · ${e.message}`));
+      await ensureSpcx(exec, p).catch((e) => diag(`lp-spcx: no arrancó · ${e.message}`));
       if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
-        if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; await strategy.init(); }
+        if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; strategy.reserveDollars = spcxReserveUsdg; await strategy.init(); }
         else { strategy.x = exec; strategy.provider = p; }
       }
       if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); t.reserveStable = mirrorReserve; await t.init(); topups.push(t); } }
       else for (const t of topups) { t.x = exec; t.provider = p; }
       if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
-        if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
+        if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); bridger.reserveToken = spcxReserveUsdg; await bridger.init(); }
         else { bridger.x = exec; bridger.provider = p; }
       }
       if (process.env.FLASHBLOCKS !== "0") {
@@ -338,7 +340,28 @@ async function ensureNeutralLp(exec, p) {
 }
 let neutralLp2 = null;
 /** USDC de Base apartado para el próximo depósito de la espejo (crudo, 6 decimales): el DCA y las recargas no lo usan. */
-function mirrorReserve() { return CHAIN_CFG.key === "base" && neutralLp2 ? BigInt(Math.round(neutralLp2.reserveUsd() * 1e6)) : 0n; }
+function mirrorReserveNlp2() { return CHAIN_CFG.key === "base" && neutralLp2 ? BigInt(Math.round(neutralLp2.reserveUsd() * 1e6)) : 0n; }
+/** USDC de Base apartado: depósito de la espejo + tramos pendientes del fondeo de lp-spcx. */
+function mirrorReserve() { return mirrorReserveNlp2() + (CHAIN_CFG.key === "base" && spcxFund ? spcxFund.reserve() : 0n); }
+// lp-spcx (doc 38): LP SPCX/USDG en Robinhood + corto en Hyperliquid; su fondeo corre en el worker de Base.
+let spcxLp = null, spcxFund = null;
+async function ensureSpcx(exec, p) {
+  if (process.env.SPX === "0" || !exec?.wallet) return;
+  if (CHAIN_CFG.key === "base") {
+    if (!process.env.SPX_FUND) return;
+    if (!spcxFund) { spcxFund = new SpcxFund({ executor: exec, provider: p, store, diag }); await spcxFund.init(); await diag(`spcx fondeo: activo · ${process.env.SPX_FUND}`); }
+    else { spcxFund.x = exec; spcxFund.provider = p; }
+    return;
+  }
+  if (CHAIN_CFG.key !== "robinhood") return;
+  if (!spcxLp) {
+    if (!process.env.SPX_OPEN && !(await store.get("spcx"))?.tokenId) return;
+    spcxLp = new SpcxLp({ executor: exec, provider: p, store, diag }); await spcxLp.init(); spcxLp.start();
+    await diag(`lp-spcx: activo · ${spcxLp.cfg.live ? "EN VIVO" : "modo lectura"} · ${spcxLp.s.tokenId ? `vigila #${spcxLp.s.tokenId}` : `apertura ${spcxLp.cfg.tag} ($${spcxLp.cfg.usd})`} · rango ±${spcxLp.cfg.rangePct} % · corto ${spcxLp.cfg.lev}× · reajuste ${spcxLp.cfg.rebalPct} % · cada ${spcxLp.cfg.everyS} s`);
+  } else { spcxLp.x = exec; spcxLp.provider = p; }
+}
+/** USDG de Robinhood apartado para la apertura de lp-spcx (no lo usan el DCA ni el puente diario). */
+function spcxReserveUsdg() { return CHAIN_CFG.key === "robinhood" && spcxLp ? spcxLp.reserveUsdg() : 0n; }
 /** LP neutral v2 (cobertura completa en XLend): corre en paralelo a la v1 y usa su proveedor (RPC privados y cambio por fallas). */
 async function ensureNeutralLp2(exec, p) {
   if (CHAIN_CFG.key !== "base" || process.env.NLP2 === "0") return;
@@ -360,13 +383,13 @@ async function ensureRevertLoan(exec, p) {
 }
 async function dcaOnlyLoop(exec, p) {
   if (process.env.STRATEGY && process.env.STRATEGY_RUN) {
-    if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; await strategy.init(); }
+    if (!strategy) { strategy = new Strategy({ executor: exec, provider: p, store, diag }); strategy.reserveStable = mirrorReserve; strategy.reserveDollars = spcxReserveUsdg; await strategy.init(); }
     else { strategy.x = exec; strategy.provider = p; }
   }
   if (!topups.length) { for (const cfg of topupTargets()) { const t = new Topup({ executor: exec, provider: p, store, diag, cfg }); t.reserveStable = mirrorReserve; await t.init(); topups.push(t); } }
   else for (const t of topups) { t.x = exec; t.provider = p; }
   if (process.env.BRIDGE_RUN || process.env.BRIDGE_DAILY) {
-    if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); await bridger.init(); }
+    if (!bridger) { bridger = new Bridger({ executor: exec, provider: p, store, diag }); bridger.reserveToken = spcxReserveUsdg; await bridger.init(); }
     else { bridger.x = exec; bridger.provider = p; }
   }
   if (process.env.BRIDGE_REMOTE) { if (!remoteBridge) { remoteBridge = new RemoteBridge({ executor: exec, store, diag }); await remoteBridge.init(); } else remoteBridge.x = exec; }
@@ -376,6 +399,7 @@ async function dcaOnlyLoop(exec, p) {
   await ensureRevertLoan(exec, p).catch((e) => diag(`revert-préstamo: no arrancó · ${e.message}`));
       await ensureNeutralLp(exec, p).catch((e) => diag(`lp-neutral: no arrancó · ${e.message}`));
       await ensureNeutralLp2(exec, p).catch((e) => diag(`lp-neutral2: no arrancó · ${e.message}`));
+      await ensureSpcx(exec, p).catch((e) => diag(`lp-spcx: no arrancó · ${e.message}`));
   await diag(`servidor: modo solo DCA (sin arbitraje, flashloans, liquidaciones, harvests, mempool ni eventos) · estrategia ${strategy ? `${strategy.kind} ${process.env.STRATEGY_VAULT_ID ?? ""}` : "—"}${process.env.DCA_EXTRA ? ` + extra ${process.env.DCA_EXTRA}` : ""} · recargas ${topups.length} · puente ${bridger ? "sí" : "no"}`);
   const until = Date.now() + 3600_000, tick = Math.max(15, Number(process.env.DCA_TICK_S ?? 60)) * 1000;
   let n = 0, lastTickErr = null;
@@ -386,6 +410,7 @@ async function dcaOnlyLoop(exec, p) {
     const rs = await Promise.allSettled([strategy?.onBlock(ctx), bridger?.onBlock(ctx), ...topups.map((t) => t.onBlock(ctx))].filter(Boolean));
     sniper?.onBlock(ctx).catch(() => {}); // en paralelo: el radar no frena el DCA
     remoteBridge?.onBlock().catch(() => {});
+    spcxFund?.onBlock().catch(() => {});
     for (const x of rs) if (x.status === "rejected") { const m = String(x.reason?.shortMessage || x.reason?.message || x.reason).slice(0, 200); if (m !== lastTickErr) { lastTickErr = m; await diag(`ciclo DCA: error no controlado · ${m}`); } }
     await new Promise((r) => setTimeout(r, tick));
   }
@@ -505,6 +530,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url.startsWith("/api/neutral-lp2")) {
     res.writeHead(200, headers); return res.end(J(neutralLp2 ? neutralLp2.view() : { ready: false }));
+  }
+  if (req.url.startsWith("/api/spcx")) {
+    res.writeHead(200, headers); return res.end(J(spcxLp ? spcxLp.view() : { ready: false, fund: spcxFund?.s ?? null }));
   }
   if (req.url.startsWith("/api/neutral-lp")) {
     res.writeHead(200, headers); return res.end(J(neutralLp ? neutralLp.view() : { ready: false }));

@@ -421,7 +421,7 @@ export class Strategy {
     const eth = process.env.DCA_FUND_USE_NATIVE === "1" ? (await this.provider.getBalance(this.me)) - this.reserve - ethers.parseEther("0.0003") : 0n;
     const have = (weth > 0n ? weth : 0n) + (eth > 0n ? eth : 0n);
     if (have >= need) return;
-    const dec = Number(await erc.decimals()), bal = BigInt(await erc.balanceOf(this.me));
+    const dec = Number(await erc.decimals()), rsvD = this.reserveDollars?.() ?? 0n, balAll = BigInt(await erc.balanceOf(this.me)), bal = balAll > rsvD ? balAll - rsvD : 0n; // lp-spcx aparta su USDG
     const miss = Number(ethers.formatEther(need - have)) * px * 1.01, amt = ethers.parseUnits(miss.toFixed(dec), dec);
     if (bal < amt) return; // sin dólares suficientes: el depósito dirá "fondos insuficientes" y reintentará
     const got = await routeSwap(this, tok, this.net.stable, amt, `swap dólares→${this.net.stableSym} para el depósito`);
