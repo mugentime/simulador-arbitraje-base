@@ -154,8 +154,15 @@ export class SpcxLp {
       let r = await this.read();
       this.last = r;
       if (this.cfg.close && this.s.tokenId && !this.s.runs[`close:${this.cfg.close}`]?.done) { await this.closeAll(this.cfg.close, r); return; }
-      if (!this.s.tokenId && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done && !this.s.closed) { await this.open(this.cfg.tag, r); return; }
+      if (!this.s.tokenId && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done && !this.s.closed) {
+        const st = this.s.runs[this.cfg.tag]?.step;
+        if (this.cfg.live && (st === "swap" || st === "mint")) await this.resumeOpen(this.cfg.tag, r); else await this.open(this.cfg.tag, r);
+        return;
+      }
       if (!this.s.tokenId || this.s.closed) return;
+      // apertura o re-centrado cortados después del mint: deposita la NFT en el gauge y fija el capital inicial
+      if (this.cfg.live && r.staked === false && (r.L ?? 0n) > 0n) { await this.note(`#${this.s.tokenId} fuera del gauge → depósito`); await this.stake(this.s.tokenId, "reanudación"); r = await this.read(); }
+      if (!this.s.entry && r.lp && Math.abs(r.h.size) > 0) { this.s.entry = { usd: r.capital, lp: r.lp.usd, hl: r.hlTotal, px: r.px, at: Date.now() }; if (this.cfg.tag && this.s.runs[this.cfg.tag]) { this.s.runs[this.cfg.tag].done = true; this.s.runs[this.cfg.tag].step = "hecho"; } }
       // margen y liquidación del corto
       const dist = liqDistance(r.m.px, r.h.liqPx);
       if (r.h.size < 0 && dist * 100 < this.cfg.liqClosePct) { await this.note(`precio a ${(dist * 100).toFixed(1)} % de la liquidación del corto → cierre`); await this.closeAll(`liq-${Date.now()}`, r); return; }
@@ -252,11 +259,31 @@ export class SpcxLp {
     // margen en el dex xyz y apalancamiento
     if (r.h.account < this.cfg.hlMarginUsd * 0.9 && r.h.mainUsdc > 1) await this.hl.moveUsdc(Math.floor(r.h.mainUsdc * 100) / 100, true);
     await this.hl.setLeverage(SPX.COIN, this.cfg.lev).catch(async (e) => this.note(`apalancamiento: ${e.message}`));
-    run.step = "swap";
+    run.step = "swap"; await this.save();
     await this.splitAndSwap(0n, usdgNeed, r.sqrtP, lo.lower, lo.upper, "apertura");
     const a0 = await this.bal(SPX.SPCX), usdgNow = await this.bal(SPX.USDG);
     const a1 = usdgNow - (usdgHave - usdgNeed) > 0n ? usdgNow - (usdgHave - usdgNeed) : 0n; // solo lo apartado; el resto de la wallet no se toca
-    run.step = "mint";
+    await this.finishOpen(run, lo, a0, a1);
+  }
+  /** Reanuda una apertura cortada a media (p. ej. reinicio tras el swap): usa el SPCX de la wallet y completa con USDG hasta SPX_USD. */
+  async resumeOpen(tag, r) {
+    const run = this.s.runs[tag];
+    const x0 = await this.bal(SPX.SPCX), usdgHave = await this.bal(SPX.USDG);
+    const v0 = n(x0, 18) * r.px, needU = Math.max(0, this.cfg.usd - v0);
+    let x1 = ethers.parseUnits(needU.toFixed(6), 6); if (x1 > usdgHave) x1 = usdgHave;
+    const lo = rangeTicks(r.tick, this.cfg.rangePct, SPX.SPACING);
+    await this.note(`reanuda apertura ${tag} (paso "${run.step}"): ${n(x0, 18).toFixed(4)} SPCX ($${v0.toFixed(2)}) + ${n(x1, 6).toFixed(2)} USDG · rango [${lo.lower}, ${lo.upper}]`);
+    if (r.h.account < this.cfg.hlMarginUsd * 0.9 && r.h.mainUsdc > 1) await this.hl.moveUsdc(Math.floor(r.h.mainUsdc * 100) / 100, true);
+    await this.hl.setLeverage(SPX.COIN, this.cfg.lev).catch(async (e) => this.note(`apalancamiento: ${e.message}`));
+    const b0 = x0, bU = usdgHave;
+    await this.splitAndSwap(x0, x1, r.sqrtP, lo.lower, lo.upper, "apertura (ajuste)");
+    const a0 = await this.bal(SPX.SPCX), uNow = await this.bal(SPX.USDG);
+    const a1 = uNow - (bU - x1) > 0n ? uNow - (bU - x1) : 0n;
+    void b0;
+    await this.finishOpen(run, lo, a0, a1);
+  }
+  async finishOpen(run, lo, a0, a1) {
+    run.step = "mint"; await this.save();
     const id = await this.mint(a0, a1, lo.lower, lo.upper, "apertura");
     this.s.tokenId = id; this.s.openedAt = Date.now(); this.s.claimAt = Date.now(); await this.save();
     run.step = "gauge";
