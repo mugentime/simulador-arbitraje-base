@@ -1,6 +1,6 @@
 // Pruebas de las funciones puras de lp-spcx y del cliente de Hyperliquid. node test-local/test_spcxlp.mjs
 import assert from "node:assert/strict";
-import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, parseSpxFund } from "../server/spcxlp.mjs";
+import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund } from "../server/spcxlp.mjs";
 import { hedgeOrder, hlAccount } from "../server/hl.mjs";
 import { rangeTicks, rebalanceSwap, amountsFor } from "../server/revertloan.mjs";
 
@@ -85,4 +85,8 @@ assert.equal(hlAccount({ dex: dexSt, main: mainSt, spotUsdc: null, mode: "unifie
 // sin posición abierta y modo desconocido: no hay retención → estándar (sin doble conteo)
 assert.equal(hlAccount({ dex: { marginSummary: { accountValue: "0", totalMarginUsed: "0" }, withdrawable: "0", assetPositions: [] }, main: mainSt, spotUsdc: { total: 40.75, hold: 0 }, mode: null }).unified, false);
 
+// emisiones: el periodo es apertura → último cobro (no baja entre cobro y cobro)
+near(emissionsApr(1, 149.46, 0, 86400_000), 244.21, 0.01, "APR emisiones, 1 cobro de $1 en 1 día");
+near(emissionsApr(2, 149.46, 0, 2 * 86400_000), 244.21, 0.01, "APR emisiones, 2 cobros en 2 días");
+assert.equal(emissionsApr(0, 149.46, 0, 0), null);
 console.log("test_spcxlp: OK");
