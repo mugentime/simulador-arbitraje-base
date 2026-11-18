@@ -65,6 +65,9 @@ export function lpView(L, sqrtPriceX96, lower, upper) {
 export function liqDistance(px, liqPx) { return liqPx > 0 && px > 0 ? (liqPx - px) / px : Infinity; }
 /** APR anual de un rendimiento `usd` cobrado sobre `capital` en `days`. */
 export const aprOf = (usd, capital, days) => (days > 0.02 && capital > 0 ? usd / capital / days * 365 * 100 : null);
+/** APR de las emisiones: lo COBRADO (rewardsUsd, que ya incluye el xAERO que sigue en la wallet sin vender: no se suma otra vez)
+ *  sobre el LP inicial, en el tiempo que cubren los cobros (de la apertura al último cobro). Sin cobros → null. */
+export const emissionsApr = (rewardsUsd, lp, entryAt, lastClaimAt) => (rewardsUsd > 0 && lastClaimAt > entryAt ? aprOf(rewardsUsd, lp, (lastClaimAt - entryAt) / 86400_000) : null);
 
 // ---------------------------------------------------------------- módulo (worker de Robinhood)
 export class SpcxLp {
@@ -402,11 +405,11 @@ export class SpcxLp {
   async report(r) {
     if (Date.now() - (this.s.reportAt ?? 0) < this.cfg.reportMin * 60_000) return;
     this.s.reportAt = Date.now();
-    const e = this.s.entry, days = e ? (Date.now() - e.at) / 86400_000 : 0;
+    const e = this.s.entry;
     const net = (r.lp?.spcx ?? 0) + r.h.size;
     const rew = this.s.rewardsUsd ?? 0;
     const res = e ? r.capital - e.usd : null;
-    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} + en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} (${aprOf(rew + r.xaero * r.xaeroPx, e?.lp ?? 0, days)?.toFixed(0) ?? "—"} % anual sobre el LP) · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / e.usd * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
+    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (de eso, en wallet sin vender $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${emissionsApr(rew, e?.lp ?? 0, e?.at ?? 0, (this.s.claims ?? []).at(-1)?.t ?? 0)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / e.usd * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
   }
 }
 

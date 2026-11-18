@@ -1,6 +1,6 @@
 // Pruebas de las funciones puras de lp-spcx y del cliente de Hyperliquid. node test-local/test_spcxlp.mjs
 import assert from "node:assert/strict";
-import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, parseSpxFund } from "../server/spcxlp.mjs";
+import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund } from "../server/spcxlp.mjs";
 import { hedgeOrder, hlAccount } from "../server/hl.mjs";
 import { rangeTicks, rebalanceSwap, amountsFor } from "../server/revertloan.mjs";
 
@@ -50,6 +50,10 @@ near(liqDistance(138, 165.6), 0.2, 1e-9, "distancia a liquidación");
 assert.equal(liqDistance(138, null), Infinity);
 near(aprOf(1, 150, 1), 243.33, 0.01, "APR");
 assert.equal(aprOf(1, 150, 0), null);
+// emisiones: el xAERO cobrado que sigue en la wallet NO se cuenta dos veces; el periodo es apertura → último cobro
+near(emissionsApr(1, 149.46, 0, 86400_000), 244.21, 0.01, "APR emisiones, 1 cobro de $1 en 1 día");
+near(emissionsApr(2, 149.46, 0, 2 * 86400_000), 244.21, 0.01, "APR emisiones, 2 cobros en 2 días");
+assert.equal(emissionsApr(0, 149.46, 0, 0), null);
 
 // fondeo
 assert.deepEqual(parseSpxFund("robinhood:110,hyperliquid:42@spcx-1117"), { legs: [{ dest: "robinhood", usd: 110 }, { dest: "hyperliquid", usd: 42 }], tag: "spcx-1117" });
