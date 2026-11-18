@@ -146,7 +146,7 @@ export class SpcxLp {
     // aviso una vez (y cada vez que cambie) de cómo se está leyendo la cuenta de Hyperliquid
     if (this._hlUnified !== r.h.unified) {
       this._hlUnified = r.h.unified;
-      await this.note(`Hyperliquid: cuenta ${r.h.unified ? "unificada" : "estándar"} · saldo $${r.hlTotal.toFixed(2)}${r.h.unified ? ` (USDC spot $${r.h.spotUsdc.toFixed(2)} + PnL sin realizar $${(r.h.account - r.h.spotUsdc).toFixed(2)}; el dex ${this.hl.dex} solo muestra $${r.h.dexAccount.toFixed(2)})` : ` (dex ${this.hl.dex} $${r.h.account.toFixed(2)} + principal $${r.h.mainUsdc.toFixed(2)})`} · margen usado $${r.h.marginUsed.toFixed(2)} (${(r.h.usage * 100).toFixed(0)} %)`);
+      await this.note(`Hyperliquid: cuenta ${r.h.unified ? "unificada" : "estándar"} · saldo $${r.hlTotal.toFixed(2)}${r.h.unified ? ` (= USDC spot, ya incluye el PnL sin realizar $${(r.h.openPnl ?? 0).toFixed(2)}; el dex ${this.hl.dex} solo muestra $${r.h.dexAccount.toFixed(2)})` : ` (dex ${this.hl.dex} $${r.h.account.toFixed(2)} + principal $${r.h.mainUsdc.toFixed(2)})`} · margen usado $${r.h.marginUsed.toFixed(2)} (${(r.h.usage * 100).toFixed(0)} %)`);
     }
     r.capital = (r.lp?.usd ?? 0) + r.hlTotal + r.xaero * r.xaeroPx;
     return r;
@@ -406,7 +406,7 @@ export class SpcxLp {
     const net = (r.lp?.spcx ?? 0) + r.h.size;
     const rew = this.s.rewardsUsd ?? 0;
     const res = e ? r.capital - e.usd : null;
-    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} + en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} (${aprOf(rew + r.xaero * r.xaeroPx, e?.lp ?? 0, days)?.toFixed(0) ?? "—"} % anual sobre el LP) · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / e.usd * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
+    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (sin vender en wallet $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${aprOf(rew, e?.lp ?? 0, days)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / e.usd * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
   }
 }
 

@@ -56,15 +56,25 @@ assert.deepEqual(parseSpxFund("robinhood:110,hyperliquid:42@spcx-1117"), { legs:
 assert.equal(parseSpxFund("polygon:5@x"), null);
 assert.equal(parseSpxFund(""), null);
 
-// cuenta de Hyperliquid: lectura del 2026-11-17 (la app mostraba $40.66 con margen $18.65 y PnL −$0.09; el bot leía ≈ $19 y "uso 100 %")
-const dexSt = { marginSummary: { accountValue: "18.56", totalMarginUsed: "18.65" }, withdrawable: "0.0", assetPositions: [{ position: { coin: "xyz:SPCX", szi: "-0.54", unrealizedPnl: "-0.09" } }] };
+// cuenta de Hyperliquid unificada: el USDC spot total YA trae el PnL sin realizar (2026-11-18). Antes se le sumaba otra vez y el
+// saldo salía bajo por ese PnL. Casos reales del 17 nov (corto −0.38 tras 7 operaciones; sin el PnL abierto el spot sería $39.93):
 const mainSt = { marginSummary: { accountValue: "0.0", totalMarginUsed: "0.0" }, withdrawable: "0.0", assetPositions: [] };
-for (const mode of ["unifiedAccount", "portfolioMargin", null, "default"]) {
-  const a = hlAccount({ dex: dexSt, main: mainSt, spotUsdc: { total: 40.75, hold: 18.65 }, mode });
+const real = [
+  { spot: 38.32, used: 13.51, dexAcct: "13.61", pnl: "-1.60" }, // 15:57 hora de México, SPCX $142.08
+  { spot: 38.12, used: 13.56, dexAcct: "13.40", pnl: "-1.81" }, // 17:05, SPCX $142.60
+];
+for (const c of real) for (const mode of ["unifiedAccount", "portfolioMargin", null, "default"]) {
+  const dex = { marginSummary: { accountValue: c.dexAcct, totalMarginUsed: String(c.used) }, withdrawable: "0.0", assetPositions: [{ position: { coin: "xyz:SPCX", szi: "-0.38", unrealizedPnl: c.pnl } }] };
+  const a = hlAccount({ dex, main: mainSt, spotUsdc: { total: c.spot, hold: c.used }, mode });
   assert.equal(a.unified, true, `unificada (${mode})`);
-  near(a.account, 40.66, 0.001, "saldo unificado"); near(a.usage, 0.4587, 0.001, "uso de margen real");
+  near(a.account, c.spot, 1e-9, "saldo unificado = USDC spot, sin sumar el PnL otra vez");
+  near(a.openPnl, Number(c.pnl), 1e-9, "PnL abierto solo informativo");
+  near(a.usage, c.used / c.spot, 1e-9, "uso de margen sobre el saldo real");
   assert.equal(a.mainUsdc, 0); assert.equal(a.withdrawable, 0);
 }
+// el saldo nunca se toma del dex (el dex solo muestra el margen ocupado)
+const dexSt = { marginSummary: { accountValue: "18.56", totalMarginUsed: "18.65" }, withdrawable: "0.0", assetPositions: [{ position: { coin: "xyz:SPCX", szi: "-0.54", unrealizedPnl: "-0.09" } }] };
+near(hlAccount({ dex: dexSt, main: mainSt, spotUsdc: { total: 40.75, hold: 18.65 }, mode: "unifiedAccount" }).account, 40.75, 1e-9, "saldo = spot");
 // cuenta estándar: como antes (valor del dex + USDC del principal aparte); el USDC spot no es margen
 const std = hlAccount({ dex: { marginSummary: { accountValue: "40.79", totalMarginUsed: "19.0" }, withdrawable: "21.7", assetPositions: [] }, main: { marginSummary: {}, withdrawable: "3.5", assetPositions: [] }, spotUsdc: { total: 7, hold: 0 }, mode: "disabled" });
 assert.equal(std.unified, false); near(std.account, 40.79, 1e-9, "saldo estándar"); near(std.mainUsdc, 3.5, 1e-9, "principal"); near(std.usage, 19 / 40.79, 1e-9, "uso estándar"); near(std.withdrawable, 21.7, 1e-9, "retirable");

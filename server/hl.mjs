@@ -23,8 +23,11 @@ export function hedgeOrder(target, cur, px, szDecimals, { minUsd = 10.5, minDiff
 /** Saldo real de la cuenta de Hyperliquid a partir de los estados crudos (pura, probada).
  *  Cuenta estándar: cada dex tiene su saldo → valor del dex + USDC libre del dex principal (como antes).
  *  Cuenta unificada / portfolio margin (2026-11-17: el bot leía $19 de una cuenta con $40.66): todo el saldo y sus retenciones
- *  están en el USDC spot y el estado de cada dex solo trae el margen ocupado, así que el valor de la cuenta es
- *  USDC spot total + PnL sin realizar de las posiciones, y no hay nada que pasar entre dexes (mainUsdc y withdrawable en 0).
+ *  están en el USDC spot y el estado de cada dex solo trae el margen ocupado, así que el valor de la cuenta es el
+ *  USDC spot total, que YA trae el PnL sin realizar de las posiciones (2026-11-18: sumarlo otra vez lo contaba doble; con las 7
+ *  operaciones reales el spot sin PnL abierto sería $39.93 y marcaba $38.32 / $38.12 con PnL −$1.60 / −$1.81; la fórmula oficial
+ *  de Hyperliquid para el riesgo de la cuenta unificada también usa solo el spot total). No hay nada que pasar entre dexes
+ *  (mainUsdc y withdrawable en 0). `upnl` se devuelve solo para mostrarlo.
  *  Se toma como unificada si el modo lo dice o, si el modo no se pudo leer, cuando el USDC spot tiene retención y hay margen en uso. */
 export function hlAccount({ dex, main, spotUsdc, mode }) {
   const num = (x) => { const v = Number(x ?? 0); return Number.isFinite(v) ? v : 0; };
@@ -34,9 +37,9 @@ export function hlAccount({ dex, main, spotUsdc, mode }) {
   const byMode = mode === "unifiedAccount" || mode === "portfolioMargin";
   const byHold = mode !== "disabled" && !!spotUsdc && spotUsdc.hold > 0 && used > 0;
   if (spotUsdc && (byMode || byHold)) {
-    const account = Math.max(spotUsdc.total + upnl(dex) + upnl(main), dexAcct);
+    const account = spotUsdc.total;
     const marginUsed = used + mainUsed;
-    return { account, marginUsed, usage: account > 0 ? marginUsed / account : 0, withdrawable: 0, mainUsdc: 0, unified: true, spotUsdc: spotUsdc.total, dexAccount: dexAcct };
+    return { account, marginUsed, usage: account > 0 ? marginUsed / account : 0, withdrawable: 0, mainUsdc: 0, unified: true, spotUsdc: spotUsdc.total, dexAccount: dexAcct, openPnl: upnl(dex) + upnl(main) };
   }
   return { account: dexAcct, marginUsed: used, usage: dexAcct > 0 ? used / dexAcct : 0, withdrawable: num(dex?.withdrawable), mainUsdc: num(main?.withdrawable), unified: false, spotUsdc: spotUsdc?.total ?? 0, dexAccount: dexAcct };
 }
