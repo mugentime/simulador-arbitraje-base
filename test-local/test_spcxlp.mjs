@@ -1,6 +1,6 @@
 // Pruebas de las funciones puras de lp-spcx y del cliente de Hyperliquid. node test-local/test_spcxlp.mjs
 import assert from "node:assert/strict";
-import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund } from "../server/spcxlp.mjs";
+import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund, widthChanged } from "../server/spcxlp.mjs";
 import { hedgeOrder, hlAccount } from "../server/hl.mjs";
 import { rangeTicks, rebalanceSwap, amountsFor } from "../server/revertloan.mjs";
 
@@ -89,4 +89,15 @@ assert.equal(hlAccount({ dex: { marginSummary: { accountValue: "0", totalMarginU
 near(emissionsApr(1, 149.46, 0, 86400_000), 244.21, 0.01, "APR emisiones, 1 cobro de $1 en 1 día");
 near(emissionsApr(2, 149.46, 0, 2 * 86400_000), 244.21, 0.01, "APR emisiones, 2 cobros en 2 días");
 assert.equal(emissionsApr(0, 149.46, 0, 0), null);
+// cambio de ancho (SPX_RANGE_PCT): el rango real ±10 % [-228000, -226050] no cambia con 10 y sí con 5; el nuevo ±5 % ya no dispara
+assert.equal(widthChanged(-228000, -226050, 10), false);
+assert.equal(widthChanged(-228000, -226050, 5), true);
+const r5 = rangeTicks(-227030, 5, 50);
+assert.equal(widthChanged(r5.lower, r5.upper, 5), false);
+assert.equal(widthChanged(r5.lower, r5.upper, 10), true);
+near(1.0001 ** (r5.upper - -227030), 1.05, 0.01, "borde superior ±5 %");
+assert.equal(widthChanged(undefined, undefined, 5), false);
+// al re-centrar a ±5 % con lo retirado (SPCX + USDG) el swap es pequeño y el valor se conserva
+const sw5 = rebalanceSwap(0.2762e18, 112.2e6, s, r5.lower, r5.upper, 100);
+assert.ok(Number(sw5.amountIn) / 1e6 < 45 && sw5.sellToken0 === false, "swap de re-centrado");
 console.log("test_spcxlp: OK");

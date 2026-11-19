@@ -69,6 +69,13 @@ export const aprOf = (usd, capital, days) => (days > 0.02 && capital > 0 ? usd /
  *  Medirlo hasta "ahora" lo hace bajar entre cobro y cobro (1 cobro de un día leído 31 h después marcaba 187 % en vez de 244 %,
  *  y justo antes del segundo cobro marcaría la mitad): engaña contra el criterio de 300 % / 150 %. Sin cobros → null. */
 export const emissionsApr = (rewardsUsd, lp, entryAt, lastClaimAt) => (rewardsUsd > 0 && lastClaimAt > entryAt ? aprOf(rewardsUsd, lp, (lastClaimAt - entryAt) / 86400_000) : null);
+/** ¿El ancho del rango actual ya no es el pedido (cambió SPX_RANGE_PCT)? Compara medio ancho en ticks con tolerancia del 25 %
+ *  (el redondeo al espaciado mueve el ancho unos pocos %; pasar de ±10 % a ±5 % lo cambia 100 %). */
+export function widthChanged(lower, upper, pct) {
+  if (!Number.isFinite(lower) || !Number.isFinite(upper) || !(pct > 0) || upper <= lower) return false;
+  const want = Math.log(1 + pct / 100) / Math.log(1.0001);
+  return Math.abs((upper - lower) / 2 - want) / want > 0.25;
+}
 
 // ---------------------------------------------------------------- módulo (worker de Robinhood)
 export class SpcxLp {
@@ -178,7 +185,16 @@ export class SpcxLp {
       if (r.h.usage > this.cfg.marginWarn && r.h.mainUsdc >= 1 && this.cfg.live) { await this.hl.moveUsdc(Math.floor(r.h.mainUsdc * 100) / 100, true); await this.note(`uso de margen ${(r.h.usage * 100).toFixed(0)} % → $${r.h.mainUsdc.toFixed(2)} del dex principal al xyz`); }
       // re-centrado
       this.s.outSince = r.inRange ? null : (this.s.outSince ?? Date.now());
-      if (recenterDue(r.inRange, this.s.outSince, Date.now(), this.cfg.outMin)) { await this.recenter(r); r = await this.read(); }
+      const pend = this.s.recenterPending?.from === this.s.tokenId;
+      const width = this.cfg.live && r.staked !== undefined && widthChanged(r.lower, r.upper, this.cfg.rangePct);
+      if (pend || width) {
+        // re-centrado cortado a medias (los tokens están en la wallet) o cambio de ancho (SPX_RANGE_PCT): no se toca el corto hasta terminar
+        if (Date.now() - (this.s.recenterTryAt ?? 0) < (pend ? 2 : 10) * 60_000) return;
+        this.s.recenterTryAt = Date.now(); await this.save();
+        await this.note(pend ? `reanuda el re-centrado de #${this.s.tokenId}` : `cambio de ancho: ±${this.cfg.rangePct} % (rango actual [${r.lower}, ${r.upper}]) → re-centra`);
+        await this.recenter(r); r = await this.read();
+      }
+      else if (recenterDue(r.inRange, this.s.outSince, Date.now(), this.cfg.outMin)) { await this.recenter(r); r = await this.read(); }
       // cobro de emisiones y reinversión
       else if (Date.now() - (this.s.claimAt ?? this.s.openedAt ?? Date.now()) >= this.cfg.claimEveryH * 3600_000) { await this.claim(r); r = await this.read(); }
       await this.hedge(r);
@@ -358,22 +374,33 @@ export class SpcxLp {
   async recenter(r) {
     if (!this.cfg.live) { if (Date.now() - (this.s.dryRecenterNoteAt ?? 0) > 3600_000) { this.s.dryRecenterNoteAt = Date.now(); await this.note(`(lectura) fuera de rango ${this.cfg.outMin} min → re-centraría`); } return; }
     const from = this.s.tokenId;
-    const [x0, x1] = await this.drain(from, "re-centrado");
-    let extra = 0n;
-    if (n(await this.bal(SPX.XAERO), 18) * r.xaeroPx >= this.cfg.compoundUsd) extra = await this.sellXaero("re-centrado");
+    // Reanudable: antes de retirar se guarda lo que ya había en la wallet (no se toca). Si un paso falla después del retiro,
+    // la siguiente pasada sigue con lo que haya de más en la wallet en vez de intentar retirar otra vez una NFT vacía.
+    let pd = this.s.recenterPending?.from === from ? this.s.recenterPending : null;
+    const rew0 = this.s.rewardsUsd ?? 0;
+    if (!pd) {
+      pd = this.s.recenterPending = { from, base0: (await this.bal(SPX.SPCX)).toString(), base1: (await this.bal(SPX.USDG)).toString(), at: Date.now() };
+      await this.save();
+    }
+    await this.drain(from, "re-centrado"); // en la reanudación no hace nada (ya está fuera del gauge y sin liquidez)
+    await this.save();
+    if (n(await this.bal(SPX.XAERO), 18) * r.xaeroPx >= this.cfg.compoundUsd) await this.sellXaero("re-centrado");
     const s0 = await this.c(SPX.POOL).slot0(), tick = Number(s0[1]);
     const lo = rangeTicks(tick, this.cfg.rangePct, SPX.SPACING);
-    const b0 = await this.bal(SPX.SPCX), b1 = await this.bal(SPX.USDG);
-    const base0 = b0 - x0, base1 = b1 - x1 - extra; // lo que había antes en la wallet (no se toca)
-    await this.splitAndSwap(x0, x1 + extra, s0[0], lo.lower, lo.upper, "re-centrado");
-    const a0 = (await this.bal(SPX.SPCX)) - base0, a1 = (await this.bal(SPX.USDG)) - base1;
-    const id = await this.mint(a0 > 0n ? a0 : 0n, a1 > 0n ? a1 : 0n, lo.lower, lo.upper, "re-centrado");
-    this.s.tokenId = id; this.s.outSince = null; this.s.recenters++;
+    const base0 = BigInt(pd.base0), base1 = BigInt(pd.base1);
+    const pos = (v) => (v > 0n ? v : 0n);
+    const x0 = pos((await this.bal(SPX.SPCX)) - base0), x1 = pos((await this.bal(SPX.USDG)) - base1);
+    if (x0 === 0n && x1 === 0n) throw new Error(`re-centrado de #${from}: no hay SPCX ni USDG de la posición en la wallet`);
+    await this.splitAndSwap(x0, x1, s0[0], lo.lower, lo.upper, "re-centrado");
+    const a0 = pos((await this.bal(SPX.SPCX)) - base0), a1 = pos((await this.bal(SPX.USDG)) - base1);
+    const id = await this.mint(a0, a1, lo.lower, lo.upper, "re-centrado");
+    this.s.tokenId = id; this.s.outSince = null; this.s.recenters++; this.s.recenterPending = null;
     this.s.history = [...(this.s.history ?? []), { t: Date.now(), from, to: id, tick }].slice(-50);
     await this.save();
     await this.stake(id, "re-centrado");
     this.s.claimAt = Date.now();
-    await this.note(`re-centrado #${from} → #${id} · rango [${lo.lower}, ${lo.upper}] · SPCX $${spcxPrice(s0[0]).toFixed(2)}`);
+    const rew = (this.s.rewardsUsd ?? 0) - rew0;
+    await this.note(`re-centrado #${from} → #${id} · rango [${lo.lower}, ${lo.upper}] (±${this.cfg.rangePct} %, SPCX $${(spcxPrice(s0[0]) * 1.0001 ** (lo.lower - tick)).toFixed(2)}–$${(spcxPrice(s0[0]) * 1.0001 ** (lo.upper - tick)).toFixed(2)}) · SPCX $${spcxPrice(s0[0]).toFixed(2)}${rew > 0 ? ` · xAERO cobrado al salir del gauge $${rew.toFixed(2)}` : ""}`);
   }
 
   async closeAll(tag, r) {
