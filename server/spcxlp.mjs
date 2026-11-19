@@ -69,6 +69,20 @@ export const aprOf = (usd, capital, days) => (days > 0.02 && capital > 0 ? usd /
  *  Medirlo hasta "ahora" lo hace bajar entre cobro y cobro (1 cobro de un día leído 31 h después marcaba 187 % en vez de 244 %,
  *  y justo antes del segundo cobro marcaría la mitad): engaña contra el criterio de 300 % / 150 %. Sin cobros → null. */
 export const emissionsApr = (rewardsUsd, lp, entryAt, lastClaimAt) => (rewardsUsd > 0 && lastClaimAt > entryAt ? aprOf(rewardsUsd, lp, (lastClaimAt - entryAt) / 86400_000) : null);
+/** Confirmación del reajuste del corto (2026-11-19). El precio de SPCX da saltos de 1–2 % que se devuelven en minutos (sobre todo
+ *  en la apertura de EE.UU.): reajustar en el primer cruce del umbral vendía abajo y recompraba arriba. En 2.4 días, 5 idas y
+ *  vueltas costaron ≈ $0.82 (0.55 % del LP); 3 de ellas se deshicieron en 7–11 min. Regla: el desfase tiene que seguir fuera del
+ *  umbral, del mismo lado, `confirmMin` minutos seguidos; si pasa `urgentX` veces el umbral se reajusta de inmediato.
+ *  `dev` = {since, sign, maxUsd} del episodio en curso (o null). Devuelve {trade, dev, ended}: `ended` = episodio que se deshizo solo. */
+export function hedgeGate(o, dev, now, { minDiffUsd = 0, confirmMin = 15, urgentX = 2 } = {}) {
+  if (!o?.sz) return { trade: false, dev: null, ended: dev ?? null };
+  const sign = o.isBuy ? 1 : -1;
+  const flipped = !!dev && dev.sign !== sign;
+  const d = dev && !flipped ? { ...dev, maxUsd: Math.max(dev.maxUsd ?? 0, o.usd) } : { since: now, sign, maxUsd: o.usd };
+  const urgent = minDiffUsd > 0 && o.usd >= minDiffUsd * urgentX;
+  if (urgent || !(confirmMin > 0) || now - d.since >= confirmMin * 60_000) return { trade: true, dev: null, ended: null, urgent, waitedMin: (now - d.since) / 60_000 };
+  return { trade: false, dev: d, ended: flipped ? dev : null, started: !dev || flipped };
+}
 /** ¿El ancho del rango actual ya no es el pedido (cambió SPX_RANGE_PCT)? Compara medio ancho en ticks con tolerancia del 25 %
  *  (el redondeo al espaciado mueve el ancho unos pocos %; pasar de ±10 % a ±5 % lo cambia 100 %). */
 export function widthChanged(lower, upper, pct) {
@@ -90,6 +104,8 @@ export class SpcxLp {
       lev: Number(process.env.SPX_HEDGE_LEV ?? 4),
       rebalPct: Number(process.env.SPX_REBAL_PCT ?? 5),
       minOrderUsd: Number(process.env.SPX_MIN_ORDER_USD ?? 10.5),
+      hedgeConfirmMin: Number(process.env.SPX_HEDGE_CONFIRM_MIN ?? 15),
+      hedgeUrgentX: Number(process.env.SPX_HEDGE_URGENT_X ?? 2),
       outMin: Number(process.env.SPX_OUT_MIN ?? 60),
       claimEveryH: Number(process.env.SPX_CLAIM_EVERY_H ?? 24),
       compoundUsd: Number(process.env.SPX_COMPOUND_USD ?? 10),
@@ -204,12 +220,23 @@ export class SpcxLp {
 
   async hedge(r) {
     const target = -(r.lp?.spcx ?? 0);
-    const o = hedgeOrder(target, r.h.size, r.m.px, this.hl.szDec(SPX.COIN), { minUsd: this.cfg.minOrderUsd, minDiffUsd: (r.lp?.usd ?? 0) * this.cfg.rebalPct / 100 });
-    if (!o.sz) return null;
-    if (!this.cfg.live) { this.s.planHedge = { ...o, target, cur: r.h.size, at: Date.now() }; return null; }
+    const minDiffUsd = (r.lp?.usd ?? 0) * this.cfg.rebalPct / 100;
+    const o = hedgeOrder(target, r.h.size, r.m.px, this.hl.szDec(SPX.COIN), { minUsd: this.cfg.minOrderUsd, minDiffUsd });
+    if (!this.cfg.live) { if (o.sz) this.s.planHedge = { ...o, target, cur: r.h.size, at: Date.now() }; return null; }
+    // confirmación: el desfase debe durar (o ser grande) para reajustar; los saltos que se devuelven solos no se operan
+    const now = Date.now(), g = hedgeGate(o, this.s.hedgeDev ?? null, now, { minDiffUsd, confirmMin: this.cfg.hedgeConfirmMin, urgentX: this.cfg.hedgeUrgentX });
+    this.s.hedgeDev = g.dev;
+    if (g.ended) {
+      this.s.hedgeSkips = (this.s.hedgeSkips ?? 0) + 1;
+      await this.note(`reajuste evitado: el desfase (máx. $${(g.ended.maxUsd ?? 0).toFixed(2)}, pedía ${g.ended.sign > 0 ? "recomprar" : "vender"}) se deshizo solo en ${Math.max(1, Math.round((now - g.ended.since) / 60_000))} min · evitados ${this.s.hedgeSkips}`);
+    }
+    if (!g.trade) {
+      if (g.started) await this.note(`desfase $${o.usd.toFixed(2)} (pide ${o.isBuy ? "recomprar" : "vender"} ${o.sz} SPCX): espera ${this.cfg.hedgeConfirmMin} min de confirmación (inmediato desde $${(minDiffUsd * this.cfg.hedgeUrgentX).toFixed(2)})`);
+      return null;
+    }
     const f = await this.hl.ioc(SPX.COIN, o.isBuy, o.sz, { reduceOnly: o.reduceOnly });
     this.s.hedges++;
-    await this.note(`corto ${o.isBuy ? "−" : "+"}${f.sz} SPCX a $${f.px} ($${(f.sz * f.px).toFixed(2)}) · objetivo ${target.toFixed(3)} · antes ${r.h.size}`);
+    await this.note(`corto ${o.isBuy ? "−" : "+"}${f.sz} SPCX a $${f.px} ($${(f.sz * f.px).toFixed(2)}) · objetivo ${target.toFixed(3)} · antes ${r.h.size} · ${g.urgent ? "inmediato (desfase grande)" : `confirmado ${Math.round(g.waitedMin)} min`}`);
     return f;
   }
 

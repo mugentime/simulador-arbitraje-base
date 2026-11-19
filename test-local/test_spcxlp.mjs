@@ -1,6 +1,6 @@
 // Pruebas de las funciones puras de lp-spcx y del cliente de Hyperliquid. node test-local/test_spcxlp.mjs
 import assert from "node:assert/strict";
-import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund, widthChanged } from "../server/spcxlp.mjs";
+import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund, widthChanged, hedgeGate } from "../server/spcxlp.mjs";
 import { hedgeOrder, hlAccount } from "../server/hl.mjs";
 import { rangeTicks, rebalanceSwap, amountsFor } from "../server/revertloan.mjs";
 
@@ -100,4 +100,28 @@ assert.equal(widthChanged(undefined, undefined, 5), false);
 // al re-centrar a ±5 % con lo retirado (SPCX + USDG) el swap es pequeño y el valor se conserva
 const sw5 = rebalanceSwap(0.2762e18, 112.2e6, s, r5.lower, r5.upper, 100);
 assert.ok(Number(sw5.amountIn) / 1e6 < 45 && sw5.sellToken0 === false, "swap de re-centrado");
+// confirmación del reajuste del corto: umbral $7.6 (5 % del LP), 15 min, inmediato desde 2× ($15.2)
+{
+  const opt = { minDiffUsd: 7.6, confirmMin: 15, urgentX: 2 }, M = 60_000;
+  const sell = { sz: 0.08, isBuy: false, usd: 11.4 }, buy = { sz: 0.08, isBuy: true, usd: 11.5 }, none = { sz: 0 };
+  // primer cruce: no opera, abre el episodio
+  let g = hedgeGate(sell, null, 0, opt);
+  assert.equal(g.trade, false); assert.equal(g.started, true); assert.equal(g.dev.since, 0);
+  // sigue fuera a los 10 min: aún espera; a los 15: opera
+  g = hedgeGate(sell, g.dev, 10 * M, opt); assert.equal(g.trade, false); assert.ok(!g.started);
+  const keep = g.dev;
+  g = hedgeGate(sell, keep, 15 * M, opt); assert.equal(g.trade, true); assert.equal(g.dev, null); assert.equal(g.urgent, false);
+  // caso real del 17 nov (15:51 → 16:02 UTC): el desfase se deshizo a los 11 min → no se opera y se cuenta como evitado
+  g = hedgeGate(none, keep, 11 * M, opt); assert.equal(g.trade, false); assert.equal(g.dev, null); assert.equal(g.ended.since, 0);
+  // caso real del 18 nov (14:34 → 14:41): cambia de lado a los 7 min → el reloj empieza de nuevo y el primero cuenta como evitado
+  g = hedgeGate(buy, { since: 0, sign: -1, maxUsd: 11.4 }, 7 * M, opt);
+  assert.equal(g.trade, false); assert.equal(g.dev.since, 7 * M); assert.equal(g.dev.sign, 1); assert.equal(g.ended.sign, -1);
+  // desfase grande (apertura, re-centrado, salto fuerte): inmediato
+  g = hedgeGate({ sz: 0.23, isBuy: false, usd: 33.35 }, null, 0, opt); assert.equal(g.trade, true); assert.equal(g.urgent, true);
+  g = hedgeGate({ sz: 0.55, isBuy: false, usd: 76 }, null, 0, { ...opt, minDiffUsd: 7.5 }); assert.equal(g.trade, true);
+  // sin desfase y sin episodio: nada
+  g = hedgeGate(none, null, 0, opt); assert.equal(g.trade, false); assert.equal(g.ended, null);
+  // confirmMin 0 = comportamiento anterior
+  assert.equal(hedgeGate(sell, null, 0, { ...opt, confirmMin: 0 }).trade, true);
+}
 console.log("test_spcxlp: OK");
