@@ -54,6 +54,8 @@ assert.equal(aprOf(1, 150, 0), null);
 // fondeo
 assert.deepEqual(parseSpxFund("robinhood:110,hyperliquid:42@spcx-1117"), { legs: [{ dest: "robinhood", usd: 110 }, { dest: "hyperliquid", usd: 42 }], tag: "spcx-1117" });
 assert.equal(parseSpxFund("polygon:5@x"), null);
+// tramo pagado con el ETH de Base (margen del corto, 2026-11-20)
+assert.deepEqual(parseSpxFund("hyperliquid:20:eth@margen-1120"), { legs: [{ dest: "hyperliquid", usd: 20, src: "eth" }], tag: "margen-1120" });
 assert.equal(parseSpxFund(""), null);
 
 // cuenta de Hyperliquid unificada: el USDC spot total YA trae el PnL sin realizar (2026-11-18). Antes se le sumaba otra vez y el

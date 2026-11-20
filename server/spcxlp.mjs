@@ -469,11 +469,13 @@ export class SpcxLp {
 }
 
 // ---------------------------------------------------------------- fondeo (worker de Base)
-/** SPX_FUND="robinhood:110,hyperliquid:42@etiqueta" → [{dest, usd}], tag (pura, probada). */
+/** SPX_FUND="robinhood:110,hyperliquid:42@etiqueta" → [{dest, usd}], tag (pura, probada).
+ *  Un tramo "hyperliquid:20:eth" (Jose 2026-11-20: "usen fondos de donde haya", para el margen del corto) se paga con el ETH de
+ *  Base que sobra de la reserva de gas, en una sola tx de Relay; nunca toma USDC de Base (ese es del depósito diario). */
 export function parseSpxFund(v) {
   const m = /^\s*(.+?)\s*@\s*([\w.-]+)\s*$/.exec(v ?? "");
   if (!m) return null;
-  const legs = m[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const [dest, usd] = x.split(":"); return { dest: dest.trim().toLowerCase(), usd: Number(usd) }; }).filter((l) => ["robinhood", "hyperliquid"].includes(l.dest) && l.usd > 0);
+  const legs = m[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const [dest, usd, src] = x.split(":"); const l = { dest: dest.trim().toLowerCase(), usd: Number(usd) }; if (/^eth$/i.test((src ?? "").trim())) l.src = "eth"; return l; }).filter((l) => ["robinhood", "hyperliquid"].includes(l.dest) && l.usd > 0);
   return legs.length ? { legs, tag: m[2] } : null;
 }
 const DEST = { robinhood: { id: 4663, currency: SPX.USDG }, hyperliquid: { id: 1337, currency: "0x00000000000000000000000000000000" } };
@@ -483,7 +485,7 @@ export class SpcxFund {
   async init() { this.s = (await this.store.get("spcxfund")) ?? {}; }
   async save() { await this.store.set("spcxfund", this.s); }
   /** USDC de Base apartado para los tramos pendientes (el DCA y las recargas no lo usan). */
-  reserve() { const p = this.plan; if (!p) return 0n; const st = this.s?.[p.tag] ?? {}; const usd = p.legs.filter((l) => !st[l.dest]?.done).reduce((a, l) => a + l.usd, 0); return ethers.parseUnits(usd.toFixed(2), 6); }
+  reserve() { const p = this.plan; if (!p) return 0n; const st = this.s?.[p.tag] ?? {}; const usd = p.legs.filter((l) => !st[l.dest]?.done && l.src !== "eth").reduce((a, l) => a + l.usd, 0); return ethers.parseUnits(usd.toFixed(2), 6); }
   async onBlock() {
     const p = this.plan;
     if (!p || this.busy || Date.now() < this.nextAt || !this.x?.wallet || this.x.mode !== "live") return;
@@ -494,6 +496,7 @@ export class SpcxFund {
       for (const l of p.legs) {
         const L = (st[l.dest] ??= {});
         if (L.done || (L.retryAt && Date.now() < L.retryAt) || L.final) continue;
+        if (l.src === "eth") { await this.legFromEth(p.tag, l, L, me); await this.save(); return; }
         const usdc = BigInt(await this.provider.call({ to: BASE_USDC, data: I.encodeFunctionData("balanceOf", [me]) }));
         const amt = ethers.parseUnits(l.usd.toFixed(2), 6);
         if (usdc < amt) { if (Date.now() - (L.waitAt ?? 0) > 3600_000) { L.waitAt = Date.now(); await this.diag(`spcx fondeo ${p.tag}: ${l.dest} $${l.usd} esperando USDC en Base (hay ${ethers.formatUnits(usdc, 6)})`); } return; }
@@ -527,5 +530,41 @@ export class SpcxFund {
       L.n = (L.n ?? 0) + 1; L.retryAt = Date.now() + 10 * 60_000; if (L.n > 10) L.final = true;
       await this.diag(`spcx fondeo ${p.tag}: intento ${L.n} falló · ${msg}`);
     } finally { this.busy = false; await this.save().catch(() => {}); }
+  }
+  async relayQuote(body) {
+    const res = await fetch(`${process.env.RELAY_API || "https://api.relay.link"}/quote/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+    const q = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`Relay ${res.status}: ${(q?.message ?? "").slice(0, 160)}`);
+    return parseQuote(q);
+  }
+  /** Tramo pagado con el ETH de Base que sobra de la reserva de gas → destino con Relay (una sola tx con valor, hacia un contrato). */
+  async legFromEth(tag, l, L, me) {
+    const d = DEST[l.dest];
+    const reserve = ethers.parseEther(Math.max(0.003, Number(process.env.NLP2_FUND_GAS_RESERVE_ETH ?? 0.01) || 0.01).toFixed(6));
+    const avail = (await this.provider.getBalance(me)) - reserve;
+    const base = { user: me, recipient: me, originChainId: BASE_ID, destinationChainId: d.id, originCurrency: ethers.ZeroAddress, destinationCurrency: d.currency, tradeType: "EXACT_INPUT" };
+    const wait = async (why) => { if (Date.now() - (L.waitAt ?? 0) > 3600_000) { L.waitAt = Date.now(); await this.diag(`spcx fondeo ${tag}: ${l.dest} $${l.usd} con ETH de Base · ${why}`); } };
+    if (avail <= 0n) return wait("no hay ETH por encima de la reserva de gas");
+    const all = await this.relayQuote({ ...base, amount: avail.toString() });
+    if (!(all.inUsd > 0) || all.inUsd < l.usd * 1.02) return wait(`el ETH disponible vale $${Number(all.inUsd).toFixed(2)}: no alcanza`);
+    const amount = avail * BigInt(Math.round(l.usd * 1.01 / all.inUsd * 1e6)) / 1_000_000n;
+    const qp = await this.relayQuote({ ...base, amount: amount.toString() });
+    if (qp.txs.length !== 1 || qp.txs[0].chainId !== BASE_ID) throw new Error(`cotización de Relay inesperada (${qp.txs.length} tx)`);
+    const t = qp.txs[0];
+    if (t.value !== amount) throw new Error("la cotización de Relay no manda exactamente el monto pedido; no se firma");
+    if (["0xa9059cbb", "0x23b872dd"].includes(String(t.data).slice(0, 10).toLowerCase())) throw new Error("la cotización de Relay pide un envío directo; no se firma");
+    if ((await this.provider.getCode(t.to)) === "0x") throw new Error("el destino de la cotización no es un contrato; no se firma");
+    if (!Number.isFinite(qp.inUsd) || !Number.isFinite(qp.outUsd) || !(qp.inUsd > 0)) throw new Error("cotización de Relay sin valores en dólares");
+    if (qp.inUsd > l.usd * 1.1) throw new Error(`la cotización saldría en $${qp.inUsd.toFixed(2)}, más de lo pedido ($${l.usd})`);
+    const feePct = (1 - qp.outUsd / qp.inUsd) * 100;
+    if (feePct > Number(process.env.SPX_FUND_MAX_FEE_PCT ?? 5)) throw new Error(`comisión ${feePct.toFixed(1)} %`);
+    const tx = { from: me, to: t.to, data: t.data, value: t.value };
+    await this.provider.call(tx);
+    const gasLimit = (await this.provider.estimateGas(tx)) * 13n / 10n;
+    const sent = await this.x.withSender((w) => w.sendTransaction({ to: t.to, data: t.data, value: t.value, gasLimit }));
+    Object.assign(L, { done: true, at: new Date().toISOString(), outUsd: qp.outUsd, feePct, txs: [sent.hash], eth: ethers.formatEther(amount) }); // enviado = hecho: nunca se manda dos veces
+    await this.save();
+    const rc = await this.provider.waitForTransaction(sent.hash, 1, 120_000).catch(() => null);
+    await this.diag(`spcx fondeo ${tag}: ${Number(ethers.formatEther(amount)).toFixed(6)} ETH de Base ($${qp.inUsd.toFixed(2)}; queda la reserva de gas) → ~$${qp.outUsd.toFixed(2)} en ${l.dest} vía Relay (comisión ${feePct.toFixed(2)} %) · tx ${sent.hash}${!rc ? " · sin recibo todavía" : rc.status !== 1 ? " · REVERTIDA: no llegó, hay que repetirlo con otra etiqueta" : ""}`);
   }
 }
