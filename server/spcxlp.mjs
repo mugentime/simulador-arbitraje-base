@@ -106,6 +106,7 @@ export class SpcxLp {
       minOrderUsd: Number(process.env.SPX_MIN_ORDER_USD ?? 10.5),
       hedgeConfirmMin: Number(process.env.SPX_HEDGE_CONFIRM_MIN ?? 15),
       hedgeUrgentX: Number(process.env.SPX_HEDGE_URGENT_X ?? 3),
+      contrib: /^\s*([\d.]+)\s*@\s*([\w.-]+)\s*$/.exec(process.env.SPX_CONTRIB ?? "")?.slice(1) ?? null, // "3.22@etiqueta": xAERO repuesto a la wallet (aporte, no ganancia)
       reset: process.env.SPX_RESET || null, // etiqueta: reinicia la cuenta (inicio, cobros y contadores) una vez, con la lectura del momento
       outMin: Number(process.env.SPX_OUT_MIN ?? 60),
       claimEveryH: Number(process.env.SPX_CLAIM_EVERY_H ?? 24),
@@ -218,9 +219,20 @@ export class SpcxLp {
       if (this.cfg.reset && this.s.resetTag !== this.cfg.reset && r.lp && r.inRange && Math.abs(r.h.size) > 0 && !this.s.recenterPending && !widthChanged(r.lower, r.upper, this.cfg.rangePct)) {
         const old = this.s.entry;
         this.s.entry = { usd: r.capital, lp: r.lp.usd, hl: r.hlTotal, px: r.px, at: Date.now() };
-        Object.assign(this.s, { resetTag: this.cfg.reset, rewardsUsd: 0, claims: [], recenters: 0, hedges: 0, hedgeSkips: 0, hedgeSlipUsd: 0, reportAt: 0 });
+        Object.assign(this.s, { resetTag: this.cfg.reset, rewardsUsd: 0, claims: [], recenters: 0, hedges: 0, hedgeSkips: 0, hedgeSlipUsd: 0, contribUsd: 0, reportAt: 0 });
         await this.note(`cuenta reiniciada (${this.cfg.reset}): inicio $${r.capital.toFixed(2)} = LP $${r.lp.usd.toFixed(2)} + Hyperliquid $${r.hlTotal.toFixed(2)} + xAERO en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} · rango [${r.lower}, ${r.upper}] (±${this.cfg.rangePct} %) · SPCX $${r.px.toFixed(2)} · corto ${r.h.size}${old ? ` · cuenta anterior: inicio $${old.usd.toFixed(2)}, terminó en $${r.capital.toFixed(2)}` : ""}`);
         await this.save();
+      }
+      // reposición de xAERO (Jose 2026-11-20: el depósito de la espejo se llevó $3.22 de xAERO; "necesitas reponer ese dinero a spacex"):
+      // cuando llega a la wallet se cuenta como aporte (sube el inicio), no como ganancia ni como emisión cobrada. Una vez por etiqueta.
+      if (this.cfg.contrib && this.s.entry && this.s.contribTag !== this.cfg.contrib[1]) {
+        const usd = Number(this.cfg.contrib[0]), w = (this.s.contribWatch?.tag === this.cfg.contrib[1] ? this.s.contribWatch : (this.s.contribWatch = { tag: this.cfg.contrib[1], base: r.xaero, at: Date.now() }));
+        const gotUsd = (r.xaero - w.base) * r.xaeroPx;
+        if (usd > 0 && gotUsd >= usd * 0.7 && gotUsd <= usd * 1.3) {
+          this.s.contribUsd = (this.s.contribUsd ?? 0) + gotUsd; this.s.contribTag = this.cfg.contrib[1]; this.s.contribWatch = null; this.s.reportAt = 0;
+          await this.note(`xAERO repuesto (${this.cfg.contrib[1]}): llegaron ${(r.xaero - w.base).toFixed(4)} xAERO ($${gotUsd.toFixed(2)}) a la wallet · cuenta como aporte: el inicio pasa de $${this.s.entry.usd.toFixed(2)} a $${(this.s.entry.usd + this.s.contribUsd).toFixed(2)} · xAERO en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} (reinvierte desde $${this.cfg.compoundUsd})`);
+          await this.save();
+        }
       }
       await this.hedge(r);
       await this.report(r);
@@ -475,8 +487,9 @@ export class SpcxLp {
     const e = this.s.entry;
     const net = (r.lp?.spcx ?? 0) + r.h.size;
     const rew = this.s.rewardsUsd ?? 0;
-    const res = e ? r.capital - e.usd : null;
-    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (sin vender en wallet $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${emissionsApr(rew, e?.lp ?? 0, e?.at ?? 0, (this.s.claims ?? []).at(-1)?.t ?? 0)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / e.usd * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
+    const contrib = this.s.contribUsd ?? 0;
+    const res = e ? r.capital - e.usd - contrib : null;
+    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (sin vender en wallet $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${emissionsApr(rew, e?.lp ?? 0, e?.at ?? 0, (this.s.claims ?? []).at(-1)?.t ?? 0)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}${contrib > 0 ? ` + repuesto $${contrib.toFixed(2)}` : ""}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / (e.usd + contrib) * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
   }
 }
 
@@ -487,10 +500,10 @@ export class SpcxLp {
 export function parseSpxFund(v) {
   const m = /^\s*(.+?)\s*@\s*([\w.-]+)\s*$/.exec(v ?? "");
   if (!m) return null;
-  const legs = m[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const [dest, usd, src] = x.split(":"); const l = { dest: dest.trim().toLowerCase(), usd: Number(usd) }; if (/^eth$/i.test((src ?? "").trim())) l.src = "eth"; return l; }).filter((l) => ["robinhood", "hyperliquid"].includes(l.dest) && l.usd > 0);
+  const legs = m[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => { const [dest, usd, src] = x.split(":"); const l = { dest: dest.trim().toLowerCase(), usd: Number(usd) }; if (/^eth$/i.test((src ?? "").trim())) l.src = "eth"; return l; }).filter((l) => ["robinhood", "hyperliquid", "xaero"].includes(l.dest) && l.usd > 0);
   return legs.length ? { legs, tag: m[2] } : null;
 }
-const DEST = { robinhood: { id: 4663, currency: SPX.USDG }, hyperliquid: { id: 1337, currency: "0x00000000000000000000000000000000" } };
+const DEST = { robinhood: { id: 4663, currency: SPX.USDG }, xaero: { id: 4663, currency: SPX.XAERO }, hyperliquid: { id: 1337, currency: "0x00000000000000000000000000000000" } };
 export class SpcxFund {
   constructor({ executor, provider, store, diag }) { this.x = executor; this.provider = provider; this.store = store; this.diag = diag; this.busy = false; this.nextAt = 0; }
   get plan() { return parseSpxFund(process.env.SPX_FUND); }
