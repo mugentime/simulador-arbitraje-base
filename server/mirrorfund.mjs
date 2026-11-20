@@ -74,7 +74,8 @@ export class MirrorFund {
       maxFeePct: Number(process.env.NLP2_FUND_MAX_FEE_PCT ?? 3), // comisión + deslizamiento máximos por envío
       transitMin: Number(process.env.NLP2_FUND_TRANSIT_MIN ?? 20),
       vault: process.env.NLP2_FUND_VAULT ?? "NVDAc-USDC",
-      skip: new Set(String(process.env.NLP2_FUND_SKIP ?? "WETH,CBBTC,WBTC").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean)),
+      // XAERO y SPCX de Robinhood son de lp-spcx (emisiones por reinvertir y restos del LP): el 2026-11-20 el depósito diario se llevó $3.22 de xAERO
+      skip: new Set([...String(process.env.NLP2_FUND_SKIP ?? "WETH,CBBTC,WBTC").split(","), "XAERO", "SPCX"].map((x) => x.trim().toUpperCase()).filter(Boolean)),
       // reserva de gas en ETH por cadena: lo que sobre se puede cambiar a USDC para el depósito ("off" = no tocar el nativo)
       nativeReserve: /^(off|no)$/i.test(String(process.env.NLP2_FUND_GAS_RESERVE_ETH ?? "")) ? null : { ETH: Math.max(0.003, Number(process.env.NLP2_FUND_GAS_RESERVE_ETH ?? 0.01) || 0.01) },
     };

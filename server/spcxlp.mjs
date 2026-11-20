@@ -105,7 +105,8 @@ export class SpcxLp {
       rebalPct: Number(process.env.SPX_REBAL_PCT ?? 5),
       minOrderUsd: Number(process.env.SPX_MIN_ORDER_USD ?? 10.5),
       hedgeConfirmMin: Number(process.env.SPX_HEDGE_CONFIRM_MIN ?? 15),
-      hedgeUrgentX: Number(process.env.SPX_HEDGE_URGENT_X ?? 2),
+      hedgeUrgentX: Number(process.env.SPX_HEDGE_URGENT_X ?? 3),
+      reset: process.env.SPX_RESET || null, // etiqueta: reinicia la cuenta (inicio, cobros y contadores) una vez, con la lectura del momento
       outMin: Number(process.env.SPX_OUT_MIN ?? 60),
       claimEveryH: Number(process.env.SPX_CLAIM_EVERY_H ?? 24),
       compoundUsd: Number(process.env.SPX_COMPOUND_USD ?? 10),
@@ -213,6 +214,14 @@ export class SpcxLp {
       else if (recenterDue(r.inRange, this.s.outSince, Date.now(), this.cfg.outMin)) { await this.recenter(r); r = await this.read(); }
       // cobro de emisiones y reinversión
       else if (Date.now() - (this.s.claimAt ?? this.s.openedAt ?? Date.now()) >= this.cfg.claimEveryH * 3600_000) { await this.claim(r); r = await this.read(); }
+      // reinicio de la cuenta (Jose 2026-11-20: "reinicia la cuenta de la posición a partir de este nuevo rango"): una vez por etiqueta
+      if (this.cfg.reset && this.s.resetTag !== this.cfg.reset && r.lp && r.inRange && Math.abs(r.h.size) > 0 && !this.s.recenterPending && !widthChanged(r.lower, r.upper, this.cfg.rangePct)) {
+        const old = this.s.entry;
+        this.s.entry = { usd: r.capital, lp: r.lp.usd, hl: r.hlTotal, px: r.px, at: Date.now() };
+        Object.assign(this.s, { resetTag: this.cfg.reset, rewardsUsd: 0, claims: [], recenters: 0, hedges: 0, hedgeSkips: 0, hedgeSlipUsd: 0, reportAt: 0 });
+        await this.note(`cuenta reiniciada (${this.cfg.reset}): inicio $${r.capital.toFixed(2)} = LP $${r.lp.usd.toFixed(2)} + Hyperliquid $${r.hlTotal.toFixed(2)} + xAERO en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} · rango [${r.lower}, ${r.upper}] (±${this.cfg.rangePct} %) · SPCX $${r.px.toFixed(2)} · corto ${r.h.size}${old ? ` · cuenta anterior: inicio $${old.usd.toFixed(2)}, terminó en $${r.capital.toFixed(2)}` : ""}`);
+        await this.save();
+      }
       await this.hedge(r);
       await this.report(r);
     } finally { this.busy = false; await this.save().catch(() => {}); }
@@ -236,7 +245,10 @@ export class SpcxLp {
     }
     const f = await this.hl.ioc(SPX.COIN, o.isBuy, o.sz, { reduceOnly: o.reduceOnly });
     this.s.hedges++;
-    await this.note(`corto ${o.isBuy ? "−" : "+"}${f.sz} SPCX a $${f.px} ($${(f.sz * f.px).toFixed(2)}) · objetivo ${target.toFixed(3)} · antes ${r.h.size} · ${g.urgent ? "inmediato (desfase grande)" : `confirmado ${Math.round(g.waitedMin)} min`}`);
+    // deslizamiento contra el precio del perpetuo leído justo antes (lo único del reajuste que es costo puro; la comisión de Hyperliquid va aparte)
+    const slip = Number.isFinite(Number(f.px)) && r.m.px > 0 ? Math.max(0, (o.isBuy ? Number(f.px) - r.m.px : r.m.px - Number(f.px)) * Number(f.sz)) : 0;
+    this.s.hedgeSlipUsd = (this.s.hedgeSlipUsd ?? 0) + slip;
+    await this.note(`corto ${o.isBuy ? "−" : "+"}${f.sz} SPCX a $${f.px} ($${(f.sz * f.px).toFixed(2)}) · objetivo ${target.toFixed(3)} · antes ${r.h.size} · ${g.urgent ? "inmediato (desfase grande)" : `confirmado ${Math.round(g.waitedMin)} min`} · perp $${r.m.px.toFixed(2)} · deslizamiento $${slip.toFixed(3)} (total $${this.s.hedgeSlipUsd.toFixed(2)})`);
     return f;
   }
 
