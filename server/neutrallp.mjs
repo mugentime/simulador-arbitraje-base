@@ -428,6 +428,9 @@ export class NeutralLp {
     trackCapital(this.s);
     if (r.feesUsd != null) Object.assign(this.s.last, feeTotals(this.s, r.feesUsd, r.lpValue), { compounds: this.s.compounds ?? 0, deposits: this.s.deposits ?? 0, depositedUsd: this.s.depositedUsd ?? 0, avgCap: avgCapital(this.s) }); // por cobrar + cobradas, desde la apertura
     this.s.minRevert = Math.min(this.s.minRevert ?? Infinity, r.h.revert); this.s.minComet = Math.min(this.s.minComet ?? Infinity, r.h.comet);
+    // ganancia ya dentro del capital que falta re-apalancar (se calcula antes de imprimir la línea, para que el contador salga en ella)
+    const gain = cfg.compoundGain && r.feesUsd != null ? unleveredGain(this.s.last, this.s.base, this.s.gainMark, r.feesUsd) : 0;
+    if (cfg.compoundGain) this.s.last.gainPending = gain;
     if (Date.now() - this.lastLine > 30 * 60_000) { this.lastLine = Date.now(); console.log(`${new Date().toISOString()} ${this.line()}`); }
 
     // 1) salud: traspasos entre los dos lados
@@ -448,8 +451,6 @@ export class NeutralLp {
     const due = !r.inRange && recenterDue(false, this.s.outSince, Date.now(), cfg.outMin);
     if (due && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) { await this.recenter(r); return; }
     // 3) ganancia realizada: comisiones por cobrar ≥ umbral → cobra y re-apalanca
-    const gain = cfg.compoundGain && r.feesUsd != null ? unleveredGain(this.s.last, this.s.base, this.s.gainMark, r.feesUsd) : 0;
-    if (cfg.compoundGain) this.s.last.gainPending = gain;
     if (cfg.compoundUsd > 0 && r.inRange && r.feesUsd != null && r.feesUsd + gain >= cfg.compoundUsd) await this.compound(r, { gainUsd: gain });
   }
 

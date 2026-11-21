@@ -48,7 +48,10 @@ function bot({ gainOn, fees, equity, mark, cColl = 222, cDebtUsd = 166, after })
 // 3) encendido, bajo el umbral: lo cuenta y lo muestra, no manda nada
 {
   const t = bot({ gainOn: true, fees: 0.2, equity: 100.78 + 2.8 });
-  await t.b.monitor(); assert.equal(t.sent.length, 0); near(t.b.s.last.gainPending, 2.6, 1e-9); assert.match(t.b.line(), /por re-apalancar \$2\.80 de \$10/);
+  const out = []; const lg = console.log; console.log = (m) => out.push(String(m));
+  try { await t.b.monitor(); } finally { console.log = lg; }
+  assert.equal(t.sent.length, 0); near(t.b.s.last.gainPending, 2.6, 1e-9); assert.match(t.b.line(), /por re-apalancar \$2\.80 de \$10/);
+  assert.ok(out.some((m) => /por re-apalancar \$2\.80 de \$10/.test(m)), "la línea que se imprime trae el contador");
 }
 // 4) encendido, comisiones + ganancia ≥ $10: re-apalanca todo; el USDC mínimo exigido es solo el de las comisiones; marca en cero
 {
