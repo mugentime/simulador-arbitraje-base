@@ -7,6 +7,9 @@
 //     · cada SPX_CLAIM_EVERY_H horas cobra el xAERO (withdraw/deposit del gauge) y, si lo acumulado llega a SPX_COMPOUND_USD,
 //       lo vende a USDG y lo reinvierte en el mismo LP (el corto sube en la siguiente vuelta);
 //     · margen: uso > SPX_MARGIN_WARN → pasa USDC del dex principal al xyz; precio a < SPX_LIQ_CLOSE_PCT de la liquidación → cierra todo.
+//   SPX_ADD_LOOSE=<etiqueta>: una vez por etiqueta, mete al LP el SPCX suelto de la wallet (lo que un re-centrado dejó fuera):
+//     reparte con un swap en el mismo pool, saca la NFT del gauge (cobra el xAERO), increaseLiquidity y vuelve al gauge.
+//     Cuenta como aporte (sube el inicio), no como ganancia. Tope SPX_ADD_LOOSE_MAX_USD (25).
 //   SPX_LIVE=1 envía; si no, modo lectura (calcula y reporta sin enviar nada). SPX_CLOSE=<etiqueta> cierra. SPX=0 apaga.
 //   Cada transacción se simula con eth_call antes de enviarse.
 // Fondeo (clase SpcxFund, corre en el worker de Base): SPX_FUND="robinhood:110,hyperliquid:42@<etiqueta>" manda USDC de Base con
@@ -107,6 +110,8 @@ export class SpcxLp {
       hedgeConfirmMin: Number(process.env.SPX_HEDGE_CONFIRM_MIN ?? 15),
       hedgeUrgentX: Number(process.env.SPX_HEDGE_URGENT_X ?? 3),
       contrib: /^\s*([\d.]+)\s*@\s*([\w.-]+)\s*$/.exec(process.env.SPX_CONTRIB ?? "")?.slice(1) ?? null, // "3.22@etiqueta": xAERO repuesto a la wallet (aporte, no ganancia)
+      addLoose: process.env.SPX_ADD_LOOSE || null, // etiqueta: mete al LP el SPCX suelto de la wallet, una vez
+      addLooseMaxUsd: Number(process.env.SPX_ADD_LOOSE_MAX_USD ?? 25),
       reset: process.env.SPX_RESET || null, // etiqueta: reinicia la cuenta (inicio, cobros y contadores) una vez, con la lectura del momento
       outMin: Number(process.env.SPX_OUT_MIN ?? 60),
       claimEveryH: Number(process.env.SPX_CLAIM_EVERY_H ?? 24),
@@ -219,7 +224,7 @@ export class SpcxLp {
       if (this.cfg.reset && this.s.resetTag !== this.cfg.reset && r.lp && r.inRange && Math.abs(r.h.size) > 0 && !this.s.recenterPending && !widthChanged(r.lower, r.upper, this.cfg.rangePct)) {
         const old = this.s.entry;
         this.s.entry = { usd: r.capital, lp: r.lp.usd, hl: r.hlTotal, px: r.px, at: Date.now() };
-        Object.assign(this.s, { resetTag: this.cfg.reset, rewardsUsd: 0, claims: [], recenters: 0, hedges: 0, hedgeSkips: 0, hedgeSlipUsd: 0, contribUsd: 0, reportAt: 0 });
+        Object.assign(this.s, { resetTag: this.cfg.reset, rewardsUsd: 0, claims: [], recenters: 0, hedges: 0, hedgeSkips: 0, hedgeSlipUsd: 0, contribUsd: 0, addedUsd: 0, reportAt: 0 });
         await this.note(`cuenta reiniciada (${this.cfg.reset}): inicio $${r.capital.toFixed(2)} = LP $${r.lp.usd.toFixed(2)} + Hyperliquid $${r.hlTotal.toFixed(2)} + xAERO en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} · rango [${r.lower}, ${r.upper}] (±${this.cfg.rangePct} %) · SPCX $${r.px.toFixed(2)} · corto ${r.h.size}${old ? ` · cuenta anterior: inicio $${old.usd.toFixed(2)}, terminó en $${r.capital.toFixed(2)}` : ""}`);
         await this.save();
       }
@@ -233,6 +238,10 @@ export class SpcxLp {
           await this.note(`xAERO repuesto (${this.cfg.contrib[1]}): llegaron ${(r.xaero - w.base).toFixed(4)} xAERO ($${gotUsd.toFixed(2)}) a la wallet · cuenta como aporte: el inicio pasa de $${this.s.entry.usd.toFixed(2)} a $${(this.s.entry.usd + this.s.contribUsd).toFixed(2)} · xAERO en wallet $${(r.xaero * r.xaeroPx).toFixed(2)} (reinvierte desde $${this.cfg.compoundUsd})`);
           await this.save();
         }
+      }
+      // SPCX suelto de la wallet → al LP (Jose 2026-11-23: "sí, mételos al lp"). Una vez por etiqueta, con la posición en rango y en el gauge.
+      if (this.cfg.live && this.cfg.addLoose && this.s.looseTag !== this.cfg.addLoose && this.s.entry && r.lp && r.inRange && r.staked && !this.s.recenterPending) {
+        if (await this.addLoose(this.cfg.addLoose, r)) r = await this.read();
       }
       await this.hedge(r);
       await this.report(r);
@@ -411,6 +420,48 @@ export class SpcxLp {
     await this.note(`cobro #${id}: ${n(got, 18).toFixed(4)} xAERO ($${usd.toFixed(2)})${added ? ` · reinvertidos $${added.toFixed(2)} en el LP` : ` · acumulado $${walletUsd.toFixed(2)} (reinvierte desde $${this.cfg.compoundUsd})`}`);
   }
 
+  /** Mete al LP actual el SPCX suelto de la wallet (una vez por etiqueta). El USDG que ya había en la wallet no se toca.
+   *  Orden: swap (no necesita la NFT) → fuera del gauge (cobra el xAERO: es un punto de cobro y reinicia el reloj de 24 h) →
+   *  increaseLiquidity → gauge. Si un paso falla, la siguiente vuelta devuelve la NFT al gauge y esto se reintenta a los 10 min
+   *  (hasta 3 veces) con lo que ya se haya cambiado. Lo que entra al LP se cuenta como aporte: no es ganancia. */
+  async addLoose(tag, r) {
+    const id = this.s.tokenId, pos = (v) => (v > 0n ? v : 0n);
+    let pd = this.s.loosePending?.tag === tag ? this.s.loosePending : null;
+    if (pd && Date.now() - (pd.tryAt ?? 0) < 10 * 60_000) return false;
+    const x0 = await this.bal(SPX.SPCX), usd0 = n(x0, 18) * r.px;
+    if (!pd) {
+      if (usd0 < 1) { this.s.looseTag = tag; await this.note(`SPCX suelto (${tag}): solo hay $${usd0.toFixed(2)} de SPCX en la wallet; nada que meter`); return false; }
+      if (usd0 > this.cfg.addLooseMaxUsd) { this.s.looseTag = tag; await this.note(`SPCX suelto (${tag}): hay $${usd0.toFixed(2)} de SPCX en la wallet, más del tope de $${this.cfg.addLooseMaxUsd}; no se mete (SPX_ADD_LOOSE_MAX_USD)`); return false; }
+      pd = this.s.loosePending = { tag, baseU: (await this.bal(SPX.USDG)).toString(), spcx: n(x0, 18), usd: usd0, tries: 0, at: Date.now() };
+    }
+    if (pd.tries >= 3) {
+      this.s.looseTag = tag; this.s.loosePending = null;
+      await this.note(`SPCX suelto (${tag}): no se pudo meter al LP tras 3 intentos; el SPCX y el USDG del intento quedan en la wallet`);
+      return false;
+    }
+    pd.tries++; pd.tryAt = Date.now(); await this.save();
+    const baseU = BigInt(pd.baseU);
+    const s0 = await this.c(SPX.POOL).slot0();
+    await this.splitAndSwap(x0, pos((await this.bal(SPX.USDG)) - baseU), s0[0], r.lower, r.upper, "SPCX suelto");
+    const a0 = await this.bal(SPX.SPCX), a1 = pos((await this.bal(SPX.USDG)) - baseU);
+    await this.approve(SPX.SPCX, SPX.NPM, a0, "SPCX suelto"); await this.approve(SPX.USDG, SPX.NPM, a1, "SPCX suelto");
+    const got = await this.unstake(id, "SPCX suelto");
+    const rewUsd = this.recordReward(got, r.xaeroPx);
+    const L1 = (await this.c(SPX.NPM).positions(id)).liquidity;
+    await this.send("increaseLiquidity SPCX suelto", { to: SPX.NPM, data: I.encodeFunctionData("increaseLiquidity", [{ tokenId: id, amount0Desired: a0, amount1Desired: a1, amount0Min: 0n, amount1Min: 0n, deadline: this.dl() }]) });
+    const L2 = (await this.c(SPX.NPM).positions(id)).liquidity, s1 = await this.c(SPX.POOL).slot0();
+    const before = lpView(L1, s1[0], r.lower, r.upper).usd, after = lpView(L2, s1[0], r.lower, r.upper).usd, added = Math.max(0, after - before);
+    const start0 = this.s.entry.usd + (this.s.contribUsd ?? 0) + (this.s.addedUsd ?? 0);
+    this.s.addedUsd = (this.s.addedUsd ?? 0) + added; this.s.looseTag = tag; this.s.loosePending = null; this.s.reportAt = 0;
+    await this.save();
+    await this.stake(id, "SPCX suelto");
+    this.s.claimAt = Date.now();
+    const left0 = n(await this.bal(SPX.SPCX), 18), left1 = n(pos((await this.bal(SPX.USDG)) - baseU), 6);
+    if (rewUsd > 0) await this.note(`cobro #${id}: ${n(got, 18).toFixed(4)} xAERO ($${rewUsd.toFixed(2)}) · acumulado $${(n(await this.bal(SPX.XAERO), 18) * r.xaeroPx).toFixed(2)} (reinvierte desde $${this.cfg.compoundUsd})`);
+    await this.note(`SPCX suelto al LP (${tag}): ${pd.spcx.toFixed(4)} SPCX ($${pd.usd.toFixed(2)}) de la wallet → LP +$${added.toFixed(2)} (de $${before.toFixed(2)} a $${after.toFixed(2)}) · sobró en la wallet ${left0.toFixed(6)} SPCX + ${left1.toFixed(2)} USDG · cuenta como aporte: el inicio pasa de $${start0.toFixed(2)} a $${(start0 + added).toFixed(2)}`);
+    return true;
+  }
+
   /** Retira toda la liquidez y cobra (NFT fuera del gauge). Devuelve [spcx, usdg] crudos recibidos. */
   async drain(id, step) {
     const got = await this.unstake(id, step);
@@ -488,8 +539,9 @@ export class SpcxLp {
     const net = (r.lp?.spcx ?? 0) + r.h.size;
     const rew = this.s.rewardsUsd ?? 0;
     const contrib = this.s.contribUsd ?? 0;
-    const res = e ? r.capital - e.usd - contrib : null;
-    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (sin vender en wallet $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${emissionsApr(rew, e?.lp ?? 0, e?.at ?? 0, (this.s.claims ?? []).at(-1)?.t ?? 0)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}${contrib > 0 ? ` + repuesto $${contrib.toFixed(2)}` : ""}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / (e.usd + contrib) * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
+    const added = this.s.addedUsd ?? 0; // SPCX suelto metido al LP: aporte, no ganancia
+    const res = e ? r.capital - e.usd - contrib - added : null;
+    await this.note(`#${this.s.tokenId} · LP $${r.lp.usd.toFixed(2)} ${r.inRange ? "en rango" : `FUERA de rango desde ${this.s.outSince ? Math.round((Date.now() - this.s.outSince) / 60000) + " min" : "?"}`} [${r.lower}, ${r.upper}] · SPCX en LP ${r.lp.spcx.toFixed(4)} · corto ${r.h.size} · neto ${net.toFixed(4)} SPCX ($${(net * r.px).toFixed(2)}) · Hyperliquid $${r.hlTotal.toFixed(2)} uso ${(r.h.usage * 100).toFixed(0)} %${r.h.liqPx ? ` liq $${r.h.liqPx.toFixed(2)}` : ""} · funding ${(r.m.funding * 8760 * 100).toFixed(1)} %/año (cobrado $${r.h.funding.toFixed(3)}) · xAERO cobrado $${rew.toFixed(2)} (sin vender en wallet $${(r.xaero * r.xaeroPx).toFixed(2)}) = ${emissionsApr(rew, e?.lp ?? 0, e?.at ?? 0, (this.s.claims ?? []).at(-1)?.t ?? 0)?.toFixed(0) ?? "—"} % anual sobre el LP · capital $${r.capital.toFixed(2)}${e ? ` (inicio $${e.usd.toFixed(2)}${contrib > 0 ? ` + repuesto $${contrib.toFixed(2)}` : ""}${added > 0 ? ` + SPCX suelto $${added.toFixed(2)}` : ""}, ${res >= 0 ? "+" : ""}$${res.toFixed(2)} = ${(res / (e.usd + contrib + added) * 100).toFixed(2)} %)` : ""} · SPCX $${r.px.toFixed(2)} perp $${r.m.px.toFixed(2)} · re-centrados ${this.s.recenters} reajustes ${this.s.hedges}`);
   }
 }
 

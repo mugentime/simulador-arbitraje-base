@@ -128,3 +128,48 @@ assert.ok(Number(sw5.amountIn) / 1e6 < 45 && sw5.sellToken0 === false, "swap de 
   assert.equal(hedgeGate(sell, null, 0, { ...opt, confirmMin: 0 }).trade, true);
 }
 console.log("test_spcxlp: OK");
+
+// ---- SPCX suelto → LP (addLoose) con una cadena simulada: mete lo suelto, no toca el USDG previo, cuenta como aporte y es de una sola vez
+{
+  const { SpcxLp, SPX } = await import("../server/spcxlp.mjs");
+  const sq = 930025359568875203494278n, pxNow = spcxPrice(sq), rg = rangeTicks(-227064, 8, 50);
+  const u = amountsFor(1e18, Number(sq) / 2 ** 96, rg.lower, rg.upper);
+  const chain = { spcx: 52442200000000000n, usdg: 290423n, xaero: 0n, L: 10n ** 18n, staked: true, steps: [] };
+  const bot = new SpcxLp({ executor: null, provider: null, store: { get: async () => null, set: async () => {} }, diag: async (m) => chain.steps.push(m) });
+  bot.s = { tokenId: "1", entry: { usd: 201.15 }, contribUsd: 3.16, rewardsUsd: 0, claims: [], actions: 0 };
+  bot.cfg.live = true;
+  bot.save = async () => {};
+  bot.bal = async (t) => (t === SPX.SPCX ? chain.spcx : t === SPX.USDG ? chain.usdg : chain.xaero);
+  bot.c = () => ({ slot0: async () => [sq, -227064n], positions: async () => ({ liquidity: chain.L }) });
+  bot.approve = async () => {};
+  bot.splitAndSwap = async (x0, x1, sqrtP, lo, up) => {
+    const sw = rebalanceSwap(Number(x0), Number(x1), Number(sqrtP) / 2 ** 96, lo, up, 100);
+    assert.equal(sw.sellToken0, true, "vende parte del SPCX");
+    chain.spcx -= sw.amountIn; chain.usdg += BigInt(Math.floor(Number(sw.amountIn) * (Number(sqrtP) / 2 ** 96) ** 2));
+  };
+  bot.unstake = async () => { assert.ok(chain.staked); chain.staked = false; chain.xaero += 10n ** 18n; return 10n ** 18n; };
+  bot.stake = async () => { assert.ok(!chain.staked); chain.staked = true; };
+  bot.send = async (step) => {
+    assert.ok(!chain.staked, "increaseLiquidity con la NFT fuera del gauge");
+    const add = Math.min(Number(chain.spcx) / u.a0, (Number(chain.usdg) - 290423) / u.a1) * 1e18;
+    chain.L += BigInt(Math.floor(add)); chain.spcx -= BigInt(Math.floor(add / 1e18 * u.a0)); chain.usdg -= BigInt(Math.floor(add / 1e18 * u.a1));
+  };
+  const rr = { px: pxNow, xaeroPx: 0.43, lower: rg.lower, upper: rg.upper };
+  const loose = 0.0524422 * pxNow;
+  assert.equal(await bot.addLoose("t1", rr), true);
+  assert.ok(chain.staked, "vuelve al gauge");
+  near(bot.s.addedUsd, loose, loose * 0.02, "lo que entra al LP ≈ lo suelto");
+  assert.ok(chain.usdg >= 290423n && chain.usdg < 290423n + 100000n, "el USDG previo de la wallet no se toca");
+  assert.ok(Number(chain.spcx) / 1e18 * pxNow < 0.1, "casi no sobra SPCX");
+  assert.equal(bot.s.looseTag, "t1"); assert.equal(bot.s.loosePending, null);
+  near(bot.s.rewardsUsd, 0.43, 1e-9, "el xAERO cobrado al salir del gauge se registra");
+  assert.ok(chain.steps.some((m) => m.includes("cobro #1:")) && chain.steps.some((m) => m.includes("cuenta como aporte")));
+  // tope: no mete más de SPX_ADD_LOOSE_MAX_USD
+  chain.spcx = 10n ** 18n; const Lb = chain.L;
+  assert.equal(await bot.addLoose("t2", rr), false); assert.equal(chain.L, Lb); assert.equal(bot.s.looseTag, "t2");
+  // fallo a media: queda pendiente, espera 10 min y se rinde al tercer intento sin perder la cuenta
+  chain.spcx = 52442200000000000n; bot.send = async () => { throw new Error("revertida"); };
+  await assert.rejects(bot.addLoose("t3", rr)); assert.equal(bot.s.loosePending.tries, 1);
+  assert.equal(await bot.addLoose("t3", rr), false, "espera 10 min"); assert.equal(bot.s.loosePending.tries, 1);
+}
+console.log("addLoose OK");
