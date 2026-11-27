@@ -1,7 +1,8 @@
 // Pruebas de las funciones puras de lp-spcx y del cliente de Hyperliquid. node test-local/test_spcxlp.mjs
 import assert from "node:assert/strict";
 import { spcxPrice, xaeroPrice, lpView, liqDistance, aprOf, emissionsApr, parseSpxFund, widthChanged, hedgeGate } from "../server/spcxlp.mjs";
-import { hedgeOrder, hlAccount } from "../server/hl.mjs";
+import { hedgeOrder, hlAccount, hlWithdrawPlan, Hl } from "../server/hl.mjs";
+import { SpcxLp } from "../server/spcxlp.mjs";
 import { rangeTicks, rebalanceSwap, amountsFor } from "../server/revertloan.mjs";
 
 const near = (a, b, tol, m) => assert.ok(Math.abs(a - b) <= tol, `${m}: ${a} vs ${b}`);
@@ -173,3 +174,48 @@ console.log("test_spcxlp: OK");
   assert.equal(await bot.addLoose("t3", rr), false, "espera 10 min"); assert.equal(bot.s.loosePending.tries, 1);
 }
 console.log("addLoose OK");
+
+// retiro de Hyperliquid con la posición cerrada (SPX_HL_WITHDRAW): plan puro y una sola ejecución por etiqueta
+{
+  assert.deepEqual(hlWithdrawPlan({ size: 0, marginUsed: 0, unified: true, account: 71.089, spotFree: 71.089 }), { usd: 71.08 });
+  assert.deepEqual(hlWithdrawPlan({ size: 0, marginUsed: 0, unified: false, account: 0, mainUsdc: 71.08 }), { usd: 71.08 });
+  assert.equal(hlWithdrawPlan({ size: -1.2, marginUsed: 0, unified: true, account: 71 }).usd, 0, "con corto abierto no retira");
+  assert.equal(hlWithdrawPlan({ size: 0, marginUsed: 12, unified: true, account: 71 }).usd, 0, "con margen en uso no retira");
+  assert.equal(hlWithdrawPlan({ size: 0, marginUsed: 0, unified: true, account: 3.2, spotFree: 3.2 }).usd, 0, "bajo el mínimo no retira");
+  assert.equal(hlWithdrawPlan(null).usd, 0);
+  // la cuenta unificada reporta lo libre = total − retenido
+  const ua = hlAccount({ dex: { marginSummary: { accountValue: "0", totalMarginUsed: "0" }, assetPositions: [] }, main: { marginSummary: { totalMarginUsed: "0" }, assetPositions: [] }, spotUsdc: { total: 71.08, hold: 0 }, mode: "unifiedAccount" });
+  assert.equal(ua.unified, true); near(ua.spotFree, 71.08, 1e-9, "libre de la cuenta unificada");
+  // el cliente solo retira a la propia wallet
+  const key = "0x" + "11".repeat(32), hl = new Hl({ privateKey: key });
+  let sent = null; hl.ex = { withdraw3: async (p) => { sent = p; return { status: "ok" }; } };
+  await hl.withdraw(71.08);
+  assert.deepEqual(sent, { destination: hl.me, amount: "71.08" });
+  await assert.rejects(hl.withdraw(0));
+
+  const mk = (live) => {
+    const b = Object.create(SpcxLp.prototype);
+    b.cfg = { live, hlWithdraw: "t" }; b.s = { runs: {}, actions: 0, closed: true, tokenId: 1 }; b.notes = []; b.calls = [];
+    b.x = { wallet: { address: "0xme" } };
+    b.save = async () => {}; b.note = async (m) => { b.notes.push(m); };
+    b.hl = { withdraw: async (a) => { b.calls.push(a); }, moveUsdc: async () => { b.calls.push("move"); }, state: async () => ({ size: 0, marginUsed: 0, unified: false, mainUsdc: 71.08, withdrawable: 0 }) };
+    return b;
+  };
+  const hU = { size: 0, marginUsed: 0, unified: true, account: 71.08, spotFree: 71.08, withdrawable: 0, mainUsdc: 0 };
+  let b = mk(true);
+  assert.equal(await b.withdrawHl("t", { h: hU }), true);
+  assert.deepEqual(b.calls, [71.08]); assert.ok(b.s.runs["hlw:t"].done); assert.ok(b.notes[0].includes("$71.08 USDC → Arbitrum"));
+  // modo lectura: no envía
+  b = mk(false); assert.equal(await b.withdrawHl("t", { h: hU }), false); assert.deepEqual(b.calls, []); assert.ok(b.notes[0].startsWith("(lectura)"));
+  // cuenta estándar con saldo en el dex del activo: primero lo pasa al principal
+  b = mk(true); assert.equal(await b.withdrawHl("t", { h: { size: 0, marginUsed: 0, unified: false, mainUsdc: 0, withdrawable: 71.08 } }), true); assert.deepEqual(b.calls, ["move", 71.08]);
+  // con posición abierta no retira y no reintenta
+  b = mk(true); assert.equal(await b.withdrawHl("t", { h: { ...hU, size: -1 } }), false); assert.deepEqual(b.calls, []); assert.ok(b.s.runs["hlw:t"].done);
+  // fallo: espera 30 min entre intentos y se rinde al cuarto
+  b = mk(true); b.hl.withdraw = async () => { throw new Error("rechazado"); };
+  await assert.rejects(b.withdrawHl("t", { h: hU })); assert.equal(b.s.runs["hlw:t"].tries, 1);
+  assert.equal(await b.withdrawHl("t", { h: hU }), false, "espera 30 min"); assert.equal(b.s.runs["hlw:t"].tries, 1);
+  for (let i = 0; i < 2; i++) { b.s.runs["hlw:t"].tryAt = 0; await assert.rejects(b.withdrawHl("t", { h: hU })); }
+  b.s.runs["hlw:t"].tryAt = 0; assert.equal(await b.withdrawHl("t", { h: hU }), false); assert.ok(b.s.runs["hlw:t"].failed && b.s.runs["hlw:t"].done);
+}
+console.log("retiro de Hyperliquid OK");

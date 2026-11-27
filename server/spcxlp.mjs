@@ -16,7 +16,7 @@
 // Relay a USDG en Robinhood y a USDC de Hyperliquid (destino: la propia wallet), una vez por tramo y etiqueta.
 import { ethers } from "ethers";
 import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
-import { Hl, hedgeOrder } from "./hl.mjs";
+import { Hl, hedgeOrder, hlWithdrawPlan } from "./hl.mjs";
 import { parseQuote, BASE_ID, BASE_USDC } from "./bridge.mjs";
 
 export const SPX = {
@@ -101,6 +101,7 @@ export class SpcxLp {
     this.cfg = {
       tag: process.env.SPX_OPEN || null,
       close: process.env.SPX_CLOSE || null,
+      hlWithdraw: process.env.SPX_HL_WITHDRAW || null, // etiqueta: con la posición cerrada, retira el USDC de Hyperliquid a la wallet (Arbitrum), una vez
       live: process.env.SPX_LIVE === "1",
       usd: Number(process.env.SPX_USD ?? 150),
       rangePct: Number(process.env.SPX_RANGE_PCT ?? 10),
@@ -193,6 +194,7 @@ export class SpcxLp {
       let r = await this.read();
       this.last = r;
       if (this.cfg.close && this.s.tokenId && !this.s.runs[`close:${this.cfg.close}`]?.done) { await this.closeAll(this.cfg.close, r); return; }
+      if (this.cfg.hlWithdraw && this.s.closed && !this.s.runs[`hlw:${this.cfg.hlWithdraw}`]?.done) { await this.withdrawHl(this.cfg.hlWithdraw, r); return; }
       if (!this.s.tokenId && this.cfg.tag && !this.s.runs[this.cfg.tag]?.done && !this.s.closed) {
         const st = this.s.runs[this.cfg.tag]?.step;
         if (this.cfg.live && (st === "swap" || st === "mint")) await this.resumeOpen(this.cfg.tag, r); else await this.open(this.cfg.tag, r);
@@ -524,6 +526,27 @@ export class SpcxLp {
     this.s.closed = true; run.done = true;
     const r2 = await this.read();
     await this.note(`cerrada #${id} (${tag}) · USDG en wallet ${r2.usdgW.toFixed(2)} · Hyperliquid $${r2.hlTotal.toFixed(2)} · resultado ${this.s.entry ? `$${(r2.usdgW - 0 + r2.hlTotal - this.s.entry.usd).toFixed(2)} aprox.` : "—"}`);
+  }
+
+  /** Con la posición cerrada, retira el USDC que quedó en Hyperliquid a la propia wallet en Arbitrum (Jose 2026-11-27: "haz todas
+   *  las transferencias necesarias para tener el capital disponible para los depósitos siguientes"; el fondeo de la espejo toma
+   *  de ahí el USDC). Una vez por etiqueta (SPX_HL_WITHDRAW); hasta 3 intentos, uno cada 30 min. */
+  async withdrawHl(tag, r) {
+    const run = (this.s.runs[`hlw:${tag}`] ??= { startedAt: Date.now(), tries: 0 });
+    if (Date.now() - (run.tryAt ?? 0) < 30 * 60_000) return false;
+    let h = r.h;
+    // cuenta estándar: lo libre del dex del activo pasa primero al principal, que es de donde sale el retiro
+    if (this.cfg.live && !h.unified && h.size === 0 && h.withdrawable > 0.5) { await this.hl.moveUsdc(Math.floor(h.withdrawable * 100) / 100, false); h = await this.hl.state(SPX.COIN); }
+    const plan = hlWithdrawPlan(h);
+    if (!plan.usd) { run.done = true; await this.save(); await this.note(`retiro de Hyperliquid (${tag}): nada que retirar · ${plan.reason}`); return false; }
+    if (!this.cfg.live) { run.done = true; await this.save(); await this.note(`(lectura) retiro de Hyperliquid (${tag}): retiraría $${plan.usd.toFixed(2)} USDC a Arbitrum, a la propia wallet`); return false; }
+    if (run.tries >= 3) { run.done = true; run.failed = true; await this.save(); await this.note(`retiro de Hyperliquid (${tag}): se rinde tras 3 intentos · siguen $${plan.usd.toFixed(2)} en Hyperliquid · último error: ${run.lastError ?? "—"}`); return false; }
+    run.tryAt = Date.now(); run.tries++; await this.save();
+    try { await this.hl.withdraw(plan.usd); }
+    catch (e) { run.lastError = (e.shortMessage || e.message || String(e)).slice(0, 200); await this.save(); throw new Error(`retiro de Hyperliquid (${tag}), intento ${run.tries} de 3: ${run.lastError}`); }
+    run.done = true; run.usd = plan.usd; this.s.actions++; await this.save();
+    await this.note(`retiro de Hyperliquid (${tag}): $${plan.usd.toFixed(2)} USDC → Arbitrum, a la propia wallet ${this.me} (comisión fija $1; llega en unos minutos)`);
+    return true;
   }
 
   view() {

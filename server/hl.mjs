@@ -39,9 +39,23 @@ export function hlAccount({ dex, main, spotUsdc, mode }) {
   if (spotUsdc && (byMode || byHold)) {
     const account = spotUsdc.total;
     const marginUsed = used + mainUsed;
-    return { account, marginUsed, usage: account > 0 ? marginUsed / account : 0, withdrawable: 0, mainUsdc: 0, unified: true, spotUsdc: spotUsdc.total, dexAccount: dexAcct, openPnl: upnl(dex) + upnl(main) };
+    return { account, marginUsed, usage: account > 0 ? marginUsed / account : 0, withdrawable: 0, mainUsdc: 0, unified: true, spotFree: Math.max(0, spotUsdc.total - (spotUsdc.hold ?? 0)), spotUsdc: spotUsdc.total, dexAccount: dexAcct, openPnl: upnl(dex) + upnl(main) };
   }
   return { account: dexAcct, marginUsed: used, usage: dexAcct > 0 ? used / dexAcct : 0, withdrawable: num(dex?.withdrawable), mainUsdc: num(main?.withdrawable), unified: false, spotUsdc: spotUsdc?.total ?? 0, dexAccount: dexAcct };
+}
+
+/** Cuánto USDC se puede retirar de Hyperliquid a la wallet (pura, probada). Solo con la cuenta sin posición ni margen en uso:
+ *  cuenta unificada → el USDC spot libre (total − retenido); estándar → el USDC libre del dex principal.
+ *  Se redondea a centavos hacia abajo; bajo `minUsd` no vale la pena (el retiro cobra una comisión fija de $1). */
+export function hlWithdrawPlan(h, { minUsd = 5 } = {}) {
+  const num = (x) => { const v = Number(x ?? 0); return Number.isFinite(v) ? v : 0; };
+  if (!h) return { usd: 0, reason: "sin lectura de la cuenta" };
+  if (num(h.size) !== 0) return { usd: 0, reason: `hay una posición abierta (${h.size})` };
+  if (num(h.marginUsed) > 0.01) return { usd: 0, reason: `hay margen en uso ($${num(h.marginUsed).toFixed(2)})` };
+  const free = h.unified ? num(h.spotFree ?? h.account) : num(h.mainUsdc);
+  const usd = Math.floor(free * 100 + 1e-6) / 100;
+  if (usd < minUsd) return { usd: 0, reason: `solo hay $${usd.toFixed(2)} libres (mínimo $${minUsd})` };
+  return { usd };
 }
 
 export class Hl {
@@ -109,5 +123,11 @@ export class Hl {
   /** Pasa USDC entre el dex principal ("") y el del activo. */
   async moveUsdc(amount, toDex = true) {
     return this.ex.sendAsset({ destination: this.me, sourceDex: toDex ? "" : this.dex, destinationDex: toDex ? this.dex : "", token: this.usdcToken, amount: amount.toFixed(2) });
+  }
+  /** Retira USDC de Hyperliquid a Arbitrum por el puente oficial (withdraw3; comisión fija de $1, llega en unos minutos).
+   *  El destino es SIEMPRE la propia wallet: no acepta otro. */
+  async withdraw(amount) {
+    if (!(amount > 0)) throw new Error("Hyperliquid: retiro sin monto");
+    return this.ex.withdraw3({ destination: this.me, amount: amount.toFixed(2) });
   }
 }
