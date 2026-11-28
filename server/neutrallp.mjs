@@ -18,7 +18,7 @@
 //   Cada transacción se simula con eth_call antes de enviarse.
 import fs from "node:fs";
 import { ethers } from "ethers";
-import { rangeTicks, amountsFor, recenterDue, rebalanceSwap } from "./revertloan.mjs";
+import { rangeTicks, amountsFor, recenterDue, rebalanceSwap, rangeWidthOff } from "./revertloan.mjs";
 
 const ART = JSON.parse(fs.readFileSync(new URL("./artifacts/NeutralLpManager.json", import.meta.url)));
 const OLD = JSON.parse(fs.readFileSync(new URL("./artifacts/RevertLoanManager.json", import.meta.url)));
@@ -450,6 +450,12 @@ export class NeutralLp {
     } else if (this.s.outSince) { await this.note(`volvió al rango tras ${((Date.now() - this.s.outSince) / 60_000).toFixed(0)} min · sin re-centrar`); this.s.outSince = null; }
     const due = !r.inRange && recenterDue(false, this.s.outSince, Date.now(), cfg.outMin);
     if (due && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) { await this.recenter(r); return; }
+    // 2b) ancho del rango distinto del pedido (cambió NLP_RANGE_PCT): re-centra al ancho nuevo, en rango y con el mismo enfriamiento
+    const lo = Number(r.pos.tickLower), hi = Number(r.pos.tickUpper);
+    if (r.inRange && rangeWidthOff(lo, hi, cfg.rangePct) && Date.now() - (this.s.lastRecenter ?? 0) > cfg.cooldownMin * 60_000) {
+      await this.note(`ancho del rango [${lo}, ${hi}] (≈ ±${((1.0001 ** ((hi - lo) / 2) - 1) * 100).toFixed(1)} %) distinto del pedido ±${cfg.rangePct} % → re-centra al ancho nuevo`);
+      await this.recenter(r); return;
+    }
     // 3) ganancia realizada: comisiones por cobrar ≥ umbral → cobra y re-apalanca
     if (cfg.compoundUsd > 0 && r.inRange && r.feesUsd != null && r.feesUsd + gain >= cfg.compoundUsd) await this.compound(r, { gainUsd: gain });
   }

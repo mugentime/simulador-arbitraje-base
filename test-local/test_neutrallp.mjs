@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { openSizing, token0Share, healths, cometToRevertAmount, revertToCometAmount, NLP } from "../server/neutrallp.mjs";
-import { rangeTicks } from "../server/revertloan.mjs";
+import { rangeTicks, rangeWidthOff } from "../server/revertloan.mjs";
+// ancho del rango: la espejo (±2 %, 400 ticks) está bien; la original de ≈ ±3 % (600 ticks) se re-centra al pedir ±2 %
+assert.equal(rangeWidthOff(-266230, -265830, 2), false);
+assert.equal(rangeWidthOff(-266310, -265710, 2), true);
+assert.equal(rangeWidthOff(-266310, -265710, 3), false);
+{ const t = rangeTicks(-266087, 2, 10); assert.equal(rangeWidthOff(t.lower, t.upper, 2), false); }
+assert.equal(rangeWidthOff(NaN, -265830, 2), false);
 const near = (a, b, t = 1e-6) => assert.ok(Math.abs(a - b) <= t * Math.max(1, Math.abs(b)), `${a} ≉ ${b}`);
 // tamaño con $50, 65 % / 65 %
 const o = openSizing(50, 0.65, 0.65);

@@ -56,6 +56,13 @@ export function rangeTicks(tick, pct, spacing = RVL.SPACING) {
   const d = Math.round(Math.log(1 + pct / 100) / Math.log(1.0001));
   return { lower: Math.floor((tick - d) / spacing) * spacing, upper: Math.ceil((tick + d) / spacing) * spacing };
 }
+/** ¿El ancho del rango [lower, upper] ya no es el pedido (±pct)? Medio ancho en ticks con tolerancia del 25 %: el redondeo al
+ *  espaciado mueve el ancho unos pocos %, pasar de ±3 % a ±2 % lo cambia ≈ 50 %. */
+export function rangeWidthOff(lower, upper, pct) {
+  if (!Number.isFinite(lower) || !Number.isFinite(upper) || !(pct > 0) || upper <= lower) return false;
+  const want = Math.log(1 + pct / 100) / Math.log(1.0001);
+  return Math.abs((upper - lower) / 2 - want) / want > 0.25;
+}
 /** Préstamo adicional permitido: colateral × 95 % × fracción − deuda, con un margen para intereses/precio entre la lectura y el envío. */
 export function borrowable(collateralValue, debt, frac = 1, marginBps = 30) {
   const cap = collateralValue * BigInt(Math.round(RVL.BORROW_BUFFER * frac * 1e6)) / 1_000_000n;
